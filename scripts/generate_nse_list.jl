@@ -180,30 +180,7 @@ function write_json(df::DataFrame, date::Date, out_dir::String)
 
     @info "Written: $out_path  ($(length(companies)) companies)"
     @info "Updated: $latest_path"
-
-    # Embed the data directly into nse_companies.html so it works via file://
-    _embed_in_html(payload, out_dir)
-
     return out_path
-end
-
-function _embed_in_html(payload, out_dir::String)
-    html_path = joinpath(out_dir, "..", "nse_companies.html")
-    isfile(html_path) || return
-
-    # Compact JSON (no pretty-print — keeps the HTML under ~1 MB)
-    json_str = JSON3.write(payload)
-
-    data_script = "<script>window.NSE_DATA = $json_str;</script>"
-
-    html = read(html_path, String)
-    # Replace the placeholder (or a previous injection) with fresh data
-    html = replace(html,
-        r"<!-- NSE_DATA_PLACEHOLDER -->(\n<script>window\.NSE_DATA.*?</script>)?"s =>
-        "<!-- NSE_DATA_PLACEHOLDER -->\n$data_script"
-    )
-    write(html_path, html)
-    @info "Embedded data in nse_companies.html (opens without a server)"
 end
 
 # ── Main ──────────────────────────────────────────────────────────────────────
