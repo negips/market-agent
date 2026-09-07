@@ -87,7 +87,7 @@ function generateTOTP(base32Secret) {
 
 async function main() {
   // Import Playwright from the tijori-finance-mcp install (avoids a second Chromium download)
-  const { chromium } = await import('./tijori-finance-mcp/node_modules/playwright/index.js');
+  const { chromium } = await import('./tijori-finance-mcp/node_modules/playwright/index.mjs');
 
   console.log('Launching Chromium for Kite login...');
   const browser = await chromium.launch({ headless: false });
