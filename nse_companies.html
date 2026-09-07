@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NSE Listed Companies</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #f5f6fa;
+      --surface:   #ffffff;
+      --border:    #e2e5ee;
+      --text:      #1a1d2e;
+      --muted:     #6b7280;
+      --accent:    #4f46e5;
+      --accent-bg: #ede9fe;
+      --green:     #059669;
+      --red:       #dc2626;
+      --row-hover: #f8f7ff;
+      --header-bg: #1a1d2e;
+      --shadow:    0 1px 3px rgba(0,0,0,.08), 0 4px 12px rgba(0,0,0,.04);
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 14px;
+      line-height: 1.5;
+      min-height: 100vh;
+    }
+
+    /* ── Header ── */
+    header {
+      background: var(--header-bg);
+      color: #fff;
+      padding: 20px 28px;
+      display: flex;
+      align-items: center;
+      gap: 24px;
+    }
+    header h1 {
+      font-size: 20px;
+      font-weight: 600;
+      letter-spacing: -.3px;
+    }
+    header h1 span {
+      color: #a5b4fc;
+      font-weight: 400;
+      font-size: 14px;
+      margin-left: 8px;
+    }
+    .header-meta {
+      margin-left: auto;
+      display: flex;
+      gap: 20px;
+      font-size: 12px;
+      color: #9ca3af;
+    }
+    .header-meta strong { color: #e5e7eb; }
+
+    /* ── Controls bar ── */
+    .controls {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 28px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      box-shadow: var(--shadow);
+    }
+    .search-wrap {
+      position: relative;
+      flex: 0 0 360px;
+    }
+    .search-wrap svg {
+      position: absolute;
+      left: 11px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--muted);
+      pointer-events: none;
+    }
+    #search {
+      width: 100%;
+      padding: 8px 36px 8px 34px;
+      border: 1.5px solid var(--border);
+      border-radius: 8px;
+      font-size: 13.5px;
+      outline: none;
+      background: var(--bg);
+      color: var(--text);
+      transition: border-color .15s;
+    }
+    #search:focus { border-color: var(--accent); background: #fff; }
+    #clear-btn {
+      position: absolute;
+      right: 9px;
+      top: 50%;
+      transform: translateY(-50%);
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: var(--muted);
+      padding: 2px;
+      display: none;
+      line-height: 0;
+    }
+    #clear-btn:hover { color: var(--text); }
+
+    .sort-pill {
+      font-size: 12px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .sort-pill strong { color: var(--accent); }
+
+    .stats-pill {
+      margin-left: auto;
+      font-size: 12px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .stats-pill strong { color: var(--text); }
+
+    /* ── Table wrapper ── */
+    .table-wrap {
+      overflow-x: auto;
+      padding: 0 28px;
+      margin-top: 20px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--surface);
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+    thead th {
+      background: var(--surface);
+      border-bottom: 2px solid var(--border);
+      padding: 10px 14px;
+      text-align: left;
+      font-size: 11.5px;
+      font-weight: 600;
+      letter-spacing: .4px;
+      text-transform: uppercase;
+      color: var(--muted);
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+      transition: color .12s;
+    }
+    thead th:hover { color: var(--accent); }
+    thead th.sorted { color: var(--accent); }
+    thead th .sort-icon {
+      display: inline-block;
+      margin-left: 4px;
+      opacity: .35;
+      font-size: 10px;
+    }
+    thead th.sorted .sort-icon { opacity: 1; }
+    thead th:first-child { width: 52px; text-align: center; cursor: default; }
+
+    tbody tr {
+      border-bottom: 1px solid var(--border);
+      transition: background .1s;
+    }
+    tbody tr:last-child { border-bottom: none; }
+    tbody tr:hover { background: var(--row-hover); }
+    tbody td {
+      padding: 10px 14px;
+      vertical-align: middle;
+    }
+    td.rank { text-align: center; color: var(--muted); font-size: 12px; }
+
+    .company-name { font-weight: 500; color: var(--text); }
+    .company-isin { font-size: 11px; color: var(--muted); margin-top: 1px; }
+
+    .symbol-badge {
+      display: inline-block;
+      background: var(--accent-bg);
+      color: var(--accent);
+      font-size: 11.5px;
+      font-weight: 600;
+      padding: 2px 7px;
+      border-radius: 5px;
+      letter-spacing: .3px;
+    }
+    .sector-text { font-size: 12.5px; color: var(--muted); }
+
+    td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .price-val { font-weight: 500; }
+    .mcap-val  { font-weight: 600; }
+    .mcap-large { color: var(--green); }
+    .vol-val   { font-size: 12.5px; color: var(--muted); }
+    .na        { color: #d1d5db; font-size: 12px; }
+
+    /* ── Pagination ── */
+    .pagination {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 20px 28px 32px;
+      flex-wrap: wrap;
+    }
+    .page-btn {
+      padding: 5px 11px;
+      border: 1.5px solid var(--border);
+      border-radius: 7px;
+      background: var(--surface);
+      color: var(--text);
+      font-size: 13px;
+      cursor: pointer;
+      transition: all .12s;
+      min-width: 36px;
+      text-align: center;
+    }
+    .page-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+    .page-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+    .page-btn:disabled { opacity: .35; cursor: default; }
+    .page-ellipsis { color: var(--muted); padding: 0 4px; }
+
+    /* ── Loading / Error ── */
+    .state-overlay {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      padding: 80px 28px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .spinner {
+      width: 36px; height: 36px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .error-icon { font-size: 36px; }
+    .error-msg { color: var(--red); font-size: 15px; font-weight: 500; }
+    .error-hint { font-size: 12px; color: var(--muted); text-align: center; max-width: 460px; }
+    code { background: var(--bg); border: 1px solid var(--border); padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+
+    @media (max-width: 700px) {
+      header { padding: 14px 16px; flex-wrap: wrap; gap: 8px; }
+      .header-meta { flex-wrap: wrap; gap: 10px; }
+      .controls { padding: 10px 16px; flex-wrap: wrap; }
+      .search-wrap { flex: 1 1 100%; }
+      .table-wrap { padding: 0 12px; }
+      .pagination { padding: 16px 12px 24px; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>NSE Listed Companies <span id="hdr-date"></span></h1>
+  </div>
+  <div class="header-meta">
+    <div><strong id="hdr-total">—</strong> companies</div>
+    <div>Sources: NSE equity list · NSE bhavcopy · Tijori Finance</div>
+  </div>
+</header>
+
+<div class="controls">
+  <div class="search-wrap">
+    <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
+      <circle cx="9" cy="9" r="6"/><path d="m15 15 4 4"/>
+    </svg>
+    <input type="search" id="search" placeholder="Search name, symbol, ISIN, sector…" autocomplete="off">
+    <button id="clear-btn" title="Clear search">
+      <svg width="13" height="13" viewBox="0 0 20 20" fill="currentColor">
+        <path d="M6 6l8 8M14 6l-8 8" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+      </svg>
+    </button>
+  </div>
+  <div class="sort-pill" id="sort-label">Sorted by <strong>Company Name ↑</strong></div>
+  <div class="stats-pill" id="stats">Loading…</div>
+</div>
+
+<div class="table-wrap">
+  <div id="state-area" class="state-overlay">
+    <div class="spinner"></div>
+    <div>Loading company data…</div>
+  </div>
+  <table id="main-table" style="display:none">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th data-col="name"        class="sorted" data-dir="asc">Company<span class="sort-icon">▲</span></th>
+        <th data-col="symbol"                                    >Symbol<span class="sort-icon">⬍</span></th>
+        <th data-col="sector"                                    >Sector<span class="sort-icon">⬍</span></th>
+        <th data-col="close_price" style="text-align:right"     >Close ₹<span class="sort-icon">⬍</span></th>
+        <th data-col="market_cap_cr" style="text-align:right"   >Mkt Cap (₹ Cr)<span class="sort-icon">⬍</span></th>
+        <th data-col="volume"      style="text-align:right"     >Volume<span class="sort-icon">⬍</span></th>
+      </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+</div>
+<div class="pagination" id="pagination"></div>
+
+<script>
+// ── Config ──────────────────────────────────────────────────────────────────
+const PAGE_SIZE = 75;
+
+// ── State ────────────────────────────────────────────────────────────────────
+let allData    = [];
+let filtered   = [];
+let sortCol    = 'name';
+let sortDir    = 'asc';
+let currentPage = 1;
+let searchTerm  = '';
+
+// ── Load data ─────────────────────────────────────────────────────────────────
+(async () => {
+  const today = new Date();
+  const dd = String(today.getFullYear()) +
+             String(today.getMonth()+1).padStart(2,'0') +
+             String(today.getDate()).padStart(2,'0');
+  const urls = [
+    `data/nse_companies_${dd}.json`,
+    `data/nse_companies_latest.json`,
+  ];
+
+  let data = null;
+  for (const url of urls) {
+    try {
+      const r = await fetch(url);
+      if (r.ok) { data = await r.json(); break; }
+    } catch {}
+  }
+
+  if (!data) {
+    showError(
+      'Could not load company data.',
+      'Make sure the data file exists and you are serving this page from the repo root.<br>' +
+      'Run: <code>julia scripts/generate_nse_list.jl</code> to generate it, then<br>' +
+      '<code>python3 -m http.server 8080</code> and open <code>http://localhost:8080/nse_companies.html</code>'
+    );
+    return;
+  }
+
+  // Populate header
+  document.getElementById('hdr-date').textContent = `— ${data.date}`;
+  document.getElementById('hdr-total').textContent = data.total.toLocaleString('en-IN');
+
+  allData = data.companies;
+  applyFilterAndSort();
+  document.getElementById('state-area').style.display = 'none';
+  document.getElementById('main-table').style.display = '';
+})();
+
+// ── Search ────────────────────────────────────────────────────────────────────
+const searchInput = document.getElementById('search');
+const clearBtn    = document.getElementById('clear-btn');
+let   debounceTimer;
+
+searchInput.addEventListener('input', () => {
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(() => {
+    searchTerm  = searchInput.value.trim().toLowerCase();
+    clearBtn.style.display = searchTerm ? 'block' : 'none';
+    currentPage = 1;
+    applyFilterAndSort();
+  }, 160);
+});
+
+clearBtn.addEventListener('click', () => {
+  searchInput.value = '';
+  clearBtn.style.display = 'none';
+  searchTerm = '';
+  currentPage = 1;
+  applyFilterAndSort();
+  searchInput.focus();
+});
+
+// ── Sorting ───────────────────────────────────────────────────────────────────
+document.querySelectorAll('thead th[data-col]').forEach(th => {
+  th.addEventListener('click', () => {
+    const col = th.dataset.col;
+    if (sortCol === col) {
+      sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+    } else {
+      sortCol = col;
+      sortDir = ['close_price','market_cap_cr','volume'].includes(col) ? 'desc' : 'asc';
+    }
+    currentPage = 1;
+    updateSortUI();
+    applyFilterAndSort();
+  });
+});
+
+function updateSortUI() {
+  document.querySelectorAll('thead th[data-col]').forEach(th => {
+    const active = th.dataset.col === sortCol;
+    th.classList.toggle('sorted', active);
+    th.querySelector('.sort-icon').textContent = active ? (sortDir === 'asc' ? '▲' : '▼') : '⬍';
+    th.style.textAlign = ['close_price','market_cap_cr','volume'].includes(th.dataset.col) ? 'right' : '';
+  });
+  const labels = { name:'Company Name', symbol:'Symbol', sector:'Sector',
+                   close_price:'Close Price', market_cap_cr:'Market Cap', volume:'Volume' };
+  document.getElementById('sort-label').innerHTML =
+    `Sorted by <strong>${labels[sortCol]} ${sortDir === 'asc' ? '↑' : '↓'}</strong>`;
+}
+
+// ── Filter + sort + render ────────────────────────────────────────────────────
+function applyFilterAndSort() {
+  // Filter
+  if (searchTerm) {
+    filtered = allData.filter(c =>
+      (c.name   || '').toLowerCase().includes(searchTerm) ||
+      (c.symbol || '').toLowerCase().includes(searchTerm) ||
+      (c.isin   || '').toLowerCase().includes(searchTerm) ||
+      (c.sector || '').toLowerCase().includes(searchTerm)
+    );
+  } else {
+    filtered = allData;
+  }
+
+  // Sort
+  const numCols = new Set(['close_price','market_cap_cr','volume','face_value']);
+  filtered = [...filtered].sort((a, b) => {
+    let va = a[sortCol], vb = b[sortCol];
+    if (numCols.has(sortCol)) {
+      va = va ?? -Infinity; vb = vb ?? -Infinity;
+      return sortDir === 'asc' ? va - vb : vb - va;
+    }
+    va = (va || '').toLowerCase(); vb = (vb || '').toLowerCase();
+    return sortDir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
+  });
+
+  renderPage();
+  renderPagination();
+
+  const total = filtered.length;
+  const start = (currentPage - 1) * PAGE_SIZE + 1;
+  const end   = Math.min(currentPage * PAGE_SIZE, total);
+  document.getElementById('stats').innerHTML =
+    total === 0
+      ? 'No results'
+      : `Showing <strong>${start}–${end}</strong> of <strong>${total.toLocaleString('en-IN')}</strong>`;
+}
+
+// ── Render current page ───────────────────────────────────────────────────────
+const tbody = document.getElementById('tbody');
+
+function renderPage() {
+  const start = (currentPage - 1) * PAGE_SIZE;
+  const rows  = filtered.slice(start, start + PAGE_SIZE);
+  const frag  = document.createDocumentFragment();
+
+  rows.forEach((c, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = [
+      `<td class="rank">${start + i + 1}</td>`,
+      `<td>
+         <div class="company-name">${esc(c.name)}</div>
+         <div class="company-isin">${esc(c.isin || '')}</div>
+       </td>`,
+      `<td><span class="symbol-badge">${esc(c.symbol)}</span></td>`,
+      `<td class="sector-text">${esc(c.sector || '—')}</td>`,
+      `<td class="num">${fmtPrice(c.close_price)}</td>`,
+      `<td class="num">${fmtMcap(c.market_cap_cr)}</td>`,
+      `<td class="num vol-val">${fmtVol(c.volume)}</td>`,
+    ].join('');
+    frag.appendChild(tr);
+  });
+
+  tbody.replaceChildren(frag);
+}
+
+// ── Pagination ────────────────────────────────────────────────────────────────
+const paginationEl = document.getElementById('pagination');
+
+function renderPagination() {
+  const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
+  if (totalPages <= 1) { paginationEl.innerHTML = ''; return; }
+
+  const pages = visiblePages(currentPage, totalPages);
+  let html = `<button class="page-btn" ${currentPage===1?'disabled':''} onclick="goPage(${currentPage-1})">‹ Prev</button>`;
+  let prev = 0;
+  for (const p of pages) {
+    if (p - prev > 1) html += `<span class="page-ellipsis">…</span>`;
+    html += `<button class="page-btn ${p===currentPage?'active':''}" onclick="goPage(${p})">${p}</button>`;
+    prev = p;
+  }
+  html += `<button class="page-btn" ${currentPage===totalPages?'disabled':''} onclick="goPage(${currentPage+1})">Next ›</button>`;
+  paginationEl.innerHTML = html;
+}
+
+function visiblePages(cur, total) {
+  const set = new Set([1, total, cur-1, cur, cur+1, cur-2, cur+2].filter(p => p >= 1 && p <= total));
+  return [...set].sort((a,b) => a-b);
+}
+
+function goPage(p) {
+  currentPage = p;
+  applyFilterAndSort();
+  document.querySelector('.table-wrap').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// ── Formatters ────────────────────────────────────────────────────────────────
+const inr = new Intl.NumberFormat('en-IN', { maximumFractionDigits: 2 });
+const vol = new Intl.NumberFormat('en-IN', { maximumFractionDigits: 0 });
+
+function fmtPrice(v) {
+  if (v == null) return '<span class="na">—</span>';
+  return `<span class="price-val">₹${inr.format(v)}</span>`;
+}
+
+function fmtMcap(v) {
+  if (v == null) return '<span class="na">—</span>';
+  const cls = v >= 10000 ? 'mcap-val mcap-large' : 'mcap-val';
+  if (v >= 100000) {
+    return `<span class="${cls}">₹${(v/100000).toFixed(2)}L Cr</span>`;
+  }
+  return `<span class="${cls}">₹${inr.format(Math.round(v))}</span>`;
+}
+
+function fmtVol(v) {
+  if (v == null) return '<span class="na">—</span>';
+  if (v >= 1e7) return `${(v/1e7).toFixed(1)}Cr`;
+  if (v >= 1e5) return `${(v/1e5).toFixed(1)}L`;
+  return vol.format(v);
+}
+
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Error state ───────────────────────────────────────────────────────────────
+function showError(msg, hint) {
+  document.getElementById('state-area').innerHTML = `
+    <div class="error-icon">⚠️</div>
+    <div class="error-msg">${msg}</div>
+    <div class="error-hint">${hint}</div>`;
+}
+</script>
+</body>
+</html>

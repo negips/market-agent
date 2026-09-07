@@ -174,7 +174,12 @@ function write_json(df::DataFrame, date::Date, out_dir::String)
         JSON3.pretty(io, payload)
     end
 
+    # Always write a stable "latest" copy for the HTML viewer
+    latest_path = joinpath(out_dir, "nse_companies_latest.json")
+    cp(out_path, latest_path; force=true)
+
     @info "Written: $out_path  ($(length(companies)) companies)"
+    @info "Updated: $latest_path"
     return out_path
 end
 
