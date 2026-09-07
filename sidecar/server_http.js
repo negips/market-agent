@@ -49,7 +49,7 @@ import {
 }                                             from './tijori-finance-mcp/src/tools/screener.js';
 import {
   getMarkets,
-  getSectorConstituents,
+  getNicheConstituents,
   getConglomerateConstituents,
   getRawMaterials,
   getMacroIndicators,
@@ -247,27 +247,33 @@ app.get('/fields', route(req => {
 // ── Market data & macro ───────────────────────────────────────────────────────
 
 /**
- * GET /markets[?type=<niche|conglomerates>]
- * Index performance: Nifty, sector indices, niche indices, conglomerates.
- * Omit type for main indices.
+ * GET /markets?tab=<headline|niche|conglomerates>
+ * Index performance data for the specified tab.
+ *   headline      — Nifty 50, Bank Nifty, sectoral indices
+ *   niche         — Tijori niche sector indices (includes tjiid for drill-down)
+ *   conglomerates — business group indices (includes tjiid for drill-down)
  */
-app.get('/markets', route(req => getMarkets(req.query.type)));
+app.get('/markets', route(req => {
+  const { tab } = req.query;
+  if (!tab) throw new Error('Missing required query param: tab (headline|niche|conglomerates)');
+  return getMarkets(tab);
+}));
 
 /**
  * GET /sector?tjiid=<id>
  * All stocks inside a Tijori niche sector index.
- * Get tjiid from GET /markets?type=niche
+ * Get tjiid from GET /markets?tab=niche
  */
 app.get('/sector', route(req => {
   const { tjiid } = req.query;
   if (!tjiid) throw new Error('Missing required query param: tjiid');
-  return getSectorConstituents(tjiid);
+  return getNicheConstituents(tjiid);
 }));
 
 /**
  * GET /conglomerate?tjiid=<id>
  * All companies inside a business group (e.g. Tata, Reliance).
- * Get tjiid from GET /markets?type=conglomerates
+ * Get tjiid from GET /markets?tab=conglomerates
  */
 app.get('/conglomerate', route(req => {
   const { tjiid } = req.query;
@@ -276,16 +282,27 @@ app.get('/conglomerate', route(req => {
 }));
 
 /**
- * GET /macro
- * India macro indicators: credit, IIP, GST, auto sales, GDP, trade.
+ * GET /macro?tab=<industry|demand|gdp>
+ * India macro indicators by category.
+ *   industry — IIP, credit growth, GST collections
+ *   demand   — auto sales, consumer data
+ *   gdp      — GDP and trade data
  */
-app.get('/macro', route(_req => getMacroIndicators()));
+app.get('/macro', route(req => {
+  const { tab } = req.query;
+  if (!tab) throw new Error('Missing required query param: tab (industry|demand|gdp)');
+  return getMacroIndicators(tab);
+}));
 
 /**
- * GET /rawmaterials
- * Commodity price performance: chemicals, spreads, metals.
+ * GET /rawmaterials?tab=<chemicals|spreads|metals>
+ * Commodity price performance by category.
  */
-app.get('/rawmaterials', route(_req => getRawMaterials()));
+app.get('/rawmaterials', route(req => {
+  const { tab } = req.query;
+  if (!tab) throw new Error('Missing required query param: tab (chemicals|spreads|metals)');
+  return getRawMaterials(tab);
+}));
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 
@@ -306,7 +323,7 @@ app.listen(PORT, () => {
   console.log('  GET  /screens');
   console.log('  POST /screen    { filters | preset | alternate }');
   console.log('  GET  /fields?q=');
-  console.log('  GET  /markets[?type=niche|conglomerates]');
+  console.log('  GET  /markets?tab=<headline|niche|conglomerates>');
   console.log('  GET  /sector?tjiid=');
   console.log('  GET  /conglomerate?tjiid=');
   console.log('  GET  /macro');

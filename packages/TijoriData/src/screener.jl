@@ -136,26 +136,25 @@ end
 # ── Market and sector data ────────────────────────────────────────────────────
 
 """
-    get_markets(; type=nothing) -> DataFrame
+    get_markets(tab) -> Any
 
-Fetch index performance data.
+Fetch index performance data for the specified tab.
 
-`type` controls which index group is returned:
-- `nothing` (default) — main indices (Nifty 50, Bank Nifty, etc.)
-- `"niche"`            — Tijori's niche sector indices
-- `"conglomerates"`    — business group indices
-
-Returns a DataFrame with index names and return columns.
+`tab` must be one of:
+- `"headline"`      — Nifty 50, Bank Nifty, sectoral indices
+- `"niche"`         — Tijori niche sector indices (each has a tjiid for drill-down)
+- `"conglomerates"` — business group indices (each has a tjiid for drill-down)
 
 # Example
 ```julia
-get_markets()                      # Nifty, Bank Nifty, ...
-get_markets(type="niche")          # niche sector indices + their tjiids
+get_markets("headline")       # Nifty, Bank Nifty, ...
+get_markets("niche")          # niche sector indices + their tjiids
 ```
 """
-function get_markets(; type::Union{String, Nothing}=nothing)::DataFrame
-    raw = isnothing(type) ? _get("/markets") : _get("/markets"; type=type)
-    _raw_to_df(raw)
+function get_markets(tab::String)
+    tab in ("headline", "niche", "conglomerates") ||
+        error("tab must be one of: headline, niche, conglomerates")
+    _get("/markets"; tab=tab)
 end
 
 """
@@ -181,23 +180,42 @@ function get_conglomerate_stocks(tjiid::String)::DataFrame
 end
 
 """
-    get_macro_indicators() -> Any
+    get_macro_indicators(tab) -> Any
 
-India macro indicators: credit growth, IIP, GST collections, auto sales,
-GDP, and trade data as returned by Tijori.
+India macro indicators for the specified category.
+
+`tab` must be one of:
+- `"industry"` — IIP, credit growth, GST collections
+- `"demand"`   — auto sales, consumer data
+- `"gdp"`      — GDP and trade data
+
+# Example
+```julia
+get_macro_indicators("industry")
+```
 """
-function get_macro_indicators()
-    _get("/macro")
+function get_macro_indicators(tab::String)
+    tab in ("industry", "demand", "gdp") ||
+        error("tab must be one of: industry, demand, gdp")
+    _get("/macro"; tab=tab)
 end
 
 """
-    get_raw_materials() -> Any
+    get_raw_materials(tab) -> Any
 
-Commodity price performance: chemicals, metal spreads, crude. Useful for
-assessing input cost pressure on material-intensive companies.
+Commodity price performance for the specified category.
+
+`tab` must be one of: `"chemicals"`, `"spreads"`, `"metals"`
+
+# Example
+```julia
+get_raw_materials("chemicals")
+```
 """
-function get_raw_materials()
-    _get("/rawmaterials")
+function get_raw_materials(tab::String)
+    tab in ("chemicals", "spreads", "metals") ||
+        error("tab must be one of: chemicals, spreads, metals")
+    _get("/rawmaterials"; tab=tab)
 end
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
