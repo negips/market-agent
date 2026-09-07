@@ -99,16 +99,25 @@ end
 """
     stop!()
 
-Terminate the sidecar subprocess started by `start!`. No-op if `start!` was
-never called or if the process has already exited.
+Shut down the Tijori sidecar. Sends a graceful /shutdown request first so
+Node.js can clean up Playwright and Chromium child processes. Falls back to
+SIGTERM if the HTTP call fails (e.g. sidecar is unresponsive).
 """
 function stop!()
+    # Graceful shutdown via HTTP — lets Node.js clean up Playwright/Chromium
+    try
+        HTTP.post("$(_BASE[])/shutdown"; readtimeout=5, connect_timeout=2)
+        sleep(0.3)
+    catch
+        # Sidecar unreachable — fall through to kill()
+    end
+
     proc = _PROCESS[]
     if !isnothing(proc) && process_running(proc)
         kill(proc)
-        @info "Tijori sidecar stopped"
     end
     _PROCESS[] = nothing
+    @info "Tijori sidecar stopped"
     return nothing
 end
 

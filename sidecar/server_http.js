@@ -82,6 +82,16 @@ app.get('/health', (_req, res) => {
   res.json({ ok: true, data: { status: 'running', port: PORT } });
 });
 
+/**
+ * POST /shutdown
+ * Gracefully shut down the sidecar. Node.js handles Playwright/Chromium
+ * cleanup before exiting, which kill() from the parent cannot guarantee.
+ */
+app.post('/shutdown', (_req, res) => {
+  res.json({ ok: true, data: { status: 'shutting down' } });
+  setTimeout(() => process.exit(0), 100);
+});
+
 // ── Company search & overview ─────────────────────────────────────────────────
 
 /**
