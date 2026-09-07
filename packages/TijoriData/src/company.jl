@@ -19,15 +19,7 @@ slug = results[1].slug   # "hdfc-bank-limited"
 function search_company(query::String)::Vector{SearchResult}
     isempty(strip(query)) && error("query must not be empty")
     raw = _get("/search"; q=query)
-    return [
-        SearchResult(
-            string(get(r, :name, get(r, :shortname, get(r, :company, "")))),
-            string(r.slug),
-            _str_or_nothing(get(r, :symbol, nothing)),
-            _str_or_nothing(get(r, :exchange, nothing)),
-        )
-        for r in raw
-    ]
+    return [SearchResult(string(r.name), string(r.slug)) for r in raw]
 end
 
 # ── Overview ──────────────────────────────────────────────────────────────────
@@ -63,8 +55,10 @@ function get_overview(slug::String)::CompanyOverview
     return CompanyOverview(
         slug,
         string(get(raw, :company, slug)),
+        _str_or_nothing(get(raw, :shortname, nothing)),
         _str_or_nothing(get(raw, :symbol, nothing)),
         _int_or_nothing(get(raw, :company_id, nothing)),
+        _str_or_nothing(get(raw, :ind_code, nothing)),
         Bool(get(raw, :is_banking, false)),
         _f64_or_nothing(get(raw, :mcap, nothing)),
         _f64_or_nothing(get(raw, :pe, nothing)),
@@ -133,6 +127,6 @@ end
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
-_str_or_nothing(x) = isnothing(x) || x === JSON3.null ? nothing : string(x)
-_f64_or_nothing(x) = isnothing(x) || x === JSON3.null ? nothing : _parse_number(x)
-_int_or_nothing(x) = isnothing(x) || x === JSON3.null ? nothing : Int(x)
+_str_or_nothing(x) = isnothing(x) ? nothing : string(x)
+_f64_or_nothing(x) = isnothing(x) ? nothing : _parse_number(x)
+_int_or_nothing(x) = isnothing(x) ? nothing : Int(x)

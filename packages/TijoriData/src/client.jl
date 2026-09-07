@@ -80,8 +80,8 @@ function start!(sidecar_dir::String=_SIDECAR_DIR[]; port::Int=3001, timeout::Int
     )
     _PROCESS[] = proc
 
-    # Ensure the sidecar is killed when Julia exits, even without an explicit stop!()
-    atexit(() -> process_running(proc) && kill(proc))
+    # Ensure the sidecar is shut down when Julia exits, even without an explicit stop!()
+    atexit(() -> is_running() && stop!())
 
     # Poll until the health endpoint responds
     deadline = time() + timeout
@@ -110,7 +110,7 @@ SIGTERM if the HTTP call fails (e.g. sidecar is unresponsive).
 function stop!()
     # Graceful shutdown via HTTP — lets Node.js clean up Playwright/Chromium
     try
-        HTTP.post("$(_BASE[])/shutdown"; readtimeout=5, connect_timeout=2)
+        HTTP.post("$(_BASE[])/shutdown"; request_timeout=5, connect_timeout=2)
         sleep(0.3)
     catch
         # Sidecar unreachable — fall through to kill()
@@ -132,7 +132,7 @@ Return true if the sidecar is reachable on the configured port.
 """
 function is_running()::Bool
     try
-        r = HTTP.get("$(_BASE[])/health"; readtimeout=3, connect_timeout=2)
+        r = HTTP.get("$(_BASE[])/health"; request_timeout=3, connect_timeout=2)
         return r.status == 200
     catch
         return false
@@ -153,7 +153,7 @@ function _get(path::String; params...)::Any
         qs = join(["$(k)=$(HTTP.escapeuri(string(v)))" for (k, v) in params], "&")
         url = "$url?$qs"
     end
-    resp = HTTP.get(url; readtimeout=60, connect_timeout=5)
+    resp = HTTP.get(url; request_timeout=60, connect_timeout=5)
     body = JSON3.read(resp.body)
     body.ok || throw(TijoriError(string(body.error)))
     return body.data
@@ -169,7 +169,7 @@ function _post(path::String, payload::Dict)::Any
     url  = "$(_BASE[])$path"
     body = JSON3.write(payload)
     resp = HTTP.post(url, ["Content-Type" => "application/json"], body;
-                     readtimeout=120, connect_timeout=5)
+                     request_timeout=120, connect_timeout=5)
     parsed = JSON3.read(resp.body)
     parsed.ok || throw(TijoriError(string(parsed.error)))
     return parsed.data

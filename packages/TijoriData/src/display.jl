@@ -9,16 +9,13 @@ DataFrames use their own built-in display — no overrides needed there.
 # ── SearchResult ──────────────────────────────────────────────────────────────
 
 function Base.show(io::IO, r::SearchResult)
-    sym = isnothing(r.symbol) ? "" : " [$(r.symbol)]"
-    print(io, r.name, sym, "  →  slug: \"", r.slug, "\"")
+    print(io, r.name, "  →  slug: \"", r.slug, "\"")
 end
 
 function Base.show(io::IO, ::MIME"text/plain", results::Vector{SearchResult})
     println(io, length(results), " result(s):")
     for (i, r) in enumerate(results)
-        sym = isnothing(r.symbol) ? "" : "  [$(r.symbol)]"
-        exch = isnothing(r.exchange) ? "" : " · $(r.exchange)"
-        println(io, "  $i. $(r.name)$sym$exch")
+        println(io, "  $i. $(r.name)")
         println(io, "     slug: \"$(r.slug)\"")
     end
 end
@@ -26,11 +23,13 @@ end
 # ── CompanyOverview ───────────────────────────────────────────────────────────
 
 function Base.show(io::IO, ::MIME"text/plain", ov::CompanyOverview)
-    sym  = isnothing(ov.symbol) ? "" : " [$(ov.symbol)]"
-    bank = ov.is_banking ? " · Banking/NBFC" : ""
+    sym   = isnothing(ov.symbol)    ? "" : " [$(ov.symbol)]"
+    short = isnothing(ov.shortname) ? "" : " ($(ov.shortname))"
+    bank  = ov.is_banking ? " · Banking/NBFC" : ""
+    ind   = isnothing(ov.ind_code)  ? "" : "  |  sector: $(ov.ind_code)"
     println(io, "─"^60)
-    println(io, ov.company, sym, bank)
-    println(io, "slug: $(ov.slug)", isnothing(ov.company_id) ? "" : "  |  id: $(ov.company_id)")
+    println(io, ov.company, sym, short, bank)
+    println(io, "slug: $(ov.slug)", isnothing(ov.company_id) ? "" : "  |  id: $(ov.company_id)", ind)
     println(io, "─"^60)
 
     # Market cap & PE
@@ -62,7 +61,8 @@ end
 
 function Base.show(io::IO, ov::CompanyOverview)
     sym = isnothing(ov.symbol) ? "" : " [$(ov.symbol)]"
-    print(io, "CompanyOverview(", ov.company, sym, ")")
+    ind = isnothing(ov.ind_code) ? "" : ", $(ov.ind_code)"
+    print(io, "CompanyOverview(", ov.company, sym, ind, ")")
 end
 
 # ── KnowledgeBase ─────────────────────────────────────────────────────────────

@@ -28,16 +28,12 @@ One company returned from `search_company`. Use `slug` as the identifier for
 all subsequent data calls.
 
 Fields:
-- `name`     — display name (e.g. "HDFC Bank Ltd")
-- `slug`     — URL slug used as the company identifier (e.g. "hdfc-bank-limited")
-- `symbol`   — NSE/BSE ticker if available
-- `exchange` — "NSE", "BSE", or nothing
+- `name` — display name (e.g. "HDFC Bank Ltd")
+- `slug` — URL slug used as the company identifier (e.g. "hdfc-bank-limited")
 """
 struct SearchResult
     name::String
     slug::String
-    symbol::Union{String, Nothing}
-    exchange::Union{String, Nothing}
 end
 
 # ── Company overview ──────────────────────────────────────────────────────────
@@ -51,8 +47,10 @@ identifiers. Returned by `get_overview(slug)`.
 Fields:
 - `slug`       — company identifier
 - `company`    — full company name
-- `symbol`     — NSE ticker
+- `shortname`  — abbreviated name used in Tijori UI (e.g. "Infosys")
+- `symbol`     — NSE ticker (e.g. "INFY")
 - `company_id` — Tijori's internal numeric ID (needed for `get_fund_flow`)
+- `ind_code`   — Tijori industry/sector code
 - `is_banking` — true for banks and NBFCs (affects which ratios are relevant)
 - `mcap`       — market cap in ₹ Cr (nothing if unavailable)
 - `pe`         — trailing P/E ratio (nothing for banks, loss-making companies)
@@ -62,8 +60,10 @@ Fields:
 struct CompanyOverview
     slug::String
     company::String
+    shortname::Union{String, Nothing}
     symbol::Union{String, Nothing}
     company_id::Union{Int, Nothing}
+    ind_code::Union{String, Nothing}
     is_banking::Bool
     mcap::Union{Float64, Nothing}
     pe::Union{Float64, Nothing}
