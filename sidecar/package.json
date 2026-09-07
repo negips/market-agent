@@ -1,0 +1,17 @@
+{
+  "name": "tijori-sidecar",
+  "version": "1.0.0",
+  "description": "HTTP sidecar that wraps tijori-finance-mcp tools for consumption by the Julia trading agent",
+  "type": "module",
+  "main": "server_http.js",
+  "scripts": {
+    "start": "node server_http.js",
+    "setup-tijori": "cd tijori-finance-mcp && node setup.js"
+  },
+  "dependencies": {
+    "express": "^4.19.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -1,0 +1,22 @@
+# ── Node.js / sidecar ────────────────────────────────────────────────────────
+node_modules/
+sidecar/tijori-finance-mcp/output/session.json   # Tijori auth session — never commit
+sidecar/tijori-finance-mcp/output/               # discovered endpoints + session cache
+.env
+
+# ── Julia ─────────────────────────────────────────────────────────────────────
+Manifest.toml
+*.jl.cov
+*.jl.mem
+/coverage/
+.julia/
+
+# ── Editors ───────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*~
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db

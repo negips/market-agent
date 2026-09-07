@@ -1,0 +1,20 @@
+name = "TijoriData"
+uuid = "a4f3c8d2-7e91-4b5f-8c3a-9d2b6e4f1a7c"
+authors = ["Trading Agent Project"]
+version = "0.1.0"
+
+[deps]
+DataFrames = "a93c6f00-e57d-5684-b466-afe8fa294f15"
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+HTTP = "cd3eb016-35fb-5094-929b-558a96fad6f3"
+JSON3 = "0f8b85d8-7e73-4b43-9b55-4152c6f0462e"
+OrderedCollections = "bac558e1-5e72-5ebc-8fee-abe8a469f55d"
+PrettyTables = "08abe8d2-0d0c-5749-adfa-8a2ac140af0d"
+
+[compat]
+DataFrames = "1"
+HTTP = "1"
+JSON3 = "1"
+OrderedCollections = "1"
+PrettyTables = "2"
+julia = "1.9"
