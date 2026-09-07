@@ -229,14 +229,21 @@
   </header>
   <p class="subtitle">Self-improving trading agent for Indian stock markets (NSE/BSE) — built in Julia</p>
 
-  <!-- Overall progress -->
+  <!-- Progress bars -->
   <div class="overall">
-    <h2>Overall Setup Progress</h2>
+    <h2>Setup Progress</h2>
     <div class="bar-row">
       <div class="bar-track">
         <div class="bar-fill" id="overall-bar" style="width: 0%"></div>
       </div>
       <div class="bar-label" id="overall-label">0%</div>
+    </div>
+    <h2 style="margin-top: 16px;">Development Progress</h2>
+    <div class="bar-row">
+      <div class="bar-track">
+        <div class="bar-fill" id="dev-bar" style="width: 0%; background: linear-gradient(90deg, #a855f7, #ec4899);"></div>
+      </div>
+      <div class="bar-label" id="dev-label">0%</div>
     </div>
   </div>
 
@@ -682,8 +689,9 @@
     document.getElementById(id).classList.toggle('collapsed');
   }
 
-  // ── Counts & progress bar ─────────────────────────────────────────────────
+  // ── Counts & progress bars ────────────────────────────────────────────────
   function updateAll() {
+    // Setup checklist
     const sections = ['s-system', 's-repo', 's-tijori', 's-julia', 's-keys'];
     let totalDone = 0, totalAll = 0;
 
@@ -704,6 +712,13 @@
     const pct = totalAll === 0 ? 0 : Math.round(totalDone / totalAll * 100);
     document.getElementById('overall-bar').style.width = pct + '%';
     document.getElementById('overall-label').textContent = pct + '%';
+
+    // Development roadmap
+    const allDots  = document.querySelectorAll('.status-dot');
+    const doneDots = document.querySelectorAll('.status-dot.done');
+    const devPct   = allDots.length === 0 ? 0 : Math.round(doneDots.length / allDots.length * 100);
+    document.getElementById('dev-bar').style.width = devPct + '%';
+    document.getElementById('dev-label').textContent = `${doneDots.length} / ${allDots.length} modules`;
   }
 
   // ── Init ──────────────────────────────────────────────────────────────────
