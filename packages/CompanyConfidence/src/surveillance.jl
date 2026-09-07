@@ -46,11 +46,12 @@ function surveillance_check(symbol::Union{String, Nothing})::SurveillanceResult
 
     sym = uppercase(strip(symbol))
     try
-        # Establish NSE session to get cookies
+        # Establish NSE session to get cookies (force HTTP/1.1 — NSE's HTTP/2 uses server push)
         init_resp = HTTP.get(_NSE_BASE;
             headers = [_NSE_HEADERS..., "Accept" => "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8"],
             request_timeout = 15,
             connect_timeout = 8,
+            version = v"1.1",
         )
         cookies = join(
             [c.name * "=" * c.value for c in HTTP.cookies(init_resp)],
@@ -78,7 +79,7 @@ end
 # ── Internal ──────────────────────────────────────────────────────────────────
 
 function _nse_fetch(url::String, headers::Vector)::Vector
-    resp = HTTP.get(url; headers=headers, request_timeout=15, connect_timeout=8)
+    resp = HTTP.get(url; headers=headers, request_timeout=15, connect_timeout=8, version=v"1.1")
     body = JSON3.read(resp.body)
     return get(body, :data, [])
 end

@@ -13,14 +13,14 @@ traditional COGS, receivables, and fixed-asset conventions.
 # in order. The first matching row wins.
 
 const _REVENUE    = String["net revenue", "revenue from operations", "total revenue",
-                            "net sales", "total income from operations"]
+                            "net sales", "total income from operations", "sales"]
 const _COGS       = String["cost of revenue", "cost of goods sold", "material cost",
                             "raw material", "direct cost", "cost of sales",
                             "purchase of stock", "cost of production"]
 const _SGA        = String["selling and distribution", "selling & distribution",
                             "sg&a", "general and administrative",
                             "employee benefit", "personnel cost", "staff cost",
-                            "selling, general"]
+                            "selling, general", "employee cost"]
 const _DEPR       = String["depreciation and amortization", "depreciation & amortization",
                             "depreciation", "amortization"]
 const _NET_INCOME = String["profit after tax", "net profit", "pat",
@@ -30,13 +30,14 @@ const _RECV       = String["trade receivables", "debtors", "accounts receivable"
 const _CURR_ASSETS = String["total current assets", "current assets"]
 const _PPE        = String["net fixed assets", "property, plant", "tangible assets",
                             "net block", "fixed assets"]
-const _TOT_ASSETS = String["total assets", "balance sheet total"]
+const _TOT_ASSETS = String["total assets", "balance sheet total", "assets"]
 const _LTD        = String["long term borrowings", "long-term borrowings",
-                            "non-current borrowings", "long term debt"]
+                            "non-current borrowings", "long term debt",
+                            "secured loans", "unsecured loans"]
 const _CURR_LIAB  = String["total current liabilities", "current liabilities"]
 const _CFO        = String["cash from operations", "net cash from operating",
                             "operating cash flow", "cash generated from operations",
-                            "cash flow from operations"]
+                            "cash flow from operations", "cash from operating"]
 
 # ── Main function ─────────────────────────────────────────────────────────────
 
@@ -79,8 +80,8 @@ function beneish_score(pl::DataFrame, bs::DataFrame, cf::DataFrame;
                              nothing, nothing, String[])
     end
 
-    # Identify year columns (newest first)
-    pl_years = _sorted_year_cols(pl)
+    # Identify annual year columns (newest first); excludes mid-year quarterly columns
+    pl_years = _annual_year_cols(pl)
     if length(pl_years) < 2
         return BeneishResult(true, nothing, nothing, false,
                              nothing, nothing, nothing, nothing,
@@ -119,7 +120,7 @@ function beneish_score(pl::DataFrame, bs::DataFrame, cf::DataFrame;
     cl_t1  = _extract(bs, _CURR_LIAB,  yt1, "Current Liabilities (prior)", miss)
 
     # ── CF items — match to yt by year number ─────────────────────────────────
-    cf_years = _sorted_year_cols(cf)
+    cf_years = _annual_year_cols(cf)
     cfo_t = if isempty(cf_years)
         push!(miss, "CFO")
         nothing

@@ -154,6 +154,7 @@ end
         @test !f1.is_flagged
         @test isempty(f1.flags)
 
+        # Keyword fallback: plain dict without structured format
         f2 = forensics_check(Dict{String,Any}("audit_opinion" => "Qualified"))
         @test f2.is_flagged
         @test length(f2.flags) == 1
@@ -161,6 +162,23 @@ end
         f3 = forensics_check(Dict{String,Any}("overall_rating" => "Excellent",
                                                "revenue_trend"  => "Positive"))
         @test !f3.is_flagged
+
+        # Tijori structured format: flag=3 → red flags
+        structured = Dict{String,Any}(
+            "count" => Dict{String,Any}("green" => 1, "red" => 1, "neutral" => 0, "total" => 2),
+            "data"  => [Dict{String,Any}(
+                "name" => "Accounting & Shareholding",
+                "factories" => [
+                    Dict{String,Any}("name" => "Debt", "sentence" => "Company might have issues servicing its debt", "flag" => 3),
+                    Dict{String,Any}("name" => "Pledge", "sentence" => "No significant pledge", "flag" => 1),
+                ]
+            )]
+        )
+        f4 = forensics_check(structured)
+        @test f4.is_flagged
+        @test length(f4.flags) == 1
+        @test occursin("Debt", f4.flags[1])
+        @test occursin("might have issues", f4.flags[1])
     end
 
     @testset "Score aggregation" begin

@@ -12,14 +12,39 @@ DataFrames produced by TijoriData.get_financials and get_shareholding.
     _sorted_year_cols(df) -> Vector{Symbol}
 
 Return all non-metric column names sorted descending by year (most recent
-first). Handles column naming conventions from Tijori: "FY24", "Mar 24",
-"Q4FY24", "Dec 24", etc. — all are sorted by the trailing 2-digit year number.
+first). Handles column naming conventions from Tijori: "FY24", "Mar'24",
+"Q4FY24", "Dec 24", etc. — sorted by the trailing 2-digit year number.
 """
 function _sorted_year_cols(df::DataFrame)::Vector{Symbol}
     cols = [c for c in propertynames(df) if c != :metric]
     isempty(cols) && return cols
     key(c) = (m = match(r"(\d{2,4})$", string(c)); isnothing(m) ? 0 : parse(Int, m.captures[1]) % 100)
     sort(cols, by=key, rev=true)
+end
+
+"""
+    _annual_year_cols(df) -> Vector{Symbol}
+
+Like `_sorted_year_cols` but filters to fiscal-year-end columns only.
+
+Indian companies end their fiscal year in March. Tijori labels annual columns
+as "Mar'24", "Mar'23", etc. and may append the latest quarter ("Jun'26",
+"Sep'25") to the same DataFrame. Quarterly columns skew Beneish calculations
+because they represent partial-year figures.
+
+Falls back to all columns if no annual pattern is found (e.g. "FY24" format).
+"""
+function _annual_year_cols(df::DataFrame)::Vector{Symbol}
+    all_cols = _sorted_year_cols(df)
+    isempty(all_cols) && return all_cols
+
+    # Prefer March-ending fiscal year columns ("Mar'24") or FY-prefixed ("FY24")
+    annual = filter(all_cols) do c
+        s = string(c)
+        startswith(s, "Mar") || startswith(s, "FY")
+    end
+
+    isempty(annual) ? all_cols : annual
 end
 
 """

@@ -12,7 +12,7 @@ const _CF_NET_INCOME = String["profit after tax", "net profit", "pat",
                                "profit for the year", "net income", "net earnings"]
 const _CF_CFO        = String["cash from operations", "net cash from operating",
                                "operating cash flow", "cash generated from operations",
-                               "cash flow from operations"]
+                               "cash flow from operations", "cash from operating"]
 
 # ── Main function ─────────────────────────────────────────────────────────────
 
@@ -38,8 +38,8 @@ r.avg_accrual_ratio # positive → earnings > cash consistently
 ```
 """
 function cashflow_check(pl::DataFrame, cf::DataFrame)::CashflowResult
-    pl_years = _sorted_year_cols(pl)
-    cf_years = _sorted_year_cols(cf)
+    pl_years = _annual_year_cols(pl)
+    cf_years = _annual_year_cols(cf)
 
     # Match years by column name; fall back to matching by position (year index)
     common_years = _match_years(pl_years, cf_years)
