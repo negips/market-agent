@@ -10,52 +10,56 @@ Public API:
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-const _PORT    = Ref{Int}(3001)
-const _PROCESS = Ref{Union{Base.Process, Nothing}}(nothing)
-const _BASE    = Ref{String}("http://localhost:3001")
+const _PORT        = Ref{Int}(3001)
+const _PROCESS     = Ref{Union{Base.Process, Nothing}}(nothing)
+const _BASE        = Ref{String}("http://localhost:3001")
+const _SIDECAR_DIR = Ref{String}("/home/prabal/workstation/git/Agents/sidecar")
 
 function _update_base!()
     _BASE[] = "http://localhost:$(_PORT[])"
 end
 
 """
-    configure!(; port=3001)
+    configure!(; port=3001, sidecar_dir=nothing)
 
-Change the port used to reach the sidecar. Call this if you started the
-sidecar on a non-default port or if it is running externally (e.g. on another
-machine). Does not start or stop any process.
+Change the port and/or sidecar directory. Call this if you move the repo or
+start the sidecar on a non-default port. Does not start or stop any process.
 
 # Example
 ```julia
+TijoriData.configure!(sidecar_dir="/new/path/to/sidecar")
 TijoriData.configure!(port=3002)
 ```
 """
-function configure!(; port::Int=3001)
+function configure!(; port::Int=_PORT[], sidecar_dir::Union{String,Nothing}=nothing)
     _PORT[] = port
     _update_base!()
+    isnothing(sidecar_dir) || (_SIDECAR_DIR[] = sidecar_dir)
     return nothing
 end
 
 # ── Sidecar lifecycle ─────────────────────────────────────────────────────────
 
 """
-    start!(sidecar_dir; port=3001, timeout=30)
+    start!(sidecar_dir=_SIDECAR_DIR[]; port=3001, timeout=30)
 
 Launch the Tijori HTTP sidecar as a background subprocess.
 
-`sidecar_dir` must be the directory containing `server_http.js` and the
-`tijori-finance-mcp/` clone. The sidecar's `npm install` must have been run
-and the Tijori session must have been set up (`node setup.js`) beforehand.
+`sidecar_dir` defaults to the path stored in `_SIDECAR_DIR` (currently
+hardcoded to the repo location — update via `configure!(sidecar_dir=...)` if
+you move the repo). The directory must contain `server_http.js` and the
+`tijori-finance-mcp/` clone, with `npm install` and `node setup.js` already run.
 
 Blocks until the sidecar responds on the health endpoint or `timeout` seconds
 elapse (the first call opens a Chromium browser, which takes a few seconds).
 
 # Example
 ```julia
-TijoriData.start!("/path/to/Agents/sidecar")
+TijoriData.start!()                           # uses default path
+TijoriData.start!("/custom/path/to/sidecar")  # override for this call only
 ```
 """
-function start!(sidecar_dir::String; port::Int=3001, timeout::Int=30)
+function start!(sidecar_dir::String=_SIDECAR_DIR[]; port::Int=3001, timeout::Int=30)
     configure!(port=port)
 
     if is_running()
