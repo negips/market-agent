@@ -100,6 +100,7 @@ function fetch_tijori_mktcap()::DataFrame
         for r in d.results
             push!(all_rows, Dict(
                 "symbol_tijori" => string(get(r, Symbol("nse symbol"), "")),
+                "slug"          => string(get(r, :slug, "")),
                 "sector"        => string(get(r, :segment, "")),
                 "market_cap_cr" => Float64(get(r, :latestMcapCr, 0.0)),
             ))
@@ -116,6 +117,7 @@ function fetch_tijori_mktcap()::DataFrame
     sort!(df, :market_cap_cr, rev=true)
     unique!(df, :symbol_tijori)
     rename!(df, :symbol_tijori => :symbol)
+    df.slug = string.(df.slug)
     @info "  $(nrow(df)) NSE companies with market cap from Tijori"
     return df
 end
@@ -154,6 +156,7 @@ function write_json(df::DataFrame, date::Date, out_dir::String)
             "isin"          => row.isin,
             "face_value"    => ismissing(row.face_value)    ? nothing : row.face_value,
             "listed_since"  => row.listed_since,
+            "slug"          => ismissing(row.slug)          ? nothing : (isempty(row.slug) ? nothing : row.slug),
             "sector"        => ismissing(row.sector)        ? nothing : row.sector,
             "close_price"   => ismissing(row.close_price)   ? nothing : row.close_price,
             "volume"        => ismissing(row.volume)        ? nothing : row.volume,
