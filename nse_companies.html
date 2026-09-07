@@ -201,6 +201,37 @@
     .vol-val   { font-size: 12.5px; color: var(--muted); }
     .na        { color: #d1d5db; font-size: 12px; }
 
+    /* ── Confidence badge ── */
+    .conf-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 12.5px;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 6px;
+      cursor: default;
+      white-space: nowrap;
+    }
+    .conf-pass  { background: #d1fae5; color: #065f46; }
+    .conf-warn  { background: #fef3c7; color: #92400e; }
+    .conf-fail  { background: #fee2e2; color: #991b1b; }
+    .conf-na    { background: #f3f4f6; color: #9ca3af; font-weight: 400; }
+    .conf-dot   { width: 6px; height: 6px; border-radius: 50%; }
+    .conf-pass .conf-dot { background: #10b981; }
+    .conf-warn .conf-dot { background: #f59e0b; }
+    .conf-fail .conf-dot { background: #ef4444; }
+
+    /* ── Signal mini-bars ── */
+    .signals { display: flex; gap: 3px; margin-top: 3px; }
+    .sig-dot {
+      width: 8px; height: 8px; border-radius: 2px;
+      title: attr(data-label);
+    }
+    .sig-ok   { background: #10b981; }
+    .sig-bad  { background: #ef4444; }
+    .sig-na   { background: #e5e7eb; }
+
     /* ── Pagination ── */
     .pagination {
       display: flex;
@@ -304,6 +335,7 @@
         <th data-col="close_price" style="text-align:right"     >Close ₹<span class="sort-icon">⬍</span></th>
         <th data-col="market_cap_cr" style="text-align:right"   >Mkt Cap (₹ Cr)<span class="sort-icon">⬍</span></th>
         <th data-col="volume"      style="text-align:right"     >Volume<span class="sort-icon">⬍</span></th>
+        <th data-col="conf_score"  style="text-align:center"    >Confidence<span class="sort-icon">⬍</span></th>
       </tr>
     </thead>
     <tbody id="tbody"></tbody>
@@ -346,7 +378,7 @@ let searchTerm  = '';
   if (!data) {
     showError(
       'Could not load company data.',
-      'Run <code>julia scripts/generate_nse_list.jl</code> from the repo root — it embeds the data directly into this file so it works without a server.'
+      'Serve this folder over HTTP, e.g.:<br><code>./serve.sh</code> or <code>python3 -m http.server 8080</code>'
     );
     return;
   }
@@ -407,7 +439,8 @@ function updateSortUI() {
     th.style.textAlign = ['close_price','market_cap_cr','volume'].includes(th.dataset.col) ? 'right' : '';
   });
   const labels = { name:'Company Name', symbol:'Symbol', sector:'Sector',
-                   close_price:'Close Price', market_cap_cr:'Market Cap', volume:'Volume' };
+                   close_price:'Close Price', market_cap_cr:'Market Cap',
+                   volume:'Volume', conf_score:'Confidence Score' };
   document.getElementById('sort-label').innerHTML =
     `Sorted by <strong>${labels[sortCol]} ${sortDir === 'asc' ? '↑' : '↓'}</strong>`;
 }
@@ -426,10 +459,11 @@ function applyFilterAndSort() {
     filtered = allData;
   }
 
-  // Sort
-  const numCols = new Set(['close_price','market_cap_cr','volume','face_value']);
+  // Sort — conf_score is nested inside c.confidence.score
+  const numCols = new Set(['close_price','market_cap_cr','volume','face_value','conf_score']);
   filtered = [...filtered].sort((a, b) => {
-    let va = a[sortCol], vb = b[sortCol];
+    let va = sortCol === 'conf_score' ? (a.confidence?.score ?? -Infinity) : a[sortCol];
+    let vb = sortCol === 'conf_score' ? (b.confidence?.score ?? -Infinity) : b[sortCol];
     if (numCols.has(sortCol)) {
       va = va ?? -Infinity; vb = vb ?? -Infinity;
       return sortDir === 'asc' ? va - vb : vb - va;
@@ -471,6 +505,7 @@ function renderPage() {
       `<td class="num">${fmtPrice(c.close_price)}</td>`,
       `<td class="num">${fmtMcap(c.market_cap_cr)}</td>`,
       `<td class="num vol-val">${fmtVol(c.volume)}</td>`,
+      `<td style="text-align:center">${fmtConf(c.confidence)}</td>`,
     ].join('');
     frag.appendChild(tr);
   });
@@ -531,6 +566,44 @@ function fmtVol(v) {
   if (v >= 1e7) return `${(v/1e7).toFixed(1)}Cr`;
   if (v >= 1e5) return `${(v/1e5).toFixed(1)}L`;
   return vol.format(v);
+}
+
+function fmtConf(conf) {
+  if (!conf) return '<span class="na">—</span>';
+  const score = conf.score;
+  const cls   = score >= 70 ? 'conf-pass' : score >= 40 ? 'conf-warn' : 'conf-fail';
+  const label = conf.pass ? 'PASS' : 'FAIL';
+
+  // 5 signal dots: beneish, cashflow, pledging, forensics, surveillance
+  const sigDot = (flagged, na) => {
+    const c = na ? 'sig-na' : flagged ? 'sig-bad' : 'sig-ok';
+    return `<span class="sig-dot ${c}"></span>`;
+  };
+  const b  = conf.beneish;
+  const bDot = !b.applicable ? sigDot(false, true)
+             : b.is_flagged  ? sigDot(true,  false)
+                              : sigDot(false, false);
+  const signals = [
+    bDot,
+    sigDot(conf.cashflow.is_flagged,    false),
+    sigDot(conf.pledging.is_flagged,    conf.pledging.quarters_used === 0),
+    sigDot(conf.forensics.is_flagged,   !conf.forensics.flag_count && conf.forensics.flag_count !== 0),
+    sigDot(conf.surveillance.is_flagged, !conf.surveillance.checked),
+  ].join('');
+
+  const title = [
+    `Score: ${score}/100 (${label})`,
+    `Beneish: ${b.applicable ? (b.m_score != null ? b.m_score.toFixed(2) : 'N/A') : 'N/A (bank)'}`,
+    `CFO<NI: ${conf.cashflow.years_cfo_lt_ni}/${conf.cashflow.years_checked} years`,
+    `Pledging: ${conf.pledging.latest_pct != null ? conf.pledging.latest_pct.toFixed(1)+'%' : 'N/R'} (${conf.pledging.trend})`,
+    `Forensics: ${conf.forensics.flag_count} flag(s)`,
+    `Surveillance: ${conf.surveillance.checked ? (conf.surveillance.on_asm?'ASM ':'')+(conf.surveillance.on_gsm?'GSM':'') || 'clean' : 'unchecked'}`,
+  ].join('\n');
+
+  return `<span class="conf-badge ${cls}" title="${esc(title)}">
+    <span class="conf-dot"></span>${score}
+    <div class="signals">${signals}</div>
+  </span>`;
 }
 
 function esc(s) {
