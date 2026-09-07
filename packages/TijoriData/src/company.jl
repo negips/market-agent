@@ -52,6 +52,16 @@ function get_overview(slug::String)::CompanyOverview
         Dict{String, Any}(string(k) => v for (k, v) in pairs(raw.quick_look)) :
         nothing
 
+    # JS metadata may omit mcap/pe; fall back to the DOM-scraped ratios string
+    mcap = _f64_or_nothing(get(raw, :mcap, nothing))
+    if isnothing(mcap)
+        mcap = _ratio_number(ratios, ("Market Cap", "Mkt Cap", "Market Capitalization"))
+    end
+    pe = _f64_or_nothing(get(raw, :pe, nothing))
+    if isnothing(pe)
+        pe = _ratio_number(ratios, ("P/E", "PE", "Price to Earnings", "P/E Ratio"))
+    end
+
     return CompanyOverview(
         slug,
         string(get(raw, :company, slug)),
@@ -60,8 +70,8 @@ function get_overview(slug::String)::CompanyOverview
         _int_or_nothing(get(raw, :company_id, nothing)),
         _str_or_nothing(get(raw, :ind_code, nothing)),
         Bool(get(raw, :is_banking, false)),
-        _f64_or_nothing(get(raw, :mcap, nothing)),
-        _f64_or_nothing(get(raw, :pe, nothing)),
+        mcap,
+        pe,
         ratios,
         forensics,
     )
@@ -130,3 +140,11 @@ end
 _str_or_nothing(x) = isnothing(x) ? nothing : string(x)
 _f64_or_nothing(x) = isnothing(x) ? nothing : _parse_number(x)
 _int_or_nothing(x) = isnothing(x) ? nothing : Int(x)
+
+# Search ratios dict for the first key that matches one of the candidates, parse its value.
+function _ratio_number(ratios::OrderedDict{String,String}, candidates::Tuple)::Union{Float64,Nothing}
+    for key in keys(ratios)
+        any(c -> occursin(c, key), candidates) && return _parse_number(ratios[key])
+    end
+    return nothing
+end

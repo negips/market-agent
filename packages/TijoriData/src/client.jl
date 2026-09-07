@@ -185,11 +185,21 @@ Returns nothing for missing values ("—", "", null).
 """
 function _parse_number(s)::Union{Float64, Nothing}
     isnothing(s) && return nothing
-    str = string(s)
+    str = strip(string(s))
     str in ("—", "-", "", "null") && return nothing
+    str = replace(str, "₹" => "")
+    str = strip(str)
+    # Handle Indian unit suffixes: "1.52 L Cr" = 1.52 lakh crore, "15,234 Cr" = as-is
+    multiplier = 1.0
+    if endswith(str, " L Cr") || endswith(str, "L Cr")
+        multiplier = 1e5
+        str = strip(str[1:end - (endswith(str, " L Cr") ? 5 : 4)])
+    elseif endswith(str, " Cr") || endswith(str, "Cr")
+        str = strip(str[1:end - (endswith(str, " Cr") ? 3 : 2)])
+    end
     cleaned = replace(str, "," => "", "%" => "")
     v = tryparse(Float64, cleaned)
-    return v
+    return isnothing(v) ? nothing : v * multiplier
 end
 
 """
