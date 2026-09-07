@@ -21,7 +21,7 @@ function search_company(query::String)::Vector{SearchResult}
     raw = _get("/search"; q=query)
     return [
         SearchResult(
-            string(get(r, :shortname, get(r, :company, ""))),
+            string(get(r, :name, get(r, :shortname, get(r, :company, "")))),
             string(r.slug),
             _str_or_nothing(get(r, :symbol, nothing)),
             _str_or_nothing(get(r, :exchange, nothing)),
