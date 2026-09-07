@@ -76,6 +76,9 @@ function start!(sidecar_dir::String; port::Int=3001, timeout::Int=30)
     )
     _PROCESS[] = proc
 
+    # Ensure the sidecar is killed when Julia exits, even without an explicit stop!()
+    atexit(() -> process_running(proc) && kill(proc))
+
     # Poll until the health endpoint responds
     deadline = time() + timeout
     while time() < deadline
