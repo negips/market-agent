@@ -14,6 +14,8 @@ layer. Eventually self-improves by analyzing its own trade history.
 market-agent/
 ├── sidecar/                        # Node.js HTTP wrapper around Tijori Finance
 │   ├── server_http.js              # Express server — exposes Tijori tools as REST
+│   ├── kite_setup.js               # Daily Kite Connect OAuth + TOTP token acquisition
+│   ├── decode_migration_qr.js      # One-off: decode Google Authenticator migration QR
 │   ├── package.json
 │   └── tijori-finance-mcp/         # clone from github.com/LaZZy0v0/tijori-finance-mcp
 │
@@ -80,8 +82,13 @@ cd ..
 npm install                              # installs express
 ```
 
-Start the sidecar:
+## Daily session workflow
+
 ```bash
+# 1. Acquire a fresh Kite Connect access token (valid for the trading day)
+node sidecar/kite_setup.js              # reads .env, writes sidecar/kite_session.json
+
+# 2. Start the sidecar (Julia will start it automatically via start!(), but you can also run it manually)
 node sidecar/server_http.js              # default port 3001
 PORT=3002 node sidecar/server_http.js   # custom port
 ```
@@ -140,12 +147,19 @@ Self-improvement loop        ← analyze outcomes, retrain parameters
 
 ## Environment variables
 
+Store all secrets in a `.env` file in the repo root (gitignored). `kite_setup.js`
+loads it automatically; Julia code can use `DotEnv.jl` or read it manually.
+
 | Variable | Used by | Purpose |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | LLM calls (planned) | Claude API authentication |
-| `KITE_API_KEY` | BrokerClient (planned) | Zerodha Kite Connect app key |
-| `KITE_API_SECRET` | BrokerClient (planned) | Zerodha Kite Connect app secret |
-| `KITE_ACCESS_TOKEN` | BrokerClient (planned) | Daily session token (regenerated each trading day via OAuth) |
-| `TIJORI_EMAIL` | sidecar setup | Tijori Finance login |
-| `TIJORI_PASSWORD` | sidecar setup | Tijori Finance login |
+| `KITE_API_KEY` | `kite_setup.js`, BrokerClient | Zerodha Kite Connect app key |
+| `KITE_API_SECRET` | `kite_setup.js`, BrokerClient | Zerodha Kite Connect app secret |
+| `KITE_USER_ID` | `kite_setup.js` | Zerodha client ID (e.g. AB1234) |
+| `KITE_PASSWORD` | `kite_setup.js` | Zerodha login password |
+| `KITE_TOTP_SECRET` | `kite_setup.js` | Base32 TOTP secret from authenticator app |
 | `PORT` | sidecar | HTTP port (default 3001) |
+
+The daily access token is **not** an env var — `kite_setup.js` writes it to
+`sidecar/kite_session.json` (gitignored), and the sidecar exposes it at
+`GET /kite/token`. The token is valid for one trading day.

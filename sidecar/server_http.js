@@ -353,6 +353,7 @@ app.listen(PORT, () => {
   console.log(`Tijori sidecar listening on http://localhost:${PORT}`);
   console.log('Endpoints:');
   console.log('  GET  /health');
+  console.log('  GET  /kite/token');
   console.log('  GET  /search?q=');
   console.log('  GET  /overview?slug=');
   console.log('  GET  /financials?slug=&type=<pl|bs|cf|ratios|quarterly>');
@@ -369,6 +370,6 @@ app.listen(PORT, () => {
   console.log('  GET  /markets?tab=<headline|niche|conglomerates>');
   console.log('  GET  /sector?tjiid=');
   console.log('  GET  /conglomerate?tjiid=');
-  console.log('  GET  /macro');
-  console.log('  GET  /rawmaterials');
+  console.log('  GET  /macro?tab=<industry|demand|gdp>');
+  console.log('  GET  /rawmaterials?tab=<chemicals|spreads|metals>');
 });

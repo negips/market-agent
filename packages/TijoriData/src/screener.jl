@@ -1,11 +1,18 @@
 """
-Stock screener: query Tijori's 5,000+ company database by financial metrics.
+Stock screener and market/macro data functions.
 
-Three modes:
-  screen_companies(query)           — free-form query string
-  screen_companies(preset="...")    — pre-built Tijori screen by name
-  list_screens()                    — browse available pre-built screens
-  search_fields(query)              — discover ~1,500 available metric names
+Screener modes:
+  screen_companies(query)         — free-form filter string
+  screen_companies(preset="...")  — pre-built Tijori screen by name
+  list_screens()                  — browse available pre-built screens
+  search_fields(query)            — discover ~1,500 available metric names
+
+Market/macro:
+  get_markets(tab)                — index performance (headline/niche/conglomerates)
+  get_sector_stocks(tjiid)        — all stocks in a Tijori niche sector
+  get_conglomerate_stocks(tjiid)  — all companies in a business group
+  get_macro_indicators(tab)       — India macro data (industry/demand/gdp)
+  get_raw_materials(tab)          — commodity prices (chemicals/spreads/metals)
 """
 
 """
@@ -161,7 +168,7 @@ end
     get_sector_stocks(tjiid) -> DataFrame
 
 All stocks inside a Tijori niche sector index. `tjiid` comes from
-`get_markets(type="niche")`.
+`get_markets("niche")`.
 
 Returns a DataFrame with slug, market-cap weight, and price return columns.
 """
@@ -173,7 +180,7 @@ end
     get_conglomerate_stocks(tjiid) -> DataFrame
 
 All companies inside a business group (e.g. Tata, Reliance). `tjiid` comes
-from `get_markets(type="conglomerates")`.
+from `get_markets("conglomerates")`.
 """
 function get_conglomerate_stocks(tjiid::String)::DataFrame
     _raw_to_df(_get("/conglomerate"; tjiid=tjiid))

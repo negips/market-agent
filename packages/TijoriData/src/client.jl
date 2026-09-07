@@ -2,10 +2,10 @@
 HTTP client for the Tijori sidecar and sidecar lifecycle management.
 
 Public API:
-  start!(sidecar_dir)  — launch the Node.js sidecar as a subprocess
-  stop!()              — terminate the sidecar subprocess
-  is_running()         — check whether the sidecar is reachable
-  configure!(; port)   — change port without restarting (if sidecar is external)
+  start!(sidecar_dir)           — launch the Node.js sidecar as a subprocess
+  stop!()                       — terminate the sidecar subprocess
+  is_running()                  — check whether the sidecar is reachable
+  configure!(; port, sidecar_dir) — change port or path without restarting
 """
 
 # ── Configuration ─────────────────────────────────────────────────────────────
@@ -13,7 +13,7 @@ Public API:
 const _PORT        = Ref{Int}(3001)
 const _PROCESS     = Ref{Union{Base.Process, Nothing}}(nothing)
 const _BASE        = Ref{String}("http://localhost:3001")
-const _SIDECAR_DIR = Ref{String}("/home/prabal/workstation/git/Agents/sidecar")
+const _SIDECAR_DIR = Ref{String}(joinpath(@__DIR__, "..", "..", "..", "sidecar"))
 
 function _update_base!()
     _BASE[] = "http://localhost:$(_PORT[])"
@@ -45,10 +45,10 @@ end
 
 Launch the Tijori HTTP sidecar as a background subprocess.
 
-`sidecar_dir` defaults to the path stored in `_SIDECAR_DIR` (currently
-hardcoded to the repo location — update via `configure!(sidecar_dir=...)` if
-you move the repo). The directory must contain `server_http.js` and the
-`tijori-finance-mcp/` clone, with `npm install` and `node setup.js` already run.
+`sidecar_dir` defaults to `sidecar/` relative to the package root, resolved at
+load time. Override once via `configure!(sidecar_dir=...)` if you move the repo.
+The directory must contain `server_http.js` and the `tijori-finance-mcp/` clone,
+with `npm install` and `node setup.js` already run.
 
 Blocks until the sidecar responds on the health endpoint or `timeout` seconds
 elapse (the first call opens a Chromium browser, which takes a few seconds).

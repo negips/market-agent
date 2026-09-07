@@ -3,7 +3,7 @@ Financial statement and operational metrics functions.
 
 All financial data is returned as DataFrames with `metric` as the first column
 and fiscal period labels (e.g. "FY24", "Sep 24") as subsequent columns.
-Numeric values are Float64; missing/unavailable values are `missing`.
+Numeric values are Float64; unavailable values are `nothing` (not `missing`).
 """
 
 # ── Financial statements ──────────────────────────────────────────────────────

@@ -41,8 +41,9 @@ npm install                              # installs express
 
 ```julia
 using TijoriData
-TijoriData.configure!(port=3001)   # point at the running sidecar
-is_running()                        # true if reachable
+TijoriData.configure!(port=3001)                         # non-default port
+TijoriData.configure!(sidecar_dir="/other/path/sidecar") # moved repo
+is_running()                                              # true if reachable
 ```
 """
 module TijoriData
