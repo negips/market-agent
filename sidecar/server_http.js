@@ -113,6 +113,7 @@ app.get('/kite/token', route(_req => {
     user_id:      session.user_id,
     user_name:    session.user_name,
     valid_for:    session.date,
+    acquired_at:  session.acquired_at,
   };
 }));
 

@@ -167,7 +167,7 @@ async function main() {
   const { access_token, user_id, user_name } = body.data;
   const today = new Date().toISOString().slice(0, 10);
 
-  const session = { access_token, user_id, user_name, api_key: API_KEY, date: today };
+  const session = { access_token, user_id, user_name, api_key: API_KEY, date: today, acquired_at: new Date().toISOString() };
   fs.writeFileSync(SESSION_FILE, JSON.stringify(session, null, 2));
 
   console.log(`\nKite session saved for ${user_name} (${user_id})`);
