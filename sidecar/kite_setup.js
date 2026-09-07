@@ -83,6 +83,18 @@ function generateTOTP(base32Secret) {
   return code.toString().padStart(6, '0');
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function localISOString(d) {
+  const pad  = n => String(n).padStart(2, '0');
+  const off  = -d.getTimezoneOffset();
+  const sign = off >= 0 ? '+' : '-';
+  const hh   = pad(Math.floor(Math.abs(off) / 60));
+  const mm   = pad(Math.abs(off) % 60);
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}` +
+         `T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}${sign}${hh}:${mm}`;
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -167,7 +179,7 @@ async function main() {
   const { access_token, user_id, user_name } = body.data;
   const today = new Date().toISOString().slice(0, 10);
 
-  const session = { access_token, user_id, user_name, api_key: API_KEY, date: today, acquired_at: new Date().toISOString() };
+  const session = { access_token, user_id, user_name, api_key: API_KEY, date: today, acquired_at: localISOString(new Date()) };
   fs.writeFileSync(SESSION_FILE, JSON.stringify(session, null, 2));
 
   console.log(`\nKite session saved for ${user_name} (${user_id})`);
