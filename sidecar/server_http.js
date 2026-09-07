@@ -28,7 +28,6 @@ import express from 'express';
 // because ES module relative paths are always relative to the importing file.
 
 import { searchCompany }                      from './tijori-finance-mcp/src/tools/search.js';
-import { resolveCompanyIds }                  from './tijori-finance-mcp/src/tools/search.js';
 import {
   getCompanyOverview,
   getKnowledgeBase,
@@ -108,11 +107,15 @@ app.get('/overview', route(req => {
 /**
  * GET /resolve?slug=<company-slug>
  * Resolve a slug to its numeric company_id (needed for fund flow).
+ * Extracts company_id from the overview page — same data, no extra load.
  */
-app.get('/resolve', route(req => {
+app.get('/resolve', route(async req => {
   const { slug } = req.query;
   if (!slug) throw new Error('Missing required query param: slug');
-  return resolveCompanyIds(slug);
+  const overview = await getCompanyOverview(slug);
+  const company_id = overview?.company_id ?? null;
+  if (!company_id) throw new Error(`Could not resolve company_id for slug: ${slug}`);
+  return { slug, company_id };
 }));
 
 // ── Financials ────────────────────────────────────────────────────────────────
