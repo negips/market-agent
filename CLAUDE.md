@@ -20,7 +20,8 @@ market-agent/
 │   └── tijori-finance-mcp/         # clone from github.com/LaZZy0v0/tijori-finance-mcp
 │
 ├── packages/                       # standalone Julia packages
-│   └── TijoriData/                 # Tijori Finance data client
+│   ├── TijoriData/                 # Tijori Finance data client
+│   └── CompanyConfidence/          # Fraud/reliability scoring module
 │       ├── Project.toml
 │       ├── src/
 │       │   ├── TijoriData.jl       # module entry point + exports
@@ -65,11 +66,47 @@ packages with `See also: [OtherModule](@ref)`.
 ## Package dependency rules
 
 ```
-TijoriData       — data only, no trading logic
-CompanyConfidence — depends on TijoriData (planned)
+TijoriData        — data only, no trading logic
+CompanyConfidence — depends on TijoriData
 EarningsPredictor — depends on TijoriData + CompanyConfidence (planned)
 Backtest          — no external data dependencies (planned)
 BrokerClient      — Kite Connect REST wrapper (planned)
+```
+
+## Using CompanyConfidence
+
+```julia
+using CompanyConfidence, TijoriData
+
+TijoriData.start!()                          # start the sidecar first
+
+report = analyze("infosys-limited")
+report.score   # 0–100 (higher = more trustworthy)
+report.pass    # false if score < 40
+
+# Individual signals
+report.beneish.m_score          # Beneish M-Score (nothing for banks)
+report.cashflow.years_cfo_lt_ni # years where CFO < Net Income
+report.pledging.latest_pct      # promoter pledging %
+report.forensics.flags          # Tijori red flags
+report.surveillance.on_asm      # on NSE ASM list?
+
+# Signals work standalone (no sidecar needed)
+pl = get_financials("satyam-computer-services-limited", :pl)
+bs = get_financials("satyam-computer-services-limited", :bs)
+cf = get_financials("satyam-computer-services-limited", :cf)
+beneish_score(pl, bs, cf)
+
+# Skip NSE network check (offline / testing)
+analyze("yes-bank-limited"; check_surveillance=false)
+```
+
+### One-time setup for CompanyConfidence
+
+```julia
+using Pkg
+Pkg.develop(path="packages/TijoriData")
+Pkg.develop(path="packages/CompanyConfidence")
 ```
 
 ## Sidecar setup (one-time)
