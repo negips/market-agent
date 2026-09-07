@@ -449,6 +449,83 @@
     </div>
   </div>
 
+  <!-- ── SESSION WORKFLOW ─────────────────────────────────── -->
+  <h2 style="font-size:13px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin: 40px 0 16px;">Session Workflow</h2>
+
+  <div class="section">
+    <div class="section-header" style="cursor:default;">
+      <span class="section-icon">▶</span>
+      <span class="section-title">Every Julia session</span>
+    </div>
+    <div class="section-body">
+      <div class="roadmap-item">
+        <div style="font-family:var(--mono); font-size:13px; color:var(--accent); min-width:28px;">1</div>
+        <div style="flex:1">
+          <div class="roadmap-name">Load the module</div>
+          <div class="roadmap-sub" style="font-family:var(--mono);">using TijoriData</div>
+        </div>
+      </div>
+      <div class="roadmap-item">
+        <div style="font-family:var(--mono); font-size:13px; color:var(--accent); min-width:28px;">2</div>
+        <div style="flex:1">
+          <div class="roadmap-name">Start the sidecar</div>
+          <div class="roadmap-sub" style="font-family:var(--mono);">TijoriData.start!()</div>
+          <div class="roadmap-sub">Launches Node.js + Chromium in the background. Wait for the "started on port 3001" message.</div>
+        </div>
+      </div>
+      <div class="roadmap-item">
+        <div style="font-family:var(--mono); font-size:13px; color:var(--accent); min-width:28px;">3</div>
+        <div style="flex:1">
+          <div class="roadmap-name">Use TijoriData normally</div>
+          <div class="roadmap-sub" style="font-family:var(--mono);">search_company("...") &nbsp;·&nbsp; get_overview("...") &nbsp;·&nbsp; get_financials("...", :pl)</div>
+        </div>
+      </div>
+      <div class="roadmap-item">
+        <div style="font-family:var(--mono); font-size:13px; color:var(--accent); min-width:28px;">4</div>
+        <div style="flex:1">
+          <div class="roadmap-name">Stop the sidecar when done</div>
+          <div class="roadmap-sub" style="font-family:var(--mono);">TijoriData.stop!()</div>
+          <div class="roadmap-sub">Also runs automatically when Julia exits.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-header" style="cursor:default;">
+      <span class="section-icon">⚙</span>
+      <span class="section-title">One-off commands</span>
+    </div>
+    <div class="section-body">
+      <div class="roadmap-item">
+        <div style="flex:1">
+          <div class="roadmap-name">Re-authenticate Tijori session</div>
+          <div class="roadmap-sub">Run when TijoriData calls start returning errors (session expired)</div>
+          <div class="roadmap-sub" style="font-family:var(--mono); margin-top:4px;">cd /home/prabal/workstation/git/Agents/sidecar/tijori-finance-mcp &amp;&amp; node discover.js --reauth</div>
+        </div>
+      </div>
+      <div class="roadmap-item">
+        <div style="flex:1">
+          <div class="roadmap-name">Update TijoriData after a git pull</div>
+          <div class="roadmap-sub" style="font-family:var(--mono);">using Pkg; Pkg.update("TijoriData") &nbsp;→&nbsp; restart Julia</div>
+        </div>
+      </div>
+      <div class="roadmap-item">
+        <div style="flex:1">
+          <div class="roadmap-name">Change sidecar path (if repo moves)</div>
+          <div class="roadmap-sub" style="font-family:var(--mono);">TijoriData.configure!(sidecar_dir="/new/path/to/sidecar")</div>
+          <div class="roadmap-sub">Call this before start!() in that session.</div>
+        </div>
+      </div>
+      <div class="roadmap-item">
+        <div style="flex:1">
+          <div class="roadmap-name">Check sidecar is reachable</div>
+          <div class="roadmap-sub" style="font-family:var(--mono);">TijoriData.is_running() &nbsp;# returns true/false</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- ── DEVELOPMENT ROADMAP ───────────────────────────── -->
   <h2 style="font-size:13px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin: 40px 0 16px;">Development Roadmap</h2>
 
