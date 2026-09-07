@@ -419,8 +419,8 @@
       <span class="chevron">▾</span>
     </div>
     <div class="section-body">
-      <label class="item" onclick="toggle(this)">
-        <input type="checkbox">
+      <label class="item checked" onclick="toggle(this)">
+        <input type="checkbox" checked>
         <div class="checkbox"></div>
         <div class="item-content">
           <div class="item-label">Anthropic API key obtained</div>
@@ -428,8 +428,8 @@
           <span class="item-tag tag-once">one-time</span>
         </div>
       </label>
-      <label class="item" onclick="toggle(this)">
-        <input type="checkbox">
+      <label class="item checked" onclick="toggle(this)">
+        <input type="checkbox" checked>
         <div class="checkbox"></div>
         <div class="item-content">
           <div class="item-label">Zerodha Kite Connect API key obtained</div>
@@ -437,12 +437,12 @@
           <span class="item-tag tag-once">one-time</span>
         </div>
       </label>
-      <label class="item" onclick="toggle(this)">
-        <input type="checkbox">
+      <label class="item checked" onclick="toggle(this)">
+        <input type="checkbox" checked>
         <div class="checkbox"></div>
         <div class="item-content">
           <div class="item-label">Environment variables configured</div>
-          <div class="item-note">ANTHROPIC_API_KEY, KITE_API_KEY, KITE_API_SECRET in .env (gitignored)</div>
+          <div class="item-note">ANTHROPIC_API_KEY, KITE_API_KEY, KITE_API_SECRET, KITE_USER_ID, KITE_PASSWORD, KITE_TOTP_SECRET in .env (gitignored)</div>
           <span class="item-tag tag-once">one-time</span>
         </div>
       </label>
@@ -461,12 +461,21 @@
       <div class="roadmap-item">
         <div style="font-family:var(--mono); font-size:13px; color:var(--accent); min-width:28px;">1</div>
         <div style="flex:1">
+          <div class="roadmap-name">Get fresh Kite token</div>
+          <div class="roadmap-sub" style="font-family:var(--mono);">node sidecar/kite_setup.js</div>
+          <div class="roadmap-sub">Fully automated — logs in, generates TOTP, saves token. Takes ~10s.</div>
+          <span class="item-tag tag-recurring" style="margin-top:4px; display:inline-block;">run each trading day</span>
+        </div>
+      </div>
+      <div class="roadmap-item">
+        <div style="font-family:var(--mono); font-size:13px; color:var(--accent); min-width:28px;">2</div>
+        <div style="flex:1">
           <div class="roadmap-name">Load the module</div>
           <div class="roadmap-sub" style="font-family:var(--mono);">using TijoriData</div>
         </div>
       </div>
       <div class="roadmap-item">
-        <div style="font-family:var(--mono); font-size:13px; color:var(--accent); min-width:28px;">2</div>
+        <div style="font-family:var(--mono); font-size:13px; color:var(--accent); min-width:28px;">3</div>
         <div style="flex:1">
           <div class="roadmap-name">Start the sidecar</div>
           <div class="roadmap-sub" style="font-family:var(--mono);">TijoriData.start!()</div>
@@ -474,14 +483,14 @@
         </div>
       </div>
       <div class="roadmap-item">
-        <div style="font-family:var(--mono); font-size:13px; color:var(--accent); min-width:28px;">3</div>
+        <div style="font-family:var(--mono); font-size:13px; color:var(--accent); min-width:28px;">4</div>
         <div style="flex:1">
-          <div class="roadmap-name">Use TijoriData normally</div>
+          <div class="roadmap-name">Use the agent normally</div>
           <div class="roadmap-sub" style="font-family:var(--mono);">search_company("...") &nbsp;·&nbsp; get_overview("...") &nbsp;·&nbsp; get_financials("...", :pl)</div>
         </div>
       </div>
       <div class="roadmap-item">
-        <div style="font-family:var(--mono); font-size:13px; color:var(--accent); min-width:28px;">4</div>
+        <div style="font-family:var(--mono); font-size:13px; color:var(--accent); min-width:28px;">5</div>
         <div style="flex:1">
           <div class="roadmap-name">Stop the sidecar when done</div>
           <div class="roadmap-sub" style="font-family:var(--mono);">TijoriData.stop!()</div>
@@ -502,6 +511,13 @@
           <div class="roadmap-name">Re-authenticate Tijori session</div>
           <div class="roadmap-sub">Run when TijoriData calls start returning errors (session expired)</div>
           <div class="roadmap-sub" style="font-family:var(--mono); margin-top:4px;">cd /home/prabal/workstation/git/Agents/sidecar/tijori-finance-mcp &amp;&amp; node discover.js --reauth</div>
+        </div>
+      </div>
+      <div class="roadmap-item">
+        <div style="flex:1">
+          <div class="roadmap-name">Extract TOTP secret from migration QR</div>
+          <div class="roadmap-sub">If you need to re-extract from a Google Authenticator migration QR code image</div>
+          <div class="roadmap-sub" style="font-family:var(--mono); margin-top:4px;">node sidecar/decode_migration_qr.js /path/to/qr.png</div>
         </div>
       </div>
       <div class="roadmap-item">
@@ -550,6 +566,15 @@
         <div style="flex:1">
           <div class="roadmap-name">Tijori Sidecar</div>
           <div class="roadmap-sub">Node.js HTTP wrapper around tijori-finance-mcp Playwright tools</div>
+        </div>
+        <span class="roadmap-status done">complete</span>
+      </div>
+
+      <div class="roadmap-item">
+        <div class="status-dot done"></div>
+        <div style="flex:1">
+          <div class="roadmap-name">Kite OAuth + TOTP</div>
+          <div class="roadmap-sub">Automated daily Kite Connect login — TOTP generated natively, token saved to kite_session.json</div>
         </div>
         <span class="roadmap-status done">complete</span>
       </div>
