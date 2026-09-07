@@ -2,6 +2,7 @@
 node_modules/
 sidecar/tijori-finance-mcp/output/session.json   # Tijori auth session — never commit
 sidecar/tijori-finance-mcp/output/               # discovered endpoints + session cache
+sidecar/kite_session.json                        # Kite access token — never commit
 .env
 
 # ── Julia ─────────────────────────────────────────────────────────────────────

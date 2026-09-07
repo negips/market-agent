@@ -20,7 +20,12 @@
  *   { ok: false, error: "<message>" }
  */
 
-import express from 'express';
+import express        from 'express';
+import { readFileSync } from 'fs';
+import path             from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ── Tijori tool imports ───────────────────────────────────────────────────────
 // All paths are relative to THIS file. The tijori-finance-mcp clone must live
@@ -87,6 +92,30 @@ app.get('/health', (_req, res) => {
  * Gracefully shut down the sidecar. Node.js handles Playwright/Chromium
  * cleanup before exiting, which kill() from the parent cannot guarantee.
  */
+/**
+ * GET /kite/token
+ * Returns today's Kite Connect access token from kite_session.json.
+ * Run `node kite_setup.js` once per trading day to refresh it.
+ */
+app.get('/kite/token', route(_req => {
+  let session;
+  try {
+    session = JSON.parse(readFileSync(path.join(__dirname, 'kite_session.json'), 'utf8'));
+  } catch {
+    throw new Error('No Kite session found. Run: node sidecar/kite_setup.js');
+  }
+  const today = new Date().toISOString().slice(0, 10);
+  if (session.date !== today) {
+    throw new Error(`Kite session expired (was for ${session.date}). Run: node sidecar/kite_setup.js`);
+  }
+  return {
+    access_token: session.access_token,
+    user_id:      session.user_id,
+    user_name:    session.user_name,
+    valid_for:    session.date,
+  };
+}));
+
 app.post('/shutdown', (_req, res) => {
   res.json({ ok: true, data: { status: 'shutting down' } });
   setTimeout(() => process.exit(0), 100);
