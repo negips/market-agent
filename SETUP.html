@@ -249,8 +249,8 @@
       <span class="chevron">▾</span>
     </div>
     <div class="section-body">
-      <label class="item" onclick="toggle(this)">
-        <input type="checkbox">
+      <label class="item checked" onclick="toggle(this)">
+        <input type="checkbox" checked>
         <div class="checkbox"></div>
         <div class="item-content">
           <div class="item-label">Julia 1.9+ installed</div>
@@ -258,8 +258,8 @@
           <span class="item-tag tag-once">one-time</span>
         </div>
       </label>
-      <label class="item" onclick="toggle(this)">
-        <input type="checkbox">
+      <label class="item checked" onclick="toggle(this)">
+        <input type="checkbox" checked>
         <div class="checkbox"></div>
         <div class="item-content">
           <div class="item-label">Node.js 18+ installed</div>
@@ -267,8 +267,8 @@
           <span class="item-tag tag-once">one-time</span>
         </div>
       </label>
-      <label class="item" onclick="toggle(this)">
-        <input type="checkbox">
+      <label class="item checked" onclick="toggle(this)">
+        <input type="checkbox" checked>
         <div class="checkbox"></div>
         <div class="item-content">
           <div class="item-label">Git installed</div>
@@ -287,8 +287,8 @@
       <span class="chevron">▾</span>
     </div>
     <div class="section-body">
-      <label class="item" onclick="toggle(this)">
-        <input type="checkbox">
+      <label class="item checked" onclick="toggle(this)">
+        <input type="checkbox" checked>
         <div class="checkbox"></div>
         <div class="item-content">
           <div class="item-label">Cloned market-agent</div>
@@ -296,8 +296,8 @@
           <span class="item-tag tag-once">one-time</span>
         </div>
       </label>
-      <label class="item" onclick="toggle(this)">
-        <input type="checkbox">
+      <label class="item checked" onclick="toggle(this)">
+        <input type="checkbox" checked>
         <div class="checkbox"></div>
         <div class="item-content">
           <div class="item-label">GitHub CLI (gh) authenticated</div>
@@ -316,8 +316,8 @@
       <span class="chevron">▾</span>
     </div>
     <div class="section-body">
-      <label class="item" onclick="toggle(this)">
-        <input type="checkbox">
+      <label class="item checked" onclick="toggle(this)">
+        <input type="checkbox" checked>
         <div class="checkbox"></div>
         <div class="item-content">
           <div class="item-label">Tijori Finance account created</div>
@@ -325,8 +325,8 @@
           <span class="item-tag tag-once">one-time</span>
         </div>
       </label>
-      <label class="item" onclick="toggle(this)">
-        <input type="checkbox">
+      <label class="item checked" onclick="toggle(this)">
+        <input type="checkbox" checked>
         <div class="checkbox"></div>
         <div class="item-content">
           <div class="item-label">tijori-finance-mcp cloned into sidecar/</div>
@@ -334,8 +334,8 @@
           <span class="item-tag tag-once">one-time</span>
         </div>
       </label>
-      <label class="item" onclick="toggle(this)">
-        <input type="checkbox">
+      <label class="item checked" onclick="toggle(this)">
+        <input type="checkbox" checked>
         <div class="checkbox"></div>
         <div class="item-content">
           <div class="item-label">tijori-finance-mcp dependencies installed</div>
@@ -343,8 +343,8 @@
           <span class="item-tag tag-once">one-time</span>
         </div>
       </label>
-      <label class="item" onclick="toggle(this)">
-        <input type="checkbox">
+      <label class="item checked" onclick="toggle(this)">
+        <input type="checkbox" checked>
         <div class="checkbox"></div>
         <div class="item-content">
           <div class="item-label">Tijori session authenticated</div>
@@ -352,8 +352,8 @@
           <span class="item-tag tag-recurring">re-run when session expires</span>
         </div>
       </label>
-      <label class="item" onclick="toggle(this)">
-        <input type="checkbox">
+      <label class="item checked" onclick="toggle(this)">
+        <input type="checkbox" checked>
         <div class="checkbox"></div>
         <div class="item-content">
           <div class="item-label">Sidecar express dependency installed</div>
@@ -361,8 +361,8 @@
           <span class="item-tag tag-once">one-time</span>
         </div>
       </label>
-      <label class="item" onclick="toggle(this)">
-        <input type="checkbox">
+      <label class="item checked" onclick="toggle(this)">
+        <input type="checkbox" checked>
         <div class="checkbox"></div>
         <div class="item-content">
           <div class="item-label">Sidecar starts successfully</div>
@@ -381,8 +381,8 @@
       <span class="chevron">▾</span>
     </div>
     <div class="section-body">
-      <label class="item" onclick="toggle(this)">
-        <input type="checkbox">
+      <label class="item checked" onclick="toggle(this)">
+        <input type="checkbox" checked>
         <div class="checkbox"></div>
         <div class="item-content">
           <div class="item-label">TijoriData dependencies installed</div>
@@ -390,8 +390,8 @@
           <span class="item-tag tag-once">one-time</span>
         </div>
       </label>
-      <label class="item" onclick="toggle(this)">
-        <input type="checkbox">
+      <label class="item checked" onclick="toggle(this)">
+        <input type="checkbox" checked>
         <div class="checkbox"></div>
         <div class="item-content">
           <div class="item-label">TijoriData dev-installed in global environment</div>
@@ -551,14 +551,17 @@
 
   function load() {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return;
+    if (!raw) {
+      // First open — seed localStorage from the HTML defaults (pre-checked items)
+      save();
+      return;
+    }
     const checks = JSON.parse(raw);
     const items = [...document.querySelectorAll('.item')];
-    checks.forEach((checked, i) => {
-      if (items[i] && checked) {
-        items[i].classList.add('checked');
-        items[i].querySelector('input').checked = true;
-      }
+    items.forEach((item, i) => {
+      const checked = checks[i] ?? false;
+      item.classList.toggle('checked', checked);
+      item.querySelector('input').checked = checked;
     });
     const date = localStorage.getItem(STORAGE_KEY + '-date');
     if (date) document.getElementById('last-updated').textContent = date;
