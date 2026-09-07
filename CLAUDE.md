@@ -143,8 +143,9 @@ Self-improvement loop        ← analyze outcomes, retrain parameters
 | Variable | Used by | Purpose |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | LLM calls (planned) | Claude API authentication |
-| `KITE_API_KEY` | BrokerClient (planned) | Zerodha Kite Connect |
-| `KITE_ACCESS_TOKEN` | BrokerClient (planned) | Kite session token |
+| `ZERODHA_API_KEY` | BrokerClient (planned) | Zerodha Kite Connect app key |
+| `ZERODHA_API_SECRET` | BrokerClient (planned) | Zerodha Kite Connect app secret |
+| `ZERODHA_ACCESS_TOKEN` | BrokerClient (planned) | Daily session token (regenerated each trading day via OAuth) |
 | `TIJORI_EMAIL` | sidecar setup | Tijori Finance login |
 | `TIJORI_PASSWORD` | sidecar setup | Tijori Finance login |
 | `PORT` | sidecar | HTTP port (default 3001) |
