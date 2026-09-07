@@ -84,7 +84,7 @@ function start!(sidecar_dir::String; port::Int=3001, timeout::Int=30)
     while time() < deadline
         sleep(1)
         is_running() && begin
-            @info "Tijori sidecar started on port $port (pid $(proc.pid))"
+            @info "Tijori sidecar started on port $port"
             return nothing
         end
     end
