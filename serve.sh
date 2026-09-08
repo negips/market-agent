@@ -3,11 +3,11 @@
 # Run from the repo root.
 #
 # Usage:
-#   ./serve.sh                        # opens nse_companies.html on port 8080
-#   ./serve.sh SETUP.html             # opens SETUP.html on port 8080
-#   ./serve.sh nse_companies.html 9000  # custom port
+#   ./serve.sh                              # opens website/ on port 8080
+#   ./serve.sh website/setup.html           # open a specific page
+#   ./serve.sh website/companies.html 9000  # custom port
 
-FILE=${1:-nse_companies.html}
+FILE=${1:-website/index.html}
 PORT=${2:-8080}
 URL="http://localhost:$PORT/$FILE"
 

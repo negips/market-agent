@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NSE Companies — market-agent</title>
+  <link rel="stylesheet" href="assets/style.css">
+  <style>
+    .company-name { font-weight: 500; }
+    .company-meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
+    .sector-text  { font-size: 12.5px; color: var(--text-dim); }
+    .price-val    { font-weight: 500; }
+    .mcap-large   { color: var(--green); font-weight: 600; }
+    .mcap-val     { font-weight: 500; }
+    .vol-val      { font-size: 12.5px; color: var(--text-dim); }
+    td.rank       { text-align: center; color: var(--muted); font-size: 12px; width: 48px; }
+    .sort-label   { font-size: 12px; color: var(--muted); white-space: nowrap; }
+    .sort-label strong { color: var(--text-dim); }
+  </style>
+</head>
+<body>
+<script src="assets/nav.js"></script>
+
+<div class="main">
+  <div class="page-header">
+    <div class="page-title">NSE Companies <span id="hdr-date" style="font-size:15px; font-weight:400; color:var(--muted)"></span></div>
+    <div class="page-subtitle">All NSE-listed EQ-series companies with closing prices and confidence scores</div>
+  </div>
+
+  <div class="page-content">
+
+    <div class="stat-row" id="stat-row" style="display:none">
+      <div class="stat-card">
+        <div class="stat-label">Total Companies</div>
+        <div class="stat-value" id="s-total">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">With Confidence Score</div>
+        <div class="stat-value" id="s-scored">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Confidence PASS (≥40)</div>
+        <div class="stat-value" id="s-pass" style="color:var(--green)">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Data Date</div>
+        <div class="stat-value" id="s-date" style="font-size:16px">—</div>
+      </div>
+    </div>
+
+    <div class="controls-bar">
+      <div class="search-box">
+        <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="9" cy="9" r="6"/><path d="m15 15 4 4"/>
+        </svg>
+        <input type="search" id="search" placeholder="Search name, symbol, ISIN, sector…" autocomplete="off">
+        <button class="clear-btn" id="clear-btn">
+          <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+            <path d="M6 6l8 8M14 6l-8 8"/>
+          </svg>
+        </button>
+      </div>
+      <div class="sort-label" id="sort-label">Sorted by <strong>Company Name ↑</strong></div>
+      <div class="controls-right">
+        <div class="controls-meta" id="stats-meta">Loading…</div>
+      </div>
+    </div>
+
+    <div class="tbl-wrap">
+      <div id="state-area" class="state-overlay">
+        <div class="spinner"></div>
+        <div>Loading company data…</div>
+      </div>
+      <table class="data-table" id="main-table" style="display:none">
+        <thead>
+          <tr>
+            <th class="no-sort">#</th>
+            <th data-col="name"          class="sorted" data-dir="asc">Company <span class="sort-icon">▲</span></th>
+            <th data-col="symbol"                                      >Symbol <span class="sort-icon">⬍</span></th>
+            <th data-col="sector"                                      >Sector <span class="sort-icon">⬍</span></th>
+            <th data-col="close_price"   style="text-align:right"     >Close ₹ <span class="sort-icon">⬍</span></th>
+            <th data-col="market_cap_cr" style="text-align:right"     >Mkt Cap <span class="sort-icon">⬍</span></th>
+            <th data-col="volume"        style="text-align:right"     >Volume <span class="sort-icon">⬍</span></th>
+            <th data-col="conf_score"    style="text-align:center"    >Confidence <span class="sort-icon">⬍</span></th>
+          </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+    <div class="pagination" id="pagination"></div>
+
+  </div>
+</div>
+
+<script src="assets/utils.js"></script>
+<script>
+const PAGE_SIZE = 75;
+let allData = [], filtered = [], sortCol = 'name', sortDir = 'asc', currentPage = 1, searchTerm = '';
+
+(async () => {
+  let data = null;
+  for (const url of ['../data/nse_companies_latest.json']) {
+    try { const r = await fetch(url); if (r.ok) { data = await r.json(); break; } } catch {}
+  }
+  if (!data) {
+    showError(
+      document.getElementById('state-area'),
+      'Could not load company data.',
+      'Run <code>./serve.sh</code> from the repo root, then open this page via localhost.'
+    );
+    return;
+  }
+
+  const scored = data.companies.filter(c => c.confidence);
+  const passed = scored.filter(c => c.confidence.pass);
+
+  document.getElementById('hdr-date').textContent = `— ${data.date}`;
+  document.getElementById('s-total').textContent  = data.total.toLocaleString('en-IN');
+  document.getElementById('s-scored').textContent = scored.length.toLocaleString('en-IN');
+  document.getElementById('s-pass').textContent   = passed.length.toLocaleString('en-IN');
+  document.getElementById('s-date').textContent   = data.date;
+  document.getElementById('stat-row').style.display = '';
+
+  allData = data.companies;
+  applyFilterAndSort();
+  document.getElementById('state-area').style.display = 'none';
+  document.getElementById('main-table').style.display = '';
+})();
+
+const searchInput = document.getElementById('search');
+const clearBtn    = document.getElementById('clear-btn');
+let debounce;
+
+searchInput.addEventListener('input', () => {
+  clearTimeout(debounce);
+  debounce = setTimeout(() => {
+    searchTerm = searchInput.value.trim().toLowerCase();
+    clearBtn.style.display = searchTerm ? 'block' : 'none';
+    currentPage = 1;
+    applyFilterAndSort();
+  }, 160);
+});
+
+clearBtn.addEventListener('click', () => {
+  searchInput.value = ''; clearBtn.style.display = 'none';
+  searchTerm = ''; currentPage = 1; applyFilterAndSort(); searchInput.focus();
+});
+
+document.querySelectorAll('thead th[data-col]').forEach(th => {
+  th.addEventListener('click', () => {
+    const col = th.dataset.col;
+    sortDir = (sortCol === col) ? (sortDir === 'asc' ? 'desc' : 'asc')
+                                : (['close_price','market_cap_cr','volume'].includes(col) ? 'desc' : 'asc');
+    sortCol = col;
+    currentPage = 1;
+    updateSortUI();
+    applyFilterAndSort();
+  });
+});
+
+function updateSortUI() {
+  document.querySelectorAll('thead th[data-col]').forEach(th => {
+    const active = th.dataset.col === sortCol;
+    th.classList.toggle('sorted', active);
+    th.querySelector('.sort-icon').textContent = active ? (sortDir === 'asc' ? '▲' : '▼') : '⬍';
+  });
+  const labels = { name:'Company Name', symbol:'Symbol', sector:'Sector',
+                   close_price:'Close Price', market_cap_cr:'Market Cap',
+                   volume:'Volume', conf_score:'Confidence Score' };
+  document.getElementById('sort-label').innerHTML =
+    `Sorted by <strong>${labels[sortCol]} ${sortDir === 'asc' ? '↑' : '↓'}</strong>`;
+}
+
+function applyFilterAndSort() {
+  filtered = searchTerm
+    ? allData.filter(c =>
+        (c.name   || '').toLowerCase().includes(searchTerm) ||
+        (c.symbol || '').toLowerCase().includes(searchTerm) ||
+        (c.isin   || '').toLowerCase().includes(searchTerm) ||
+        (c.sector || '').toLowerCase().includes(searchTerm))
+    : allData;
+
+  const numCols = new Set(['close_price','market_cap_cr','volume','conf_score']);
+  filtered = [...filtered].sort((a, b) => {
+    let va = sortCol === 'conf_score' ? (a.confidence?.score ?? -Infinity) : (a[sortCol] ?? null);
+    let vb = sortCol === 'conf_score' ? (b.confidence?.score ?? -Infinity) : (b[sortCol] ?? null);
+    if (numCols.has(sortCol)) {
+      va = va ?? -Infinity; vb = vb ?? -Infinity;
+      return sortDir === 'asc' ? va - vb : vb - va;
+    }
+    va = (va || '').toLowerCase(); vb = (vb || '').toLowerCase();
+    return sortDir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
+  });
+
+  renderPage();
+  renderPagination(
+    document.getElementById('pagination'),
+    currentPage, Math.ceil(filtered.length / PAGE_SIZE),
+    p => { currentPage = p; applyFilterAndSort(); document.querySelector('.tbl-wrap').scrollIntoView({ behavior:'smooth', block:'start' }); }
+  );
+
+  const total = filtered.length, start = (currentPage-1)*PAGE_SIZE+1, end = Math.min(currentPage*PAGE_SIZE, total);
+  document.getElementById('stats-meta').innerHTML =
+    total === 0 ? 'No results' : `Showing <strong>${start}–${end}</strong> of <strong>${total.toLocaleString('en-IN')}</strong>`;
+}
+
+const tbody = document.getElementById('tbody');
+
+function renderPage() {
+  const start = (currentPage-1)*PAGE_SIZE;
+  const rows  = filtered.slice(start, start+PAGE_SIZE);
+  const frag  = document.createDocumentFragment();
+  rows.forEach((c, i) => {
+    const tr = document.createElement('tr');
+    const mcapCls = (c.market_cap_cr ?? 0) >= 10000 ? 'mcap-val mcap-large' : 'mcap-val';
+    tr.innerHTML = [
+      `<td class="rank">${start+i+1}</td>`,
+      `<td>
+         <div class="company-name">${esc(c.name)}</div>
+         <div class="company-meta">${esc(c.isin||'')}${c.listed_since ? ' · listed '+esc(c.listed_since) : ''}</div>
+       </td>`,
+      `<td><span class="symbol-chip">${esc(c.symbol)}</span></td>`,
+      `<td class="sector-text">${esc(c.sector||'—')}</td>`,
+      `<td class="num">${c.close_price != null ? `<span class="price-val">${fmtPrice(c.close_price)}</span>` : '<span class="na">—</span>'}</td>`,
+      `<td class="num"><span class="${mcapCls}">${fmtMcap(c.market_cap_cr)}</span></td>`,
+      `<td class="num vol-val">${fmtVol(c.volume)}</td>`,
+      `<td class="center">${fmtConf(c.confidence)}</td>`,
+    ].join('');
+    frag.appendChild(tr);
+  });
+  tbody.replaceChildren(frag);
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Watchlist — market-agent</title>
+  <link rel="stylesheet" href="assets/style.css">
+  <style>
+    .company-name { font-weight: 500; }
+    .company-meta { font-size: 11px; color: var(--muted); margin-top: 2px; font-family: var(--mono); }
+    .sector-text  { font-size: 12px; color: var(--text-dim); }
+    .date-cell    { white-space: nowrap; }
+    .date-val     { font-weight: 500; font-size: 13px; }
+    .purpose-text { font-size: 12px; color: var(--text-dim); }
+    td.rank       { text-align: center; color: var(--muted); font-size: 12px; width: 48px; }
+
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      padding: 80px 32px;
+      color: var(--muted);
+      text-align: center;
+    }
+    .empty-icon { font-size: 40px; }
+    .empty-msg  { font-size: 15px; font-weight: 500; color: var(--text-dim); }
+    .empty-hint { font-size: 13px; line-height: 1.8; max-width: 500px; }
+  </style>
+</head>
+<body>
+<script src="assets/nav.js"></script>
+
+<div class="main">
+  <div class="page-header">
+    <div class="page-title">Earnings Watchlist</div>
+    <div class="page-subtitle">Confidence-scored companies with earnings in the next 30 days</div>
+  </div>
+
+  <div class="page-content">
+
+    <div class="stat-row" id="stat-row" style="display:none">
+      <div class="stat-card">
+        <div class="stat-label">Companies</div>
+        <div class="stat-value" id="s-total">—</div>
+        <div class="stat-sub">reporting in window</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">High Confidence (≥70)</div>
+        <div class="stat-value" id="s-high" style="color:var(--green)">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Medium (40–69)</div>
+        <div class="stat-value" id="s-med" style="color:var(--yellow)">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Window</div>
+        <div class="stat-value" id="s-window" style="font-size:15px">—</div>
+        <div class="stat-sub" id="s-generated">—</div>
+      </div>
+    </div>
+
+    <div class="controls-bar" id="controls" style="display:none">
+      <div class="search-box">
+        <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="9" cy="9" r="6"/><path d="m15 15 4 4"/>
+        </svg>
+        <input type="search" id="search" placeholder="Search company or symbol…" autocomplete="off">
+        <button class="clear-btn" id="clear-btn">
+          <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+            <path d="M6 6l8 8M14 6l-8 8"/>
+          </svg>
+        </button>
+      </div>
+      <div class="filter-chips">
+        <button class="chip active" data-filter="all">All</button>
+        <button class="chip" data-filter="high">High ≥70</button>
+        <button class="chip" data-filter="med">Medium 40–69</button>
+        <button class="chip" data-filter="week">This week</button>
+      </div>
+      <div class="controls-right">
+        <div class="controls-meta" id="stats-meta"></div>
+      </div>
+    </div>
+
+    <div class="tbl-wrap">
+      <div id="state-area" class="state-overlay">
+        <div class="spinner"></div>
+        <div>Loading watchlist…</div>
+      </div>
+      <table class="data-table" id="main-table" style="display:none">
+        <thead>
+          <tr>
+            <th class="no-sort">#</th>
+            <th data-col="company" class="sorted" data-dir="asc">Company <span class="sort-icon">▲</span></th>
+            <th data-col="sector"                               >Sector <span class="sort-icon">⬍</span></th>
+            <th data-col="earnings_date"                        >Earnings Date <span class="sort-icon">⬍</span></th>
+            <th data-col="purpose"                              >Type <span class="sort-icon">⬍</span></th>
+            <th data-col="market_cap_cr" style="text-align:right">Mkt Cap <span class="sort-icon">⬍</span></th>
+            <th data-col="close_price"   style="text-align:right">Close ₹ <span class="sort-icon">⬍</span></th>
+            <th data-col="conf_score"    style="text-align:center">Confidence <span class="sort-icon">⬍</span></th>
+          </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+      <div id="empty-area" class="empty-state" style="display:none">
+        <div class="empty-icon">📅</div>
+        <div class="empty-msg">No companies match the current filters</div>
+        <div class="empty-hint">Try clearing the search or selecting a different confidence filter.</div>
+      </div>
+    </div>
+    <div class="pagination" id="pagination"></div>
+
+  </div>
+</div>
+
+<script src="assets/utils.js"></script>
+<script>
+const PAGE_SIZE = 50;
+let allData = [], filtered = [], sortCol = 'earnings_date', sortDir = 'asc',
+    currentPage = 1, searchTerm = '', activeFilter = 'all';
+
+(async () => {
+  let data = null;
+  try {
+    const r = await fetch('../data/earnings_watchlist_latest.json');
+    if (r.ok) data = await r.json();
+  } catch {}
+
+  if (!data) {
+    showError(
+      document.getElementById('state-area'),
+      'Watchlist data not found.',
+      `Generate it first:<br>
+       <code>julia --project=packages/EarningsCalendar scripts/generate_earnings_watchlist.jl</code><br>
+       Then serve via <code>./serve.sh</code>`
+    );
+    return;
+  }
+
+  const events = data.events || [];
+  const high   = events.filter(e => e.confidence?.score >= 70).length;
+  const med    = events.filter(e => e.confidence?.score >= 40 && e.confidence?.score < 70).length;
+
+  document.getElementById('s-total').textContent   = events.length.toLocaleString('en-IN');
+  document.getElementById('s-high').textContent    = high;
+  document.getElementById('s-med').textContent     = med;
+  document.getElementById('s-window').textContent  = `${data.window_days} days`;
+  document.getElementById('s-generated').textContent = 'as of ' + fmtDate(data.generated_at);
+  document.getElementById('stat-row').style.display  = '';
+  document.getElementById('controls').style.display  = '';
+
+  allData = events;
+  applyAll();
+  document.getElementById('state-area').style.display = 'none';
+  document.getElementById('main-table').style.display = '';
+})();
+
+// ── Search ──────────────────────────────────────────────────────────────────
+const searchInput = document.getElementById('search');
+const clearBtn    = document.getElementById('clear-btn');
+let debounce;
+
+searchInput.addEventListener('input', () => {
+  clearTimeout(debounce);
+  debounce = setTimeout(() => {
+    searchTerm = searchInput.value.trim().toLowerCase();
+    clearBtn.style.display = searchTerm ? 'block' : 'none';
+    currentPage = 1; applyAll();
+  }, 160);
+});
+clearBtn.addEventListener('click', () => {
+  searchInput.value = ''; clearBtn.style.display = 'none';
+  searchTerm = ''; currentPage = 1; applyAll(); searchInput.focus();
+});
+
+// ── Filter chips ─────────────────────────────────────────────────────────────
+document.querySelectorAll('.chip').forEach(chip => {
+  chip.addEventListener('click', () => {
+    document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+    chip.classList.add('active');
+    activeFilter = chip.dataset.filter;
+    currentPage  = 1;
+    applyAll();
+  });
+});
+
+// ── Sort headers ─────────────────────────────────────────────────────────────
+document.querySelectorAll('thead th[data-col]').forEach(th => {
+  th.addEventListener('click', () => {
+    const col = th.dataset.col;
+    sortDir = (sortCol === col) ? (sortDir === 'asc' ? 'desc' : 'asc')
+                                : (['market_cap_cr','close_price','conf_score'].includes(col) ? 'desc' : 'asc');
+    sortCol = col;
+    currentPage = 1;
+    document.querySelectorAll('thead th[data-col]').forEach(t => {
+      const active = t.dataset.col === sortCol;
+      t.classList.toggle('sorted', active);
+      t.querySelector('.sort-icon').textContent = active ? (sortDir === 'asc' ? '▲' : '▼') : '⬍';
+    });
+    applyAll();
+  });
+});
+
+// ── Apply filter + sort + render ─────────────────────────────────────────────
+function applyAll() {
+  let rows = allData;
+
+  // Search
+  if (searchTerm) {
+    rows = rows.filter(e =>
+      (e.company || '').toLowerCase().includes(searchTerm) ||
+      (e.symbol  || '').toLowerCase().includes(searchTerm)
+    );
+  }
+
+  // Chip filter
+  const today = new Date(); today.setHours(0,0,0,0);
+  if (activeFilter === 'high') rows = rows.filter(e => (e.confidence?.score ?? 0) >= 70);
+  else if (activeFilter === 'med')  rows = rows.filter(e => { const s = e.confidence?.score ?? 0; return s >= 40 && s < 70; });
+  else if (activeFilter === 'week') rows = rows.filter(e => daysUntil(e.earnings_date) <= 7);
+
+  // Sort
+  const numCols = new Set(['market_cap_cr','close_price','conf_score']);
+  filtered = [...rows].sort((a, b) => {
+    let va, vb;
+    if (sortCol === 'conf_score') {
+      va = a.confidence?.score ?? -Infinity;
+      vb = b.confidence?.score ?? -Infinity;
+    } else if (sortCol === 'earnings_date') {
+      va = a.earnings_date || '';
+      vb = b.earnings_date || '';
+      return sortDir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
+    } else if (numCols.has(sortCol)) {
+      va = a[sortCol] ?? -Infinity;
+      vb = b[sortCol] ?? -Infinity;
+    } else {
+      va = (a[sortCol] || '').toLowerCase();
+      vb = (b[sortCol] || '').toLowerCase();
+      return sortDir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
+    }
+    return sortDir === 'asc' ? va - vb : vb - va;
+  });
+
+  renderPage();
+
+  const total = filtered.length;
+  const start = (currentPage-1)*PAGE_SIZE+1;
+  const end   = Math.min(currentPage*PAGE_SIZE, total);
+  document.getElementById('stats-meta').innerHTML = total === 0 ? '' :
+    `Showing <strong>${start}–${end}</strong> of <strong>${total}</strong>`;
+
+  const emptyEl = document.getElementById('empty-area');
+  const tableEl = document.getElementById('main-table');
+  emptyEl.style.display = total === 0 ? '' : 'none';
+  tableEl.style.display = total === 0 ? 'none' : '';
+
+  renderPagination(
+    document.getElementById('pagination'),
+    currentPage, Math.ceil(total / PAGE_SIZE),
+    p => { currentPage = p; applyAll(); document.querySelector('.tbl-wrap').scrollIntoView({ behavior:'smooth', block:'start' }); }
+  );
+}
+
+const tbody = document.getElementById('tbody');
+
+function renderPage() {
+  const start = (currentPage-1)*PAGE_SIZE;
+  const rows  = filtered.slice(start, start+PAGE_SIZE);
+  const frag  = document.createDocumentFragment();
+
+  rows.forEach((e, i) => {
+    const tr   = document.createElement('tr');
+    const days = daysUntil(e.earnings_date);
+
+    tr.innerHTML = [
+      `<td class="rank">${start+i+1}</td>`,
+      `<td>
+         <div class="company-name">${esc(e.company)}</div>
+         <div class="company-meta"><span class="symbol-chip">${esc(e.symbol)}</span></div>
+       </td>`,
+      `<td class="sector-text">${esc(e.sector||'—')}</td>`,
+      `<td class="date-cell">
+         <div class="date-val">${fmtDate(e.earnings_date)}</div>
+         ${days >= 0 ? fmtDaysPill(days) : ''}
+       </td>`,
+      `<td class="purpose-text">${esc(e.purpose||'—')}</td>`,
+      `<td class="num">${fmtMcap(e.market_cap_cr)}</td>`,
+      `<td class="num">${e.close_price != null ? fmtPrice(e.close_price) : '<span class="na">—</span>'}</td>`,
+      `<td class="center">${fmtConf(e.confidence)}</td>`,
+    ].join('');
+    frag.appendChild(tr);
+  });
+  tbody.replaceChildren(frag);
+}
+</script>
+</body>
+</html>

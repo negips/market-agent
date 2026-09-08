@@ -12,6 +12,16 @@ layer. Eventually self-improves by analyzing its own trade history.
 
 ```
 market-agent/
+├── website/                        # browser-based UI (served via serve.sh)
+│   ├── index.html                  # redirects to watchlist.html
+│   ├── setup.html                  # environment checklist + roadmap
+│   ├── companies.html              # full NSE company list with confidence scores
+│   ├── watchlist.html              # upcoming earnings × confidence filter
+│   └── assets/
+│       ├── style.css               # shared design system (dark theme, sidebar layout)
+│       ├── nav.js                  # sidebar navigation component
+│       └── utils.js                # shared formatters (₹, confidence badges, dates)
+│
 ├── sidecar/                        # Node.js HTTP wrapper around Tijori Finance
 │   ├── server_http.js              # Express server — exposes Tijori tools as REST
 │   ├── kite_setup.js               # Daily Kite Connect OAuth + TOTP token acquisition
@@ -38,8 +48,9 @@ market-agent/
 │           └── runtests.jl         # unit tests (no sidecar) + integration tests
 │
 ├── scripts/                        # standalone Julia scripts (not packages)
-│   ├── generate_nse_list.jl        # builds data/nse_companies_latest.json
-│   └── run_confidence_checks.jl    # runs CompanyConfidence on top-N by market cap
+│   ├── generate_nse_list.jl           # builds data/nse_companies_latest.json
+│   ├── run_confidence_checks.jl       # runs CompanyConfidence on top-N by market cap
+│   └── generate_earnings_watchlist.jl # joins EarningsCalendar + confidence → watchlist JSON
 │
 ├── data/                           # generated artifacts (gitignored)
 │   ├── nse_companies_latest.json   # latest snapshot (stable name for HTML viewer)
@@ -228,18 +239,33 @@ julia --project=packages/CompanyConfidence scripts/run_confidence_checks.jl 2305
 
 Estimated time: ~6–15 seconds per company via the Tijori sidecar.
 
-### HTML viewer
+### generate_earnings_watchlist.jl
 
-`nse_companies.html` reads `data/nse_companies_latest.json` via `fetch()` and requires
-an HTTP server (blocked by browser same-origin policy on `file://`):
+Fetches upcoming NSE earnings events and joins them with confidence data from
+`nse_companies_latest.json`. Only companies with confidence ≥ 40 appear.
+Writes `data/earnings_watchlist_latest.json` consumed by `website/watchlist.html`.
 
 ```bash
-./serve.sh           # serves on port 8080 and opens browser
-./serve.sh 9000      # custom port
+julia --project=packages/EarningsCalendar scripts/generate_earnings_watchlist.jl        # 30 days
+julia --project=packages/EarningsCalendar scripts/generate_earnings_watchlist.jl 60     # 60 days
 ```
 
-Features: live search, sortable columns, pagination (75 rows/page), colour-coded
-confidence badges with 5-signal dots and hover tooltips.
+### Website
+
+The `website/` folder is a static multi-page site with a shared dark-theme sidebar.
+Serve from the repo root so `data/` is accessible:
+
+```bash
+./serve.sh                              # opens website/watchlist.html on :8080
+./serve.sh website/setup.html           # open a specific page
+./serve.sh website/companies.html 9000  # custom port
+```
+
+| Page | URL | Data |
+|---|---|---|
+| Watchlist | `website/watchlist.html` | `data/earnings_watchlist_latest.json` |
+| Companies | `website/companies.html` | `data/nse_companies_latest.json` |
+| Setup     | `website/setup.html`     | localStorage (checklist state) |
 
 ## Data sources
 
