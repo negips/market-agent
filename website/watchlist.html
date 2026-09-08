@@ -175,12 +175,16 @@
         <div class="stat-sub">reporting in window</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">High Confidence (≥70)</div>
+        <div class="stat-label">High (≥70)</div>
         <div class="stat-value" id="s-high" style="color:var(--green)">—</div>
       </div>
       <div class="stat-card">
         <div class="stat-label">Medium (40–69)</div>
         <div class="stat-value" id="s-med" style="color:var(--yellow)">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Low (&lt;40)</div>
+        <div class="stat-value" id="s-low" style="color:var(--red)">—</div>
       </div>
       <div class="stat-card">
         <div class="stat-label">Window</div>
@@ -205,6 +209,7 @@
         <button class="chip active" data-filter="all">All</button>
         <button class="chip" data-filter="high">High ≥70</button>
         <button class="chip" data-filter="med">Medium 40–69</button>
+        <button class="chip" data-filter="low">Low &lt;40</button>
         <button class="chip" data-filter="week">This week</button>
       </div>
       <div class="controls-right">
@@ -270,11 +275,13 @@ let allData = [], filtered = [], sortCol = 'earnings_date', sortDir = 'asc',
 
   const events = data.events || [];
   const high   = events.filter(e => e.confidence?.score >= 70).length;
-  const med    = events.filter(e => e.confidence?.score >= 40 && e.confidence?.score < 70).length;
+  const med    = events.filter(e => { const s = e.confidence?.score ?? -1; return s >= 40 && s < 70; }).length;
+  const low    = events.filter(e => e.confidence?.score < 40).length;
 
   document.getElementById('s-total').textContent     = events.length.toLocaleString('en-IN');
   document.getElementById('s-high').textContent      = high;
   document.getElementById('s-med').textContent       = med;
+  document.getElementById('s-low').textContent       = low;
   document.getElementById('s-window').textContent    = `${data.window_days} days`;
   document.getElementById('s-generated').textContent = 'as of ' + fmtDate(data.generated_at);
   document.getElementById('stat-row').style.display  = '';
@@ -343,8 +350,9 @@ function applyAll() {
     );
   }
 
-  if (activeFilter === 'high')      rows = rows.filter(e => (e.confidence?.score ?? 0) >= 70);
-  else if (activeFilter === 'med')  rows = rows.filter(e => { const s = e.confidence?.score ?? 0; return s >= 40 && s < 70; });
+  if (activeFilter === 'high')      rows = rows.filter(e => (e.confidence?.score ?? -1) >= 70);
+  else if (activeFilter === 'med')  rows = rows.filter(e => { const s = e.confidence?.score ?? -1; return s >= 40 && s < 70; });
+  else if (activeFilter === 'low')  rows = rows.filter(e => (e.confidence?.score ?? -1) < 40);
   else if (activeFilter === 'week') rows = rows.filter(e => daysUntil(e.earnings_date) <= 7);
 
   const numCols = new Set(['market_cap_cr', 'close_price', 'conf_score']);
