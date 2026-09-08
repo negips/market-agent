@@ -83,6 +83,7 @@ export
     save_dataset, load_dataset,
 
     # model
+    SwingArchitecture, DualCNN, DUAL_CNN_V1,
     SwingPredictor, build_model, predict, save_model, load_model,
 
     # train

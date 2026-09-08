@@ -68,9 +68,11 @@ function main()
 
     # ── Build and train model ─────────────────────────────────────────────────
 
-    model = build_model(; dropout_rate=0.3)
+    arch  = DUAL_CNN_V1   # swap this line to try a different architecture
+    model = build_model(arch)
 
     n_params = sum(length, Flux.trainables(model))
+    @info "Architecture: $(arch.name)"
     @info "Model parameters: $n_params"
     @info "Universe: $(length(dataset.companies)) companies  ×  $(N_MARKET_DAYS) days  ×  $(N_MARKET_CHANNELS) channels"
     println()
