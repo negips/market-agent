@@ -16,7 +16,7 @@ Usage:
 using CompanyConfidence, TijoriData, JSON3, Dates, Printf
 
 const SIDECAR_PORT = 3001
-const DATA_FILE    = joinpath(@__DIR__, "..", "data", "nse_companies_latest.json")
+const DATA_FILE    = joinpath(@__DIR__, "..", "website", "data", "nse_companies_latest.json")
 
 # ── Run checks ────────────────────────────────────────────────────────────────
 
@@ -82,7 +82,7 @@ Options:
 
 Prerequisites:
   - Tijori sidecar running on port 3001 (node sidecar/server_http.js)
-  - data/nse_companies_latest.json present (julia scripts/generate_nse_list.jl)
+  - website/data/nse_companies_latest.json present (julia scripts/generate_nse_list.jl)
 
 Output:
   Merges a \"confidence\" key into each checked company in nse_companies_latest.json.

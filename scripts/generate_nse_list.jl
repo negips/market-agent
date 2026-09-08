@@ -19,7 +19,7 @@ using HTTP, JSON3, CSV, DataFrames, Dates
 # ── Config ────────────────────────────────────────────────────────────────────
 
 const SIDECAR  = "http://localhost:3001"
-const OUT_DIR  = joinpath(@__DIR__, "..", "data")
+const OUT_DIR  = joinpath(@__DIR__, "..", "website", "data")
 const NSE_BASE = "https://nsearchives.nseindia.com"
 const HEADERS  = ["User-Agent" => "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36"]
 
@@ -205,8 +205,8 @@ Prerequisites:
   - Tijori sidecar running on port 3001 (node sidecar/server_http.js)
 
 Output:
-  data/nse_companies_YYYYMMDD.json   — dated snapshot
-  data/nse_companies_latest.json     — stable copy for the HTML viewer
+  website/data/nse_companies_YYYYMMDD.json   — dated snapshot
+  website/data/nse_companies_latest.json     — stable copy for the HTML viewer
 """)
         return
     end

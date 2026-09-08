@@ -18,8 +18,8 @@ Usage:
 
 using EarningsCalendar, JSON3, Dates
 
-const DATA_FILE = joinpath(@__DIR__, "..", "data", "nse_companies_latest.json")
-const OUT_DIR   = joinpath(@__DIR__, "..", "data")
+const DATA_FILE = joinpath(@__DIR__, "..", "website", "data", "nse_companies_latest.json")
+const OUT_DIR   = joinpath(@__DIR__, "..", "website", "data")
 const OUT_FILE  = joinpath(OUT_DIR, "earnings_watchlist_latest.json")
 
 function main()
@@ -35,11 +35,11 @@ Options:
   -h, --help   Show this message and exit.
 
 Prerequisites:
-  - data/nse_companies_latest.json present (julia scripts/generate_nse_list.jl)
+  - website/data/nse_companies_latest.json present (julia scripts/generate_nse_list.jl)
   - Confidence checks run for companies of interest (julia --project=packages/CompanyConfidence scripts/run_confidence_checks.jl)
 
 Output:
-  data/earnings_watchlist_latest.json
+  website/data/earnings_watchlist_latest.json
 """)
         return
     end

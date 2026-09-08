@@ -99,7 +99,7 @@ let allData = [], filtered = [], sortCol = 'name', sortDir = 'asc', currentPage 
 
 (async () => {
   let data = null;
-  for (const url of ['../data/nse_companies_latest.json']) {
+  for (const url of ['data/nse_companies_latest.json']) {
     try { const r = await fetch(url); if (r.ok) { data = await r.json(); break; } } catch {}
   }
   if (!data) {

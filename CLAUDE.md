@@ -52,9 +52,10 @@ market-agent/
 │   ├── run_confidence_checks.jl       # runs CompanyConfidence on top-N by market cap
 │   └── generate_earnings_watchlist.jl # joins EarningsCalendar + confidence → watchlist JSON
 │
-├── data/                           # generated artifacts (gitignored)
-│   ├── nse_companies_latest.json   # latest snapshot (stable name for HTML viewer)
-│   └── nse_companies_YYYYMMDD.json # dated snapshots
+│   ├── data/                           # generated artifacts (gitignored)
+│   │   ├── nse_companies_latest.json   # latest snapshot (read by companies.html)
+│   │   ├── nse_companies_YYYYMMDD.json # dated snapshots
+│   │   └── earnings_watchlist_latest.json # read by watchlist.html
 │
 ├── nse_companies.html              # browser viewer — search, sort, confidence badges
 ├── serve.sh                        # start local HTTP server and open browser
@@ -222,7 +223,7 @@ julia scripts/generate_nse_list.jl              # uses today's date
 julia scripts/generate_nse_list.jl 2026-09-07  # explicit date (for past bhavcopy)
 ```
 
-Writes `data/nse_companies_YYYYMMDD.json` and updates `data/nse_companies_latest.json`.
+Writes `website/data/nse_companies_YYYYMMDD.json` and updates `website/data/nse_companies_latest.json`.
 
 ### run_confidence_checks.jl
 
@@ -263,8 +264,8 @@ Serve from the repo root so `data/` is accessible:
 
 | Page | URL | Data |
 |---|---|---|
-| Watchlist | `website/watchlist.html` | `data/earnings_watchlist_latest.json` |
-| Companies | `website/companies.html` | `data/nse_companies_latest.json` |
+| Watchlist | `website/watchlist.html` | `website/data/earnings_watchlist_latest.json` |
+| Companies | `website/companies.html` | `website/data/nse_companies_latest.json` |
 | Setup     | `website/setup.html`     | localStorage (checklist state) |
 
 ## Data sources

@@ -367,7 +367,7 @@ let searchTerm  = '';
     const dd = String(today.getFullYear()) +
                String(today.getMonth()+1).padStart(2,'0') +
                String(today.getDate()).padStart(2,'0');
-    for (const url of [`data/nse_companies_${dd}.json`, `data/nse_companies_latest.json`]) {
+    for (const url of [`website/data/nse_companies_${dd}.json`, `website/data/nse_companies_latest.json`]) {
       try {
         const r = await fetch(url);
         if (r.ok) { data = await r.json(); break; }

@@ -124,7 +124,7 @@ let allData = [], filtered = [], sortCol = 'earnings_date', sortDir = 'asc',
 (async () => {
   let data = null;
   try {
-    const r = await fetch('../data/earnings_watchlist_latest.json');
+    const r = await fetch('data/earnings_watchlist_latest.json');
     if (r.ok) data = await r.json();
   } catch {}
 
