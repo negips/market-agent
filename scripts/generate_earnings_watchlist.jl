@@ -109,7 +109,7 @@ Output:
 
     sort!(matched, by = e -> e["earnings_date"])
 
-    @info "  $(length(matched)) companies matched (scored ≥40 + upcoming earnings)"
+    @info "  $(length(matched)) companies matched (scored + upcoming earnings)"
 
     # ── Write output ──────────────────────────────────────────────────────────
 
@@ -133,7 +133,7 @@ Output:
 
     if !isempty(matched)
         println()
-        println("Upcoming earnings (confidence ≥ 40, next $window_days days):")
+        println("Upcoming earnings (all scored companies, next $window_days days):")
         println("  Days  Score  Symbol          Company")
         println("  " * "─"^60)
         for e in matched
@@ -142,7 +142,7 @@ Output:
             @printf("  %-5s %-6s %-15s %s\n", "in $days", score, e["symbol"], e["company"])
         end
     else
-        println("\nNo companies matched (confidence ≥40 + earnings in next $window_days days).")
+        println("\nNo scored companies have upcoming earnings in the next $window_days days.")
         println("Tip: run run_confidence_checks.jl first to score more companies.")
     end
 end
