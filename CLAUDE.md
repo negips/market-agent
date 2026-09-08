@@ -21,7 +21,8 @@ market-agent/
 │
 ├── packages/                       # standalone Julia packages
 │   ├── TijoriData/                 # Tijori Finance data client
-│   └── CompanyConfidence/          # Fraud/reliability scoring module
+│   ├── CompanyConfidence/          # Fraud/reliability scoring module
+│   └── EarningsCalendar/           # NSE earnings event fetcher (no sidecar)
 │       ├── Project.toml
 │       ├── src/
 │       │   ├── TijoriData.jl       # module entry point + exports
@@ -78,7 +79,8 @@ packages with `See also: [OtherModule](@ref)`.
 ```
 TijoriData        — data only, no trading logic
 CompanyConfidence — depends on TijoriData
-EarningsPredictor — depends on TijoriData + CompanyConfidence (planned)
+EarningsCalendar  — NSE data only, no dependencies on other packages
+EarningsPredictor — depends on TijoriData + CompanyConfidence + EarningsCalendar (planned)
 Backtest          — no external data dependencies (planned)
 BrokerClient      — Kite Connect REST wrapper (planned)
 ```
@@ -117,6 +119,32 @@ analyze("yes-bank-limited"; check_surveillance=false)
 using Pkg
 Pkg.develop(path="packages/TijoriData")
 Pkg.develop(path="packages/CompanyConfidence")
+```
+
+## Using EarningsCalendar
+
+```julia
+using EarningsCalendar, Dates
+
+# No sidecar needed — hits NSE directly
+events = upcoming_earnings()          # next 30 days
+events = upcoming_earnings(7)         # next week
+events = fetch_earnings_calendar(Date(2026, 10, 1), Date(2026, 10, 31))
+
+events[1].symbol    # "INFY"
+events[1].company   # "Infosys Limited"
+events[1].date      # Date(2026, 10, 17)
+events[1].purpose   # "Quarterly Results"
+
+# Filter to symbols with slugs for CompanyConfidence
+symbols = [e.symbol for e in events]
+```
+
+### One-time setup for EarningsCalendar
+
+```julia
+using Pkg
+Pkg.develop(path="packages/EarningsCalendar")
 ```
 
 ## Sidecar setup (one-time)
