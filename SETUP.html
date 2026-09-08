@@ -384,7 +384,7 @@
     <div class="section-header" onclick="toggleSection('s-julia')">
       <span class="section-icon">⚡</span>
       <span class="section-title">Julia Environment</span>
-      <span class="section-badge" id="badge-s-julia">0 / 3</span>
+      <span class="section-badge" id="badge-s-julia">0 / 4</span>
       <span class="chevron">▾</span>
     </div>
     <div class="section-body">
@@ -403,6 +403,15 @@
         <div class="item-content">
           <div class="item-label">TijoriData dev-installed in global environment</div>
           <div class="item-note">Pkg.develop(path="...packages/TijoriData")</div>
+          <span class="item-tag tag-once">one-time</span>
+        </div>
+      </label>
+      <label class="item checked" onclick="toggle(this)">
+        <input type="checkbox" checked>
+        <div class="checkbox"></div>
+        <div class="item-content">
+          <div class="item-label">CompanyConfidence dev-installed in global environment</div>
+          <div class="item-note">Pkg.develop(path="...packages/CompanyConfidence")</div>
           <span class="item-tag tag-once">one-time</span>
         </div>
       </label>
@@ -587,12 +596,21 @@
       </div>
 
       <div class="roadmap-item">
-        <div class="status-dot planned"></div>
+        <div class="status-dot done"></div>
         <div style="flex:1">
           <div class="roadmap-name">CompanyConfidence</div>
-          <div class="roadmap-sub">Fraud detection — Beneish M-Score, cash flow checks, promoter pledging, ASM/GSM, SEBI orders</div>
+          <div class="roadmap-sub">Fraud detection — Beneish M-Score, CFO vs NI, promoter pledging, Tijori forensics flags, NSE ASM/GSM surveillance</div>
         </div>
-        <span class="roadmap-status planned">planned</span>
+        <span class="roadmap-status done">complete</span>
+      </div>
+
+      <div class="roadmap-item">
+        <div class="status-dot done"></div>
+        <div style="flex:1">
+          <div class="roadmap-name">NSE Screener &amp; HTML Viewer</div>
+          <div class="roadmap-sub">scripts/generate_nse_list.jl — all 2300+ NSE companies with price + market cap · scripts/run_confidence_checks.jl — bulk confidence scoring · nse_companies.html — searchable browser viewer with confidence badges</div>
+        </div>
+        <span class="roadmap-status done">complete</span>
       </div>
 
       <div class="roadmap-item">

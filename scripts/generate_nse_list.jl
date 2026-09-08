@@ -189,6 +189,28 @@ end
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 function main()
+    if "--help" in ARGS || "-h" in ARGS
+        println("""
+Usage:
+  julia scripts/generate_nse_list.jl [DATE]
+
+Arguments:
+  DATE   Optional. Date in YYYY-MM-DD format (default: today).
+         Used to fetch the NSE bhavcopy for that trading day.
+
+Options:
+  -h, --help   Show this message and exit.
+
+Prerequisites:
+  - Tijori sidecar running on port 3001 (node sidecar/server_http.js)
+
+Output:
+  data/nse_companies_YYYYMMDD.json   — dated snapshot
+  data/nse_companies_latest.json     — stable copy for the HTML viewer
+""")
+        return
+    end
+
     date = length(ARGS) >= 1 ? Date(ARGS[1]) : today()
 
     equity  = fetch_equity_list()

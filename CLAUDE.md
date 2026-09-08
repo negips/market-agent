@@ -36,6 +36,16 @@ market-agent/
 │       └── test/
 │           └── runtests.jl         # unit tests (no sidecar) + integration tests
 │
+├── scripts/                        # standalone Julia scripts (not packages)
+│   ├── generate_nse_list.jl        # builds data/nse_companies_latest.json
+│   └── run_confidence_checks.jl    # runs CompanyConfidence on top-N by market cap
+│
+├── data/                           # generated artifacts (gitignored)
+│   ├── nse_companies_latest.json   # latest snapshot (stable name for HTML viewer)
+│   └── nse_companies_YYYYMMDD.json # dated snapshots
+│
+├── nse_companies.html              # browser viewer — search, sort, confidence badges
+├── serve.sh                        # start local HTTP server and open browser
 └── CLAUDE.md                       # this file
 ```
 
@@ -156,6 +166,52 @@ julia --project=. test/runtests.jl
 # With integration tests (requires running sidecar)
 TIJORI_SIDECAR_DIR=/path/to/market-agent/sidecar julia --project=. test/runtests.jl
 ```
+
+## Scripts
+
+Scripts live in `scripts/` and are run directly with `julia` — they are not packages.
+All scripts accept `--help` / `-h`.
+
+### generate_nse_list.jl
+
+Builds the JSON snapshot of all NSE-listed EQ companies with closing price, market cap,
+and Tijori slug. Run once per trading day before `run_confidence_checks.jl`.
+
+```bash
+# Sidecar must be running first
+julia scripts/generate_nse_list.jl              # uses today's date
+julia scripts/generate_nse_list.jl 2026-09-07  # explicit date (for past bhavcopy)
+```
+
+Writes `data/nse_companies_YYYYMMDD.json` and updates `data/nse_companies_latest.json`.
+
+### run_confidence_checks.jl
+
+Runs all 5 CompanyConfidence signals on the top N companies by market cap and merges
+the results back into `data/nse_companies_latest.json` as a `"confidence"` key.
+No LLMs involved — purely arithmetic and Tijori data.
+
+```bash
+# Sidecar must be running first; use CompanyConfidence project
+julia --project=packages/CompanyConfidence scripts/run_confidence_checks.jl        # top 100
+julia --project=packages/CompanyConfidence scripts/run_confidence_checks.jl 500   # top 500
+julia --project=packages/CompanyConfidence scripts/run_confidence_checks.jl 2305  # all with slugs
+```
+
+Estimated time: ~6–15 seconds per company via the Tijori sidecar.
+
+### HTML viewer
+
+`nse_companies.html` reads `data/nse_companies_latest.json` via `fetch()` and requires
+an HTTP server (blocked by browser same-origin policy on `file://`):
+
+```bash
+./serve.sh           # serves on port 8080 and opens browser
+./serve.sh 9000      # custom port
+```
+
+Features: live search, sortable columns, pagination (75 rows/page), colour-coded
+confidence badges with 5-signal dots and hover tooltips.
 
 ## Data sources
 
