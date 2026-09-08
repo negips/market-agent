@@ -15,6 +15,10 @@
     .src-tag      { font-size: 10px; font-family: var(--mono); padding: 1px 5px; border-radius: 3px; vertical-align: middle; }
     .src-confirmed { background: rgba(61,214,140,.12); color: var(--green); }
     .src-projected { background: rgba(245,200,66,.1);  color: var(--yellow); }
+    .chg-pos { color: var(--green); font-size: 11px; }
+    .chg-neg { color: var(--red);   font-size: 11px; }
+    .price-live { color: var(--text); }
+    .price-stale { color: var(--text-dim); }
     td.rank       { text-align: center; color: var(--muted); font-size: 12px; width: 48px; }
 
     /* ── Clickable data rows ── */
@@ -430,7 +434,7 @@ function renderPage() {
        </td>`,
       `<td class="purpose-text">${esc(e.purpose||'—')}</td>`,
       `<td class="num">${fmtMcap(e.market_cap_cr)}</td>`,
-      `<td class="num">${e.close_price != null ? fmtPrice(e.close_price) : '<span class="na">—</span>'}</td>`,
+      `<td class="num">${fmtLivePrice(e)}</td>`,
       `<td class="center">${fmtConf(e.confidence)}</td>`,
     ].join('');
     tr.addEventListener('click', () => toggleDetail(idx, e));
@@ -620,6 +624,20 @@ function fullDetailHTML(conf) {
     <div class="detail-section"><div class="detail-section-title">Forensics (${fo.flag_count??0} flags)</div>${foHTML}</div>
     <div class="detail-section"><div class="detail-section-title">NSE Surveillance</div>${svHTML}</div>
   </div>`;
+}
+
+// ── Price formatter ───────────────────────────────────────────────────────────
+function fmtLivePrice(e) {
+  if (e.close_price == null) return '<span class="na">—</span>';
+  const live  = e.price_source === 'kite_live';
+  const cls   = live ? 'price-live' : 'price-stale';
+  let html    = `<span class="${cls}">${fmtPrice(e.close_price)}</span>`;
+  if (live && e.change_pct != null) {
+    const sign = e.change_pct >= 0 ? '+' : '';
+    const chgCls = e.change_pct >= 0 ? 'chg-pos' : 'chg-neg';
+    html += ` <span class="${chgCls}">${sign}${e.change_pct.toFixed(2)}%</span>`;
+  }
+  return html;
 }
 
 // ── Assemble panel HTML ───────────────────────────────────────────────────────
