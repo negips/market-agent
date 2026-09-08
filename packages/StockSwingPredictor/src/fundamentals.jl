@@ -5,9 +5,25 @@ Returns a `FundamentalFeatures` struct covering the last `N_QUARTERS` quarters.
 Values are normalised by their own trailing mean so the NN sees growth rates
 rather than absolute rupee figures (which vary by orders of magnitude across
 the universe). Missing values are filled with 0 (neutral).
+
+NOTE: This module is not currently used in the training pipeline.
+The CNN architecture learns directly from raw price/vol data; fundamentals
+could be reintroduced as additional input scalars alongside the LLM features.
 """
 
 using DataFrames, Statistics
+
+# ── Types and constants (self-contained — not in types.jl) ───────────────────
+
+struct FundamentalFeatures
+    # 4 quarters × 7 metrics, row-major: [q1_rev, q1_ebitda_m, ..., q4_roce]
+    values :: Vector{Float32}   # length N_FUNDAMENTAL_FEATURES
+end
+
+const FUNDAMENTAL_METRICS       = ["revenue", "ebitda_margin", "pat_margin",
+                                    "cfo_margin", "eps", "debt_equity", "roce"]
+const N_QUARTERS                = 4
+const N_FUNDAMENTAL_FEATURES    = length(FUNDAMENTAL_METRICS) * N_QUARTERS   # 28
 
 # ── Quarterly P&L extraction ──────────────────────────────────────────────────
 

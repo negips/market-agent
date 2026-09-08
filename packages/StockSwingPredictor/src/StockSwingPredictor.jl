@@ -47,6 +47,7 @@ include("types.jl")
 include("kite_data.jl")
 include("llm_extract.jl")
 include("features.jl")
+include("fundamentals.jl")   # not active in current pipeline — see file header
 include("dataset.jl")
 include("model.jl")
 include("train.jl")
@@ -70,6 +71,10 @@ export
 
     # features
     llm_to_vec, llm_feature_names, latest_before, find_date_index,
+
+    # fundamentals (not active in current pipeline)
+    FundamentalFeatures, FUNDAMENTAL_METRICS, N_QUARTERS, N_FUNDAMENTAL_FEATURES,
+    extract_fundamentals, fundamental_feature_names,
 
     # dataset
     label_5d_hourly,
