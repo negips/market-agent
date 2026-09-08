@@ -7,22 +7,150 @@
   <link rel="stylesheet" href="assets/style.css">
   <style>
     .company-name { font-weight: 500; }
-    .company-meta { font-size: 11px; color: var(--muted); margin-top: 2px; font-family: var(--mono); }
+    .company-meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
     .sector-text  { font-size: 12px; color: var(--text-dim); }
     .date-cell    { white-space: nowrap; }
     .date-val     { font-weight: 500; font-size: 13px; }
     .purpose-text { font-size: 12px; color: var(--text-dim); }
     td.rank       { text-align: center; color: var(--muted); font-size: 12px; width: 48px; }
 
-    .empty-state {
+    /* ── Clickable data rows ── */
+    .data-row { cursor: pointer; }
+    .data-row:hover td { background: var(--surface2); }
+    .data-row.expanded td {
+      background: rgba(79, 142, 247, .05);
+      border-bottom: none;
+    }
+    .data-row .rank::before {
+      content: '▶';
+      font-size: 9px;
+      color: var(--border);
+      margin-right: 4px;
+      transition: transform .15s;
+      display: inline-block;
+    }
+    .data-row.expanded .rank::before {
+      transform: rotate(90deg);
+      color: var(--accent);
+    }
+
+    /* ── Detail row ── */
+    .detail-row { display: none; }
+    .detail-row.open { display: table-row; }
+    .detail-row td {
+      padding: 0;
+      border-bottom: 2px solid var(--accent);
+      background: rgba(79, 142, 247, .03);
+    }
+
+    .detail-panel {
+      padding: 16px 20px 20px 52px;
+    }
+
+    /* ── Score header ── */
+    .score-header {
       display: flex;
-      flex-direction: column;
       align-items: center;
-      justify-content: center;
       gap: 12px;
-      padding: 80px 32px;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+    }
+    .score-headline {
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .score-sep { color: var(--border); }
+    .score-meta { font-size: 11px; color: var(--muted); }
+
+    .expand-btn {
+      margin-left: auto;
+      font-size: 12px;
+      padding: 4px 12px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--text-dim);
+      cursor: pointer;
+      white-space: nowrap;
+      transition: all .12s;
+    }
+    .expand-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* ── Brief signal lines ── */
+    .signal-lines { display: flex; flex-direction: column; gap: 6px; }
+    .signal-line  { display: flex; align-items: baseline; gap: 8px; font-size: 13px; line-height: 1.5; }
+    .sig-icon     { flex-shrink: 0; width: 14px; font-size: 11px; font-weight: 700; }
+    .sig-ok-text  { color: var(--green); }
+    .sig-bad-text { color: var(--red); }
+    .sig-na-text  { color: var(--muted); }
+
+    /* ── Full detail panel ── */
+    .full-detail {
+      display: none;
+      margin-top: 18px;
+      padding-top: 18px;
+      border-top: 1px solid var(--border);
+    }
+    .full-detail.open { display: block; }
+
+    .detail-sections {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 16px;
+    }
+
+    .detail-section {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px 14px;
+    }
+
+    .detail-section-title {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: .07em;
       color: var(--muted);
-      text-align: center;
+      font-weight: 600;
+      margin-bottom: 10px;
+    }
+
+    .detail-kv { display: flex; flex-direction: column; gap: 5px; }
+    .detail-kv-row { display: flex; gap: 8px; font-size: 12.5px; }
+    .kv-label { color: var(--muted); min-width: 130px; flex-shrink: 0; }
+    .kv-val   { color: var(--text); font-family: var(--mono); font-size: 12px; }
+
+    .beneish-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4px 12px;
+      font-size: 12px;
+    }
+    .beneish-cell { display: flex; justify-content: space-between; }
+    .beneish-label { color: var(--muted); font-family: var(--mono); }
+    .beneish-val   { color: var(--text);  font-family: var(--mono); }
+
+    .forensics-flags { display: flex; flex-direction: column; gap: 5px; }
+    .forensics-flag {
+      font-size: 11.5px;
+      color: var(--red);
+      padding: 5px 8px;
+      background: rgba(247,111,111,.07);
+      border-radius: 4px;
+      border-left: 2px solid var(--red);
+      line-height: 1.5;
+    }
+
+    .detail-empty { font-size: 12px; color: var(--muted); font-style: italic; }
+
+    /* ── Empty state ── */
+    .empty-state {
+      display: flex; flex-direction: column; align-items: center;
+      justify-content: center; gap: 12px; padding: 80px 32px;
+      color: var(--muted); text-align: center;
     }
     .empty-icon { font-size: 40px; }
     .empty-msg  { font-size: 15px; font-weight: 500; color: var(--text-dim); }
@@ -35,7 +163,7 @@
 <div class="main">
   <div class="page-header">
     <div class="page-title">Earnings Watchlist</div>
-    <div class="page-subtitle">Confidence-scored companies with earnings in the next 30 days</div>
+    <div class="page-subtitle">Confidence-scored companies with earnings in the next 30 days · click any row for score breakdown</div>
   </div>
 
   <div class="page-content">
@@ -121,6 +249,7 @@ const PAGE_SIZE = 50;
 let allData = [], filtered = [], sortCol = 'earnings_date', sortDir = 'asc',
     currentPage = 1, searchTerm = '', activeFilter = 'all';
 
+// ── Load data ─────────────────────────────────────────────────────────────────
 (async () => {
   let data = null;
   try {
@@ -143,21 +272,21 @@ let allData = [], filtered = [], sortCol = 'earnings_date', sortDir = 'asc',
   const high   = events.filter(e => e.confidence?.score >= 70).length;
   const med    = events.filter(e => e.confidence?.score >= 40 && e.confidence?.score < 70).length;
 
-  document.getElementById('s-total').textContent   = events.length.toLocaleString('en-IN');
-  document.getElementById('s-high').textContent    = high;
-  document.getElementById('s-med').textContent     = med;
-  document.getElementById('s-window').textContent  = `${data.window_days} days`;
+  document.getElementById('s-total').textContent     = events.length.toLocaleString('en-IN');
+  document.getElementById('s-high').textContent      = high;
+  document.getElementById('s-med').textContent       = med;
+  document.getElementById('s-window').textContent    = `${data.window_days} days`;
   document.getElementById('s-generated').textContent = 'as of ' + fmtDate(data.generated_at);
   document.getElementById('stat-row').style.display  = '';
   document.getElementById('controls').style.display  = '';
 
   allData = events;
   applyAll();
-  document.getElementById('state-area').style.display = 'none';
-  document.getElementById('main-table').style.display = '';
+  document.getElementById('state-area').style.display  = 'none';
+  document.getElementById('main-table').style.display  = '';
 })();
 
-// ── Search ──────────────────────────────────────────────────────────────────
+// ── Search ────────────────────────────────────────────────────────────────────
 const searchInput = document.getElementById('search');
 const clearBtn    = document.getElementById('clear-btn');
 let debounce;
@@ -175,7 +304,7 @@ clearBtn.addEventListener('click', () => {
   searchTerm = ''; currentPage = 1; applyAll(); searchInput.focus();
 });
 
-// ── Filter chips ─────────────────────────────────────────────────────────────
+// ── Filter chips ──────────────────────────────────────────────────────────────
 document.querySelectorAll('.chip').forEach(chip => {
   chip.addEventListener('click', () => {
     document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
@@ -186,7 +315,7 @@ document.querySelectorAll('.chip').forEach(chip => {
   });
 });
 
-// ── Sort headers ─────────────────────────────────────────────────────────────
+// ── Sort headers ──────────────────────────────────────────────────────────────
 document.querySelectorAll('thead th[data-col]').forEach(th => {
   th.addEventListener('click', () => {
     const col = th.dataset.col;
@@ -203,11 +332,10 @@ document.querySelectorAll('thead th[data-col]').forEach(th => {
   });
 });
 
-// ── Apply filter + sort + render ─────────────────────────────────────────────
+// ── Filter + sort + render ────────────────────────────────────────────────────
 function applyAll() {
   let rows = allData;
 
-  // Search
   if (searchTerm) {
     rows = rows.filter(e =>
       (e.company || '').toLowerCase().includes(searchTerm) ||
@@ -215,34 +343,29 @@ function applyAll() {
     );
   }
 
-  // Chip filter
-  const today = new Date(); today.setHours(0,0,0,0);
-  if (activeFilter === 'high') rows = rows.filter(e => (e.confidence?.score ?? 0) >= 70);
+  if (activeFilter === 'high')      rows = rows.filter(e => (e.confidence?.score ?? 0) >= 70);
   else if (activeFilter === 'med')  rows = rows.filter(e => { const s = e.confidence?.score ?? 0; return s >= 40 && s < 70; });
   else if (activeFilter === 'week') rows = rows.filter(e => daysUntil(e.earnings_date) <= 7);
 
-  // Sort
-  const numCols = new Set(['market_cap_cr','close_price','conf_score']);
+  const numCols = new Set(['market_cap_cr', 'close_price', 'conf_score']);
   filtered = [...rows].sort((a, b) => {
     let va, vb;
     if (sortCol === 'conf_score') {
       va = a.confidence?.score ?? -Infinity;
       vb = b.confidence?.score ?? -Infinity;
     } else if (sortCol === 'earnings_date') {
-      va = a.earnings_date || '';
-      vb = b.earnings_date || '';
+      va = a.earnings_date || ''; vb = b.earnings_date || '';
       return sortDir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
     } else if (numCols.has(sortCol)) {
-      va = a[sortCol] ?? -Infinity;
-      vb = b[sortCol] ?? -Infinity;
+      va = a[sortCol] ?? -Infinity; vb = b[sortCol] ?? -Infinity;
     } else {
-      va = (a[sortCol] || '').toLowerCase();
-      vb = (b[sortCol] || '').toLowerCase();
+      va = (a[sortCol] || '').toLowerCase(); vb = (b[sortCol] || '').toLowerCase();
       return sortDir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
     }
     return sortDir === 'asc' ? va - vb : vb - va;
   });
 
+  openIdx = null;
   renderPage();
 
   const total = filtered.length;
@@ -251,10 +374,8 @@ function applyAll() {
   document.getElementById('stats-meta').innerHTML = total === 0 ? '' :
     `Showing <strong>${start}–${end}</strong> of <strong>${total}</strong>`;
 
-  const emptyEl = document.getElementById('empty-area');
-  const tableEl = document.getElementById('main-table');
-  emptyEl.style.display = total === 0 ? '' : 'none';
-  tableEl.style.display = total === 0 ? 'none' : '';
+  document.getElementById('empty-area').style.display = total === 0 ? '' : 'none';
+  document.getElementById('main-table').style.display = total === 0 ? 'none' : '';
 
   renderPagination(
     document.getElementById('pagination'),
@@ -263,7 +384,9 @@ function applyAll() {
   );
 }
 
-const tbody = document.getElementById('tbody');
+// ── Render ────────────────────────────────────────────────────────────────────
+const tbody  = document.getElementById('tbody');
+let   openIdx = null;
 
 function renderPage() {
   const start = (currentPage-1)*PAGE_SIZE;
@@ -271,11 +394,15 @@ function renderPage() {
   const frag  = document.createDocumentFragment();
 
   rows.forEach((e, i) => {
-    const tr   = document.createElement('tr');
+    const idx  = start + i;
     const days = daysUntil(e.earnings_date);
 
+    // Data row
+    const tr = document.createElement('tr');
+    tr.className    = 'data-row';
+    tr.dataset.idx  = idx;
     tr.innerHTML = [
-      `<td class="rank">${start+i+1}</td>`,
+      `<td class="rank">${idx+1}</td>`,
       `<td>
          <div class="company-name">${esc(e.company)}</div>
          <div class="company-meta"><span class="symbol-chip">${esc(e.symbol)}</span></div>
@@ -290,9 +417,222 @@ function renderPage() {
       `<td class="num">${e.close_price != null ? fmtPrice(e.close_price) : '<span class="na">—</span>'}</td>`,
       `<td class="center">${fmtConf(e.confidence)}</td>`,
     ].join('');
+    tr.addEventListener('click', () => toggleDetail(idx, e));
     frag.appendChild(tr);
+
+    // Detail row (hidden until clicked)
+    const detailTr = document.createElement('tr');
+    detailTr.className = 'detail-row';
+    detailTr.id        = `detail-${idx}`;
+    detailTr.innerHTML = `<td colspan="8"><div class="detail-panel" id="panel-${idx}"></div></td>`;
+    frag.appendChild(detailTr);
   });
+
   tbody.replaceChildren(frag);
+}
+
+// ── Row expand / collapse ─────────────────────────────────────────────────────
+function toggleDetail(idx, e) {
+  const detailRow = document.getElementById(`detail-${idx}`);
+  if (!detailRow) return;
+  const dataRow = detailRow.previousElementSibling;
+  const isOpen  = detailRow.classList.contains('open');
+
+  // Close any other open row
+  if (openIdx !== null && openIdx !== idx) {
+    const prev = document.getElementById(`detail-${openIdx}`);
+    if (prev) {
+      prev.classList.remove('open');
+      prev.previousElementSibling?.classList.remove('expanded');
+    }
+  }
+
+  if (isOpen) {
+    detailRow.classList.remove('open');
+    dataRow.classList.remove('expanded');
+    openIdx = null;
+  } else {
+    // Build panel content lazily
+    const panel = document.getElementById(`panel-${idx}`);
+    if (!panel.dataset.built) {
+      panel.innerHTML = buildPanelHTML(e);
+      panel.dataset.built = '1';
+      panel.querySelector('.expand-btn').addEventListener('click', ev => {
+        ev.stopPropagation();
+        const fullDetail = panel.querySelector('.full-detail');
+        const btn        = panel.querySelector('.expand-btn');
+        const expanding  = !fullDetail.classList.contains('open');
+        fullDetail.classList.toggle('open');
+        btn.textContent  = expanding ? 'Hide details ▴' : 'Show full details ▾';
+      });
+    }
+    detailRow.classList.add('open');
+    dataRow.classList.add('expanded');
+    openIdx = idx;
+  }
+}
+
+// ── Brief signal lines ────────────────────────────────────────────────────────
+function briefLines(conf) {
+  const b  = conf.beneish    || {};
+  const cf = conf.cashflow   || {};
+  const pl = conf.pledging   || {};
+  const fo = conf.forensics  || {};
+  const sv = conf.surveillance || {};
+  const lines = [];
+
+  // Beneish
+  if (!b.applicable) {
+    lines.push({ s:'na',  t:'Beneish M-Score not applicable — bank or NBFC (accrual model is not meaningful)' });
+  } else if (b.m_score == null) {
+    lines.push({ s:'na',  t:'Beneish M-Score could not be computed — insufficient financial data' });
+  } else if (b.is_flagged) {
+    lines.push({ s:'bad', t:`Beneish M-Score ${b.m_score.toFixed(2)} — above −1.78 threshold, possible earnings manipulation` });
+  } else {
+    lines.push({ s:'ok',  t:`Beneish M-Score ${b.m_score.toFixed(2)} — below −1.78 threshold, no manipulation signal` });
+  }
+
+  // Cashflow
+  if (cf.years_checked == null) {
+    lines.push({ s:'na',  t:'Cash flow quality: data not available' });
+  } else if (cf.years_cfo_lt_ni === 0) {
+    lines.push({ s:'ok',  t:`CFO exceeded Net Income in all ${cf.years_checked} years checked — strong cash conversion` });
+  } else if (cf.is_flagged) {
+    lines.push({ s:'bad', t:`CFO below Net Income in ${cf.years_cfo_lt_ni} of ${cf.years_checked} years — persistent accrual inflation risk` });
+  } else {
+    lines.push({ s:'ok',  t:`CFO below Net Income in ${cf.years_cfo_lt_ni} of ${cf.years_checked} years — within acceptable range` });
+  }
+
+  // Pledging
+  if (!pl.quarters_used) {
+    lines.push({ s:'na',  t:'Promoter pledging: no shareholding data available' });
+  } else if (pl.is_flagged) {
+    const why = pl.latest_pct > 20 ? 'high pledging level' : 'rising trend';
+    lines.push({ s:'bad', t:`Promoter pledging ${pl.latest_pct?.toFixed(1)}% — ${why}` });
+  } else {
+    lines.push({ s:'ok',  t:`Promoter pledging ${pl.latest_pct != null ? pl.latest_pct.toFixed(1)+'%' : 'N/R'} — ${pl.trend ?? 'stable'}` });
+  }
+
+  // Forensics
+  if (fo.is_flagged) {
+    lines.push({ s:'bad', t:`${fo.flag_count} forensics red flag${fo.flag_count !== 1 ? 's' : ''} flagged by Tijori` });
+  } else {
+    lines.push({ s:'ok',  t:'No forensics red flags from Tijori analysis' });
+  }
+
+  // Surveillance
+  if (!sv.checked) {
+    lines.push({ s:'na',  t:'NSE surveillance status not checked in this run' });
+  } else if (sv.is_flagged) {
+    const lists = [sv.on_asm && 'ASM', sv.on_gsm && 'GSM'].filter(Boolean).join(' + ');
+    lines.push({ s:'bad', t:`On NSE ${lists} surveillance list — exchange is monitoring this stock` });
+  } else {
+    lines.push({ s:'ok',  t:'Not on NSE ASM or GSM surveillance list' });
+  }
+
+  return lines;
+}
+
+// ── Full detail HTML ──────────────────────────────────────────────────────────
+function fullDetailHTML(conf) {
+  const b  = conf.beneish    || {};
+  const cf = conf.cashflow   || {};
+  const pl = conf.pledging   || {};
+  const fo = conf.forensics  || {};
+  const sv = conf.surveillance || {};
+  const fmt = (v, d=2) => v != null ? Number(v).toFixed(d) : '—';
+
+  // Beneish card
+  let bHTML;
+  if (!b.applicable) {
+    bHTML = `<div class="detail-empty">Not applicable for banks and NBFCs — the accrual-based model is not meaningful for financial intermediaries.</div>`;
+  } else if (b.m_score == null) {
+    bHTML = `<div class="detail-empty">Could not be computed — insufficient financial line items.</div>
+             ${b.missing_items?.length ? `<div style="font-size:11px;color:var(--muted);margin-top:4px">Missing: ${esc(b.missing_items.join(', '))}</div>` : ''}`;
+  } else {
+    const mc = b.is_flagged ? 'var(--red)' : 'var(--green)';
+    bHTML = `
+      <div style="margin-bottom:8px;font-size:12px;">
+        M = <strong style="font-family:var(--mono);color:${mc}">${fmt(b.m_score)}</strong>
+        &nbsp;·&nbsp; threshold −1.78
+        &nbsp;·&nbsp; ${esc(b.year_t1||'?')} → ${esc(b.year_t||'?')}
+      </div>
+      <div class="beneish-grid">
+        ${[['DSRI',b.dsri],['GMI',b.gmi],['AQI',b.aqi],['SGI',b.sgi],
+           ['DEPI',b.depi],['SGAI',b.sgai],['LVGI',b.lvgi],['TATA',b.tata]]
+          .map(([l,v])=>`<div class="beneish-cell"><span class="beneish-label">${l}</span><span class="beneish-val">${fmt(v)}</span></div>`)
+          .join('')}
+      </div>
+      ${b.missing_items?.length ? `<div style="font-size:11px;color:var(--yellow);margin-top:6px">⚠ Missing items affected score: ${esc(b.missing_items.join(', '))}</div>` : ''}`;
+  }
+
+  // Cashflow card
+  const cfC = cf.is_flagged ? 'var(--red)' : 'var(--green)';
+  const cfHTML = `<div class="detail-kv">
+    <div class="detail-kv-row"><span class="kv-label">CFO &lt; Net Income</span><span class="kv-val" style="color:${cfC}">${cf.years_cfo_lt_ni??'—'} / ${cf.years_checked??'—'} years</span></div>
+    <div class="detail-kv-row"><span class="kv-label">Avg accrual ratio</span><span class="kv-val">${cf.avg_accrual_ratio!=null?(cf.avg_accrual_ratio*100).toFixed(1)+'%':'—'}</span></div>
+  </div>`;
+
+  // Pledging card
+  const plC = pl.is_flagged ? 'var(--red)' : 'var(--green)';
+  const plHTML = !pl.quarters_used
+    ? `<div class="detail-empty">No shareholding data from Tijori.</div>`
+    : `<div class="detail-kv">
+        <div class="detail-kv-row"><span class="kv-label">Latest pledging</span><span class="kv-val" style="color:${plC}">${pl.latest_pct!=null?pl.latest_pct.toFixed(2)+'%':'—'}</span></div>
+        <div class="detail-kv-row"><span class="kv-label">Trend</span><span class="kv-val">${esc(pl.trend||'—')}</span></div>
+        <div class="detail-kv-row"><span class="kv-label">4-quarter change</span><span class="kv-val">${pl.change_4q!=null?((pl.change_4q>0?'+':'')+pl.change_4q.toFixed(2)+' pp'):'—'}</span></div>
+        <div class="detail-kv-row"><span class="kv-label">Quarters used</span><span class="kv-val">${pl.quarters_used??'—'}</span></div>
+      </div>`;
+
+  // Forensics card
+  const foHTML = !fo.is_flagged || !fo.flags?.length
+    ? `<div class="detail-empty">No red flags detected.</div>`
+    : `<div class="forensics-flags">${fo.flags.map(f=>`<div class="forensics-flag">${esc(f)}</div>`).join('')}</div>`;
+
+  // Surveillance card
+  const svHTML = !sv.checked
+    ? `<div class="detail-empty">Not checked — NSE API was skipped.</div>`
+    : `<div class="detail-kv">
+        <div class="detail-kv-row"><span class="kv-label">ASM list</span><span class="kv-val" style="color:${sv.on_asm?'var(--red)':'var(--green)'}">${sv.on_asm?'Yes ⚠':'No'}</span></div>
+        <div class="detail-kv-row"><span class="kv-label">GSM list</span><span class="kv-val" style="color:${sv.on_gsm?'var(--red)':'var(--green)'}">${sv.on_gsm?'Yes ⚠':'No'}</span></div>
+      </div>`;
+
+  return `<div class="detail-sections">
+    <div class="detail-section"><div class="detail-section-title">Beneish M-Score</div>${bHTML}</div>
+    <div class="detail-section"><div class="detail-section-title">Cash Flow Quality</div>${cfHTML}</div>
+    <div class="detail-section"><div class="detail-section-title">Promoter Pledging</div>${plHTML}</div>
+    <div class="detail-section"><div class="detail-section-title">Forensics (${fo.flag_count??0} flags)</div>${foHTML}</div>
+    <div class="detail-section"><div class="detail-section-title">NSE Surveillance</div>${svHTML}</div>
+  </div>`;
+}
+
+// ── Assemble panel HTML ───────────────────────────────────────────────────────
+function buildPanelHTML(e) {
+  const conf  = e.confidence;
+  const score = conf.score;
+  const cls   = score >= 70 ? 'conf-pass' : score >= 40 ? 'conf-warn' : 'conf-fail';
+
+  const linesHTML = briefLines(conf).map(({s, t}) => {
+    const icon    = s === 'ok' ? '✓' : s === 'bad' ? '✗' : '·';
+    const textCls = s === 'ok' ? 'sig-ok-text' : s === 'bad' ? 'sig-bad-text' : 'sig-na-text';
+    return `<div class="signal-line">
+      <span class="sig-icon ${textCls}">${icon}</span>
+      <span class="${textCls}">${esc(t)}</span>
+    </div>`;
+  }).join('');
+
+  return `
+    <div class="score-header">
+      <div class="score-headline">
+        <span class="conf-badge ${cls}"><span class="conf-dot"></span>${score} / 100</span>
+        <span class="score-sep">·</span>
+        <span style="color:${conf.pass?'var(--green)':'var(--red)'}; font-weight:600">${conf.pass ? 'PASS' : 'FAIL'}</span>
+        <span class="score-meta">checked ${fmtDate(conf.checked_at)}</span>
+      </div>
+      <button class="expand-btn">Show full details ▾</button>
+    </div>
+    <div class="signal-lines">${linesHTML}</div>
+    <div class="full-detail">${fullDetailHTML(conf)}</div>`;
 }
 </script>
 </body>
