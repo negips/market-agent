@@ -2,7 +2,7 @@
     CompanyConfidence
 
 Scores a company's reliability and flags fraud/manipulation signals before the
-EarningsSwingPredictor spends effort on it. A company scoring below
+StockSwingPredictor spends effort on it. A company scoring below
 `PASS_THRESHOLD` (40) should be skipped.
 
 # Signals
@@ -52,7 +52,7 @@ Pkg.develop(path="path/to/packages/CompanyConfidence")
 # Constants
 
 - `BENEISH_THRESHOLD = -1.78`  M-Score above this → likely earnings manipulator
-- `PASS_THRESHOLD    = 40.0`   Companies below this score are skipped by EarningsSwingPredictor
+- `PASS_THRESHOLD    = 40.0`   Companies below this score are skipped by StockSwingPredictor
 
 See also: [TijoriData](@ref)
 """
@@ -81,7 +81,7 @@ include("display.jl")
 """M-Score threshold from Beneish (1999): above this → likely earnings manipulator."""
 const BENEISH_THRESHOLD = -1.78
 
-"""Companies scoring below this are considered too risky for EarningsSwingPredictor."""
+"""Companies scoring below this are considered too risky for StockSwingPredictor."""
 const PASS_THRESHOLD = 40.0
 
 # ── Exports ───────────────────────────────────────────────────────────────────

@@ -395,8 +395,8 @@
             <span class="item-tag tag-once">one-time</span>
           </div>
         </label>
-        <label class="item" onclick="toggle(this)">
-          <input type="checkbox">
+        <label class="item checked" onclick="toggle(this)">
+          <input type="checkbox" checked>
           <div class="checkbox"></div>
           <div class="item-content">
             <div class="item-label">EarningsCalendar dev-installed in global environment</div>
@@ -461,7 +461,7 @@
     <div class="workflow-section">
       <div class="workflow-header">
         <span class="section-icon">▶</span>
-        <span class="workflow-title">Every Julia session</span>
+        <span class="workflow-title">Every trading day</span>
       </div>
       <div class="workflow-body">
         <div class="flow-item">
@@ -483,8 +483,9 @@
         <div class="flow-item">
           <div class="flow-step">3</div>
           <div>
-            <div class="flow-name">Refresh NSE data (once per trading day)</div>
+            <div class="flow-name">Refresh NSE data</div>
             <div class="flow-cmd">julia scripts/generate_nse_list.jl</div>
+            <div class="flow-sub">Fetches latest bhavcopy — closing price &amp; market cap for all NSE EQ companies.</div>
           </div>
         </div>
         <div class="flow-item">
@@ -492,6 +493,7 @@
           <div>
             <div class="flow-name">Run confidence checks (optional — slow)</div>
             <div class="flow-cmd">julia --project=packages/CompanyConfidence scripts/run_confidence_checks.jl 100</div>
+            <div class="flow-sub">Scores top-N companies by market cap. ~6–15s per company via sidecar.</div>
           </div>
         </div>
         <div class="flow-item">
@@ -499,6 +501,7 @@
           <div>
             <div class="flow-name">Refresh watchlist</div>
             <div class="flow-cmd">julia --project=packages/EarningsCalendar scripts/generate_earnings_watchlist.jl</div>
+            <div class="flow-sub">Merges NSE confirmed events + Tijori projections. Fetches live prices from Kite.</div>
           </div>
         </div>
         <div class="flow-item">
@@ -506,6 +509,31 @@
           <div>
             <div class="flow-name">Open the website</div>
             <div class="flow-cmd">./serve.sh</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="workflow-section">
+      <div class="workflow-header">
+        <span class="section-icon">🔄</span>
+        <span class="workflow-title">Every 1–2 weeks</span>
+      </div>
+      <div class="workflow-body">
+        <div class="flow-item">
+          <div class="flow-step">~</div>
+          <div>
+            <div class="flow-name">Re-authenticate Tijori session</div>
+            <div class="flow-cmd">cd sidecar/tijori-finance-mcp &amp;&amp; node setup.js</div>
+            <div class="flow-sub">Session cookies expire. Run when sidecar starts returning 403 errors.</div>
+          </div>
+        </div>
+        <div class="flow-item">
+          <div class="flow-step">~</div>
+          <div>
+            <div class="flow-name">Enrich earnings dates from Tijori history</div>
+            <div class="flow-cmd">julia --project=packages/TijoriData scripts/enrich_earnings_dates.jl</div>
+            <div class="flow-sub">Fetches historical earnings releases per company and projects next expected date via median gap. Resumable — skips already-projected companies. Writes website/data/earnings_projections.json.</div>
           </div>
         </div>
       </div>
@@ -564,14 +592,14 @@
           <div class="status-dot done"></div>
           <div style="flex:1">
             <div class="roadmap-name">EarningsCalendar</div>
-            <div class="roadmap-sub">Fetches upcoming board meetings &amp; results from NSE event-calendar API</div>
+            <div class="roadmap-sub">Two-source pipeline: NSE event-calendar (confirmed, 2–4 weeks out) + Tijori earnings history projection (extended window via median-gap model). Kite live prices applied at watchlist generation.</div>
           </div>
           <span class="roadmap-badge done">complete</span>
         </div>
         <div class="roadmap-item">
           <div class="status-dot planned"></div>
           <div style="flex:1">
-            <div class="roadmap-name">EarningsSwingPredictor</div>
+            <div class="roadmap-name">StockSwingPredictor</div>
             <div class="roadmap-sub">Options implied move + multi-source signals + LLM synthesis</div>
           </div>
           <span class="roadmap-badge planned">planned</span>

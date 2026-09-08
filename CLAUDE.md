@@ -32,7 +32,20 @@ market-agent/
 ├── packages/                       # standalone Julia packages
 │   ├── TijoriData/                 # Tijori Finance data client
 │   ├── CompanyConfidence/          # Fraud/reliability scoring module
-│   └── EarningsCalendar/           # NSE earnings event fetcher (no sidecar)
+│   ├── EarningsCalendar/           # NSE earnings event fetcher (no sidecar)
+│   └── StockSwingPredictor/     # Neural network large-move predictor
+│       ├── Project.toml
+│       └── src/
+│           ├── StockSwingPredictor.jl  # module entry + exports
+│           ├── types.jl                   # all structs (OHLCVBar, LLMFeatures, Dataset, …)
+│           ├── kite_data.jl               # instrument lookup, daily OHLCV fetch + cache
+│           ├── fundamentals.jl            # quarterly P&L feature extraction via TijoriData
+│           ├── llm_extract.jl             # Claude API → 14 scalar signals from PDFs
+│           ├── features.jl                # TS derived features, vector assembly
+│           ├── dataset.jl                 # sliding-window examples, normalisation, split
+│           ├── model.jl                   # Flux.jl MLP, save/load
+│           ├── train.jl                   # training loop, early stopping, evaluation
+│           └── display.jl                 # Base.show overrides
 │       ├── Project.toml
 │       ├── src/
 │       │   ├── TijoriData.jl       # module entry point + exports
@@ -48,10 +61,14 @@ market-agent/
 │           └── runtests.jl         # unit tests (no sidecar) + integration tests
 │
 ├── scripts/                        # standalone Julia scripts (not packages)
-│   ├── generate_nse_list.jl           # builds data/nse_companies_latest.json
-│   ├── run_confidence_checks.jl       # runs CompanyConfidence on top-N by market cap
-│   ├── enrich_earnings_dates.jl       # projects next earnings date via Tijori history (run every 2 weeks)
-│   └── generate_earnings_watchlist.jl # merges NSE calendar + projections → watchlist JSON
+│   ├── generate_nse_list.jl              # builds data/nse_companies_latest.json
+│   ├── run_confidence_checks.jl          # runs CompanyConfidence on top-N by market cap
+│   ├── enrich_earnings_dates.jl          # projects next earnings date via Tijori history (run every 2 weeks)
+│   ├── generate_earnings_watchlist.jl    # merges NSE calendar + projections → watchlist JSON
+│   ├── collect_ohlcv.jl                  # download daily OHLCV for all companies + indices (Kite)
+│   ├── extract_llm_features.jl           # Claude API → 14 scalar signals per company (resumable)
+│   ├── build_dataset.jl                  # sliding-window dataset assembly + normalisation
+│   └── train_model.jl                    # train StockSwingPredictor MLP, save BSON
 │
 │   ├── data/                           # generated artifacts (gitignored)
 │   │   ├── nse_companies_latest.json   # latest snapshot (read by companies.html)
@@ -90,12 +107,12 @@ packages with `See also: [OtherModule](@ref)`.
 ## Package dependency rules
 
 ```
-TijoriData        — data only, no trading logic
-CompanyConfidence — depends on TijoriData
-EarningsCalendar  — NSE data only, no dependencies on other packages
-EarningsPredictor — depends on TijoriData + CompanyConfidence + EarningsCalendar (planned)
-Backtest          — no external data dependencies (planned)
-BrokerClient      — Kite Connect REST wrapper (planned)
+TijoriData              — data only, no trading logic
+CompanyConfidence       — depends on TijoriData
+EarningsCalendar        — NSE data only, no dependencies on other packages
+StockSwingPredictor  — depends on TijoriData; Kite used directly via HTTP
+Backtest                — no external data dependencies (planned)
+BrokerClient            — Kite Connect REST wrapper (planned)
 ```
 
 ## Using CompanyConfidence
@@ -285,7 +302,7 @@ EarningsCalendar
       ↓
 CompanyConfidence scorer     ← score < 40 → skip
       ↓
-EarningsSwingPredictor       ← options implied move + multi-source signals
+StockSwingPredictor       ← options implied move + multi-source signals
       ↓
 LLM synthesis (Claude API)
       ↓
