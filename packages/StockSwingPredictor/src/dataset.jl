@@ -4,7 +4,8 @@ Sliding-window dataset assembly, normalisation, and train/val/test splitting.
 Sampling strategy:
   - For each company, slide a window forward in weekly steps (every 5 trading days).
   - At each step T, assemble all features from data observable at T.
-  - Label = log return of the stock from close(T) to close(T + 5 trading days).
+  - Label = Vector{Float32} of length N_PRED_HOURS (35): hourly log returns relative
+    to close(T), covering the next 5 trading days at 60-minute granularity.
   - Examples where any required data block is unavailable are dropped.
 
 Train/val/test split is time-ordered (not random) to prevent look-ahead leakage:
@@ -16,13 +17,47 @@ using DataFrames, Statistics, Dates, JSON3, CSV
 # ── Label computation ─────────────────────────────────────────────────────────
 
 """
-Compute the 5-trading-day log return starting from bar at index `t` in `df`.
-Returns `nothing` when fewer than 5 bars remain after `t`.
+Compute the N_PRED_HOURS-length hourly log-return trajectory starting after
+bar `t` in the daily DataFrame `daily_df`, using `hourly_df` for intraday prices.
+
+Each trajectory value is `log(hourly_close / daily_df.close[t])` — i.e., the
+cumulative return from the reference daily close at T.
+
+When a day has fewer than N_HOURS_PER_DAY hourly bars (e.g. a shortened session),
+the last observed close is carried forward so the output is always length N_PRED_HOURS.
+
+Returns `nothing` when:
+  - Fewer than N_PRED_DAYS trading days remain after `t` in the daily data.
+  - No hourly bars exist for any of the next N_PRED_DAYS dates.
 """
-function label_5d_return(df::DataFrame, t::Int)::Union{Float32, Nothing}
-    t + 5 > nrow(df) && return nothing
-    log_ret = log(df.close[t + 5] / df.close[t])
-    return Float32(log_ret)
+function label_5d_hourly(hourly_df::DataFrame, daily_df::DataFrame,
+                          t::Int)::Union{Vector{Float32}, Nothing}
+    t + N_PRED_DAYS > nrow(daily_df) && return nothing
+
+    ref_close   = daily_df.close[t]
+    target_dates = Set(daily_df.date[t+1 : t+N_PRED_DAYS])
+
+    # Filter and sort hourly bars that fall on the 5 target trading days.
+    mask   = [Date(row.datetime) in target_dates for row in eachrow(hourly_df)]
+    window = sort(hourly_df[mask, :], :datetime)
+    nrow(window) == 0 && return nothing
+
+    closes = window.close
+    n_bars = length(closes)
+
+    traj = Vector{Float32}(undef, N_PRED_HOURS)
+    for i in 1:min(n_bars, N_PRED_HOURS)
+        traj[i] = Float32(log(closes[i] / ref_close))
+    end
+    if n_bars < N_PRED_HOURS
+        # Carry forward the last observed close when session is short.
+        last_val = Float32(log(closes[end] / ref_close))
+        for i in n_bars+1:N_PRED_HOURS
+            traj[i] = last_val
+        end
+    end
+
+    return traj
 end
 
 # ── Sliding window ────────────────────────────────────────────────────────────
@@ -34,6 +69,7 @@ Generate all training examples for one company by sliding a weekly window.
 - `symbol`: NSE tradingsymbol
 - `company`: display name
 - `ohlcv`: full daily OHLCV DataFrame for the stock (sorted ascending)
+- `hourly_ohlcv`: 60-minute OHLCV DataFrame for the stock (column: `datetime::DateTime`)
 - `nifty_ohlcv`: daily OHLCV for NIFTY 50
 - `sector_ohlcv`: daily OHLCV for the relevant sector index
 - `llm_cache`: Dict mapping Date → LLMFeatures (date of the document)
@@ -45,10 +81,13 @@ Generate all training examples for one company by sliding a weekly window.
 - `min_history_days`: minimum bars before first example (default 130 ≈ 6 months)
 
 # Returns
-Vector of `Example` structs (label=nothing for the last window where T+5 is future).
+Vector of `Example` structs (label=nothing for the most recent windows where the
+next 5 days' hourly data is not yet available).
 """
 function generate_examples(symbol::String, company::String,
-                            ohlcv::DataFrame, nifty_ohlcv::DataFrame,
+                            ohlcv::DataFrame,
+                            hourly_ohlcv::DataFrame,
+                            nifty_ohlcv::DataFrame,
                             sector_ohlcv::DataFrame,
                             llm_cache::Dict{Date, LLMFeatures},
                             fund_cache::Dict{Date, FundamentalFeatures},
@@ -92,7 +131,8 @@ function generate_examples(symbol::String, company::String,
 
         features = assemble_features(ts_stock, ts_nifty, ts_sector, fund, llm, meta)
 
-        label = label_5d_return(ohlcv, t)
+        label = isempty(hourly_ohlcv) ? nothing :
+                label_5d_hourly(hourly_ohlcv, ohlcv, t)
 
         push!(examples, Example(symbol, date, features, label))
     end
@@ -104,7 +144,7 @@ end
 
 """
 Build a `Dataset` from a vector of `Example` structs.
-Drops examples with `label === nothing` (future / incomplete data).
+Drops examples with `label === nothing` (future / incomplete hourly data).
 Rows are sorted by date (ascending) — essential for time-ordered splitting.
 """
 function build_dataset(examples::Vector{Example},
@@ -116,16 +156,16 @@ function build_dataset(examples::Vector{Example},
 
     sort!(labeled, by = e -> (e.date, e.symbol))
 
-    n = length(labeled)
+    n  = length(labeled)
     nf = length(feature_names)
-    X = Matrix{Float32}(undef, nf, n)
-    y = Vector{Float32}(undef, n)
+    X  = Matrix{Float32}(undef, nf, n)
+    y  = Matrix{Float32}(undef, N_PRED_HOURS, n)
     syms  = String[]
     dates = Date[]
 
     for (i, ex) in enumerate(labeled)
         X[:, i] = ex.features
-        y[i]    = ex.label
+        y[:, i] = ex.label
         push!(syms,  ex.symbol)
         push!(dates, ex.date)
     end
@@ -200,10 +240,15 @@ function load_norm_stats(path::String)::NormStats
     )
 end
 
-"""Save a `Dataset` to a CSV (one row per example, features as columns)."""
+"""
+Save a `Dataset` to CSV. Features are columns; trajectory labels are stored
+as columns `traj_h001` … `traj_h035` (one per hourly bar).
+"""
 function save_dataset(dataset::Dataset, path::String)
     df = DataFrame(dataset.X', dataset.feature_names)
-    df.label  = dataset.y
+    for h in 1:N_PRED_HOURS
+        df[!, @sprintf("traj_h%03d", h)] = dataset.y[h, :]
+    end
     df.symbol = dataset.symbols
     df.date   = dataset.dates
     CSV.write(path, df)
@@ -212,15 +257,15 @@ end
 
 """Load a `Dataset` from a CSV saved by `save_dataset`."""
 function load_dataset(path::String)::Dataset
-    df = CSV.read(path, DataFrame)
-    meta_cols = ["label", "symbol", "date"]
+    df        = CSV.read(path, DataFrame)
+    traj_cols = sort(filter(c -> startswith(c, "traj_h"), names(df)))
+    meta_cols = vcat(traj_cols, ["symbol", "date"])
     feat_cols = setdiff(names(df), meta_cols)
-    X = Matrix{Float32}(df[:, feat_cols])'
-    y = Vector{Float32}(df.label)
+    X  = Matrix{Float32}(df[:, feat_cols])'
+    y  = Matrix{Float32}(df[:, traj_cols])'   # (N_PRED_HOURS × n_examples)
     syms  = Vector{String}(df.symbol)
     dates = Vector{Date}(df.date)
-    sector_vocab = String[]   # not stored in CSV — reload separately if needed
-    return Dataset(X, y, feat_cols, syms, dates, sector_vocab)
+    return Dataset(X, y, feat_cols, syms, dates, String[])
 end
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

@@ -233,3 +233,120 @@ Returns "NIFTY 50" as the default when no specific mapping exists.
 function sector_index_name(sector::String)::String
     get(SECTOR_TO_INDEX, sector, "NIFTY 50")
 end
+
+# ── Hourly (60-minute) OHLCV ─────────────────────────────────────────────────
+
+"""
+Fetch 60-minute OHLCV candles from Kite for one instrument.
+
+Kite limits intraday historical data to 60-day windows per request. This
+function automatically chunks the date range and concatenates the results.
+
+# Returns
+DataFrame with columns: datetime, open, high, low, close, volume.
+Sorted ascending by datetime. Returns empty DataFrame on failure.
+"""
+function fetch_ohlcv_hourly(token::Int, from_date::Date, to_date::Date,
+                             session)::DataFrame
+    chunk_days = 59   # stay under the 60-day Kite limit
+    all_chunks = DataFrame[]
+
+    chunk_start = from_date
+    while chunk_start <= to_date
+        chunk_end = min(chunk_start + Day(chunk_days), to_date)
+        from_s = Dates.format(chunk_start, "yyyy-mm-dd") * " 09:00:00"
+        to_s   = Dates.format(chunk_end,   "yyyy-mm-dd") * " 15:30:00"
+        url = "$KITE_BASE/historical/$token/60minute" *
+              "?from=$(HTTP.URIs.escapeuri(from_s))&to=$(HTTP.URIs.escapeuri(to_s))" *
+              "&continuous=0&oi=0"
+
+        resp = try
+            HTTP.get(url; headers=_kite_headers(session), request_timeout=30,
+                     status_exception=false)
+        catch e
+            @warn "Hourly fetch error for token $token ($chunk_start…$chunk_end): $(sprint(showerror, e))"
+            chunk_start = chunk_end + Day(1)
+            sleep(0.35)
+            continue
+        end
+
+        if resp.status == 200
+            raw = try JSON3.read(resp.body) catch; nothing end
+            if !isnothing(raw)
+                candles_data = get(raw, :data, nothing)
+                candles_arr  = isnothing(candles_data) ? nothing :
+                               get(candles_data, :candles, nothing)
+                if !isnothing(candles_arr) && !isempty(candles_arr)
+                    rows = [(
+                        datetime = DateTime(string(c[1])[1:19], "yyyy-mm-ddTHH:MM:SS"),
+                        open     = Float64(c[2]),
+                        high     = Float64(c[3]),
+                        low      = Float64(c[4]),
+                        close    = Float64(c[5]),
+                        volume   = Float64(c[6]),
+                    ) for c in candles_arr]
+                    push!(all_chunks, DataFrame(rows))
+                end
+            end
+        else
+            @warn "Hourly HTTP $(resp.status) for token $token ($chunk_start…$chunk_end)"
+        end
+
+        chunk_start = chunk_end + Day(1)
+        sleep(0.35)
+    end
+
+    isempty(all_chunks) && return DataFrame()
+    return sort!(vcat(all_chunks...), :datetime)
+end
+
+"""
+Fetch and cache 60-minute OHLCV for a list of symbols.
+Output: `out_dir/{SYMBOL}_hourly.csv`.
+"""
+function collect_ohlcv_hourly(symbols::Vector{String}, token_map::Dict{String,Int},
+                               session, out_dir::String,
+                               from_date::Date, to_date::Date;
+                               refresh::Bool=false)
+    mkpath(out_dir)
+    ok = skipped = failed = 0
+    total = length(symbols)
+
+    for (i, sym) in enumerate(symbols)
+        path = joinpath(out_dir, "$(sym)_hourly.csv")
+        if !refresh && isfile(path)
+            skipped += 1
+            continue
+        end
+
+        token = get(token_map, sym, nothing)
+        if isnothing(token)
+            @warn "[$i/$total] No token for $sym — skipping hourly"
+            failed += 1
+            continue
+        end
+
+        df = fetch_ohlcv_hourly(token, from_date, to_date, session)
+        if isempty(df)
+            failed += 1
+            @warn "[$i/$total] $sym — empty hourly response"
+            continue
+        end
+
+        CSV.write(path, df)
+        ok += 1
+        i % 20 == 0 && @info "[$i/$total] $sym hourly — $(nrow(df)) bars"
+        # fetch_ohlcv_hourly already sleeps between chunks; no extra sleep needed
+    end
+
+    @info "Hourly OHLCV done: $ok fetched, $skipped skipped, $failed failed"
+end
+
+"""
+Load cached 60-minute OHLCV for a symbol. Returns empty DataFrame if not found.
+"""
+function load_cached_ohlcv_hourly(symbol::String, out_dir::String)::DataFrame
+    path = joinpath(out_dir, "$(symbol)_hourly.csv")
+    isfile(path) || return DataFrame()
+    return CSV.read(path, DataFrame; types=Dict(:datetime => DateTime))
+end

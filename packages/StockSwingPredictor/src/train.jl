@@ -1,10 +1,13 @@
 """
 Training loop with early stopping, L2 regularisation, and progress logging.
 
-Loss: MSE on 5-day log return prediction.
+Loss: MSE over all N_PRED_HOURS output neurons (mean across trajectory steps and batch).
 Regularisation: L2 weight decay (λ=1e-4) applied to all Dense weight matrices.
-Optimiser: Adam (lr=1e-3) with cosine decay schedule.
+Optimiser: Adam (lr=1e-3).
 Early stopping: patience=15 epochs on validation MSE; restores best weights.
+
+Direction accuracy and IC are computed on the final-hour bar (trajectory[end]),
+which corresponds to the end-of-day-5 close — the actionable prediction.
 """
 
 using Flux, Statistics, Dates, Printf, JSON3
@@ -25,8 +28,8 @@ Train `model` on the given dataset split. Returns `(model, training_log)`.
 - `epochs`, `batchsize`, `lr`, `l2_lambda`, `patience`: hyperparameters
 - `log_every`: print summary every N epochs
 """
-function train!(model, X_train::Matrix{Float32}, y_train::Vector{Float32},
-                X_val::Matrix{Float32},   y_val::Vector{Float32};
+function train!(model, X_train::Matrix{Float32}, y_train::Matrix{Float32},
+                X_val::Matrix{Float32},   y_val::Matrix{Float32};
                 epochs::Int    = DEFAULT_EPOCHS,
                 batchsize::Int = DEFAULT_BATCHSIZE,
                 lr::Float32    = DEFAULT_LR,
@@ -115,22 +118,25 @@ end
 
 """
 Evaluate a trained model on a test split. Returns a Dict with metrics.
+
+MSE / MAE are computed over the full trajectory. Direction accuracy and IC
+are computed on the final-hour bar (end-of-day-5 close vs reference).
 """
-function evaluate(model, X_test::Matrix{Float32}, y_test::Vector{Float32})::Dict
+function evaluate(model, X_test::Matrix{Float32}, y_test::Matrix{Float32})::Dict
 
     Flux.testmode!(model)
-    ŷ = model(X_test)
+    ŷ = model(X_test)   # (N_PRED_HOURS, n_test)
 
-    mse  = Float32(mean((ŷ .- y_test).^2))
-    mae  = Float32(mean(abs.(ŷ .- y_test)))
+    mse = Float32(mean((ŷ .- y_test).^2))
+    mae = Float32(mean(abs.(ŷ .- y_test)))
 
-    # Directional accuracy: did we get the sign right?
-    dir_acc = Float32(mean(sign.(ŷ) .== sign.(y_test)))
+    # Final-bar metrics (end-of-day 5 close vs reference close).
+    ŷ_final = ŷ[end, :]
+    y_final = y_test[end, :]
+    dir_acc = Float32(mean(sign.(ŷ_final) .== sign.(y_final)))
+    ic      = _spearman_corr(ŷ_final, y_final)
 
-    # Information coefficient: Spearman rank correlation between ŷ and y
-    ic = _spearman_corr(ŷ, y_test)
-
-    @printf("Test MSE: %.6f | MAE: %.6f | Direction: %.1f%% | IC: %.4f\n",
+    @printf("Test MSE: %.6f | MAE: %.6f | Dir(eod5): %.1f%% | IC(eod5): %.4f\n",
             mse, mae, dir_acc * 100, ic)
 
     return Dict("test_mse" => mse, "test_mae" => mae,

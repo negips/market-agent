@@ -3,7 +3,7 @@ StockSwingPredictor
 
 Neural-network-based large-move predictor for NSE-listed equities.
 
-Architecture: regularised MLP trained on weekly sliding-window snapshots
+Architecture: regularised 6-layer MLP trained on weekly sliding-window snapshots
 covering all NSE equities over a rolling 3–5 year history.
 
 Input features per example:
@@ -13,14 +13,16 @@ Input features per example:
   • Company metadata (market cap, confidence, sector …):   ~40 values
   Total: ~120 features
 
-Label: 5-trading-day log return of the stock.
+Label: N_PRED_HOURS (35) hourly log-return values over the next 5 trading days,
+each relative to the reference daily close. The final value (trajectory[end])
+is the end-of-day-5 close — the primary actionable signal.
 
 See also: [TijoriData](@ref), [CompanyConfidence](@ref), [EarningsCalendar](@ref)
 
 ## Pipeline
 
 ```
-scripts/collect_ohlcv.jl          # download daily OHLCV for all companies + indices
+scripts/collect_ohlcv.jl          # download daily + hourly OHLCV for all companies
 scripts/extract_llm_features.jl   # LLM extraction from conference calls (resumable)
 scripts/build_dataset.jl          # assemble training examples, normalise, split
 scripts/train_model.jl            # train MLP, save to website/data/models/
@@ -53,11 +55,13 @@ export
     MISSING_LLM,
     N_TS_FEATURES, N_FUNDAMENTAL_FEATURES, N_LLM_FEATURES,
     FUNDAMENTAL_METRICS, N_QUARTERS,
+    N_HOURS_PER_DAY, N_PRED_DAYS, N_PRED_HOURS,
 
     # kite_data
     load_kite_session, load_instruments, build_token_map,
-    fetch_ohlcv, collect_ohlcv, load_cached_ohlcv, sector_index_name,
-    NSE_INDICES,
+    fetch_ohlcv, collect_ohlcv, load_cached_ohlcv,
+    fetch_ohlcv_hourly, collect_ohlcv_hourly, load_cached_ohlcv_hourly,
+    sector_index_name, NSE_INDICES,
 
     # fundamentals
     extract_fundamentals, fundamental_feature_names,
@@ -73,7 +77,7 @@ export
     assemble_features, all_feature_names,
 
     # dataset
-    label_5d_return, generate_examples, build_dataset,
+    label_5d_hourly, generate_examples, build_dataset,
     time_split, compute_norm_stats, normalise!, normalise,
     save_norm_stats, load_norm_stats, save_dataset, load_dataset,
 

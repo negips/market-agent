@@ -1,10 +1,16 @@
 """
 collect_ohlcv.jl
 
-Download and cache daily OHLCV data from Kite Connect for all confidence-scored
-NSE companies and for the key index benchmarks (Nifty 50 + sector indices).
+Download and cache daily and 60-minute OHLCV data from Kite Connect for all
+confidence-scored NSE companies and for key index benchmarks.
 
-Data is saved as CSV to website/data/ohlcv/{SYMBOL}_daily.csv.
+Daily data is used for input features; hourly data is used for trajectory labels.
+
+Output:
+  website/data/ohlcv/{SYMBOL}_daily.csv     — daily bars (features)
+  website/data/ohlcv/{SYMBOL}_hourly.csv    — 60-minute bars (labels)
+  website/data/ohlcv/IDX_{NAME}_daily.csv  — index daily bars
+
 The script is resumable — already-cached symbols are skipped unless --refresh.
 
 Prerequisites:
@@ -91,7 +97,7 @@ Output:
     # ── Collect equity OHLCV ──────────────────────────────────────────────────
 
     isfile(COMPANIES_FILE) || error("Not found: $COMPANIES_FILE\nRun: julia scripts/generate_nse_list.jl")
-    raw  = JSON3.read(read(COMPANIES_FILE, String))
+    raw   = JSON3.read(read(COMPANIES_FILE, String))
     all_c = collect(raw.companies)
 
     # Only companies with a confidence score and a valid symbol.
@@ -102,8 +108,14 @@ Output:
     sort!(eligible, by = c -> Float64(get(c, :market_cap_cr, 0.0)), rev=true)
     symbols = [string(c.symbol) for c in eligible]
 
-    @info "Collecting OHLCV for $(length(symbols)) confidence-scored companies…"
+    @info "Collecting daily OHLCV for $(length(symbols)) confidence-scored companies…"
     collect_ohlcv(symbols, token_map, session, OHLCV_DIR, from_date, to_date; refresh=refresh)
+
+    # ── Collect 60-minute OHLCV (for trajectory labels) ───────────────────────
+
+    @info "Collecting 60-minute OHLCV for $(length(symbols)) companies…"
+    @info "  (~$(60 * ceil(Int, years * 365 / 59)) API calls total — this takes a while)"
+    collect_ohlcv_hourly(symbols, token_map, session, OHLCV_DIR, from_date, to_date; refresh=refresh)
 end
 
 main()

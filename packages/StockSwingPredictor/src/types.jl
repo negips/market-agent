@@ -2,6 +2,13 @@
 All structs for StockSwingPredictor.
 """
 
+# ── Prediction horizon ────────────────────────────────────────────────────────
+
+# NSE 60-minute bars: 9:15–15:30 → 7 bars (last bar is 15:15–15:30, partial but Kite emits it)
+const N_HOURS_PER_DAY = 7
+const N_PRED_DAYS     = 5
+const N_PRED_HOURS    = N_HOURS_PER_DAY * N_PRED_DAYS   # 35 output neurons
+
 # ── Raw data containers ───────────────────────────────────────────────────────
 
 """Daily OHLCV bar from Kite."""
@@ -97,26 +104,26 @@ end
 # ── Assembled input / output ──────────────────────────────────────────────────
 
 """
-One training (or inference) example. `label` is the 5-trading-day log return
-of the stock starting from `date`. It is `nothing` for inference examples
-(future dates where the outcome is not yet known).
+One training (or inference) example. `label` is the hourly log-return trajectory
+over the next N_PRED_HOURS (35) bars, each relative to the reference close at `date`.
+`nothing` for inference examples where the future is not yet observable.
 """
 struct Example
     symbol   :: String
     date     :: Date
-    features :: Vector{Float32}   # fully assembled, normalised input vector
-    label    :: Union{Float32, Nothing}
+    features :: Vector{Float32}                    # fully assembled input vector
+    label    :: Union{Vector{Float32}, Nothing}    # length N_PRED_HOURS
 end
 
 """
 The assembled, normalised dataset ready for training.
 `X`: (n_features × n_examples) Float32 matrix
-`y`: (n_examples,) Float32 vector
+`y`: (N_PRED_HOURS × n_examples) Float32 matrix — hourly trajectory labels
 `feature_names`: length n_features — for interpretability / debugging
 """
 struct Dataset
     X             :: Matrix{Float32}
-    y             :: Vector{Float32}
+    y             :: Matrix{Float32}   # N_PRED_HOURS × n_examples
     feature_names :: Vector{String}
     symbols       :: Vector{String}
     dates         :: Vector{Date}
@@ -139,12 +146,13 @@ end
 
 """Model prediction for a single company at inference time."""
 struct SwingSignal
-    symbol          :: String
-    company         :: String
-    predicted_return :: Float32   # 5-day predicted log return
-    percentile      :: Float32   # rank within current batch (0 … 1)
-    earnings_date   :: Union{Date, Nothing}
-    days_until      :: Int
-    confidence_score :: Float32
-    price_source    :: String
+    symbol               :: String
+    company              :: String
+    predicted_trajectory :: Vector{Float32}   # N_PRED_HOURS log returns vs ref close
+    eod_return           :: Float32           # trajectory[end]: end-of-day-5 log return
+    percentile           :: Float32           # rank by |eod_return| within batch (0 … 1)
+    earnings_date        :: Union{Date, Nothing}
+    days_until           :: Int
+    confidence_score     :: Float32
+    price_source         :: String
 end

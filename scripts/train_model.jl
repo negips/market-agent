@@ -87,9 +87,10 @@ function main()
     @info "Features: $n_features"
     @info "Train: $(size(ds_train.X, 2))  Val: $(size(ds_val.X, 2))  Test: $(size(ds_test.X, 2))"
 
-    # Label stats
-    @printf("Train label: mean=%.4f%% std=%.4f%%\n",
-            mean(ds_train.y)*100, std(ds_train.y)*100)
+    # Label stats (final-hour bar — end-of-day-5 close vs reference)
+    final_h = ds_train.y[end, :]
+    @printf("Train label (eod day5): mean=%.4f%%  std=%.4f%%  shape=%s\n",
+            mean(final_h)*100, std(final_h)*100, string(size(ds_train.y)))
 
     # ── Build and train model ─────────────────────────────────────────────────
 

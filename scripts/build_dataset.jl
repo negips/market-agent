@@ -112,10 +112,14 @@ Output:
 
         ohlcv = load_cached_ohlcv(sym, OHLCV_DIR)
         if isempty(ohlcv)
-            i % 20 == 0 && @info "[$i/$(length(todo))] $sym — no OHLCV, skipping"
+            i % 20 == 0 && @info "[$i/$(length(todo))] $sym — no daily OHLCV, skipping"
             continue
         end
         sort!(ohlcv, :date)
+
+        # 60-minute OHLCV for trajectory labels
+        hourly_ohlcv = load_cached_ohlcv_hourly(sym, OHLCV_DIR)
+        isempty(hourly_ohlcv) || sort!(hourly_ohlcv, :datetime)
 
         # Sector index OHLCV
         idx_name = sector_index_name(sector)
@@ -142,14 +146,15 @@ Output:
         end
 
         meta_nt = (
-            market_cap_cr      = Float64(get(c, :market_cap_cr, 0.0)),
-            confidence_score   = score,
+            market_cap_cr       = Float64(get(c, :market_cap_cr, 0.0)),
+            confidence_score    = score,
             promoter_pledge_pct = pledge,
-            is_fo              = false,   # F&O lookup not yet implemented
-            sector             = sector,
+            is_fo               = false,   # F&O lookup not yet implemented
+            sector              = sector,
         )
 
-        examples = generate_examples(sym, name, ohlcv, nifty_ohlcv, sector_ohlcv,
+        examples = generate_examples(sym, name, ohlcv, hourly_ohlcv,
+                                     nifty_ohlcv, sector_ohlcv,
                                      llm_cache, fund_cache, earnings_dates,
                                      meta_nt, sector_vocab)
         append!(all_examples, examples)
