@@ -1,83 +1,136 @@
 """
-Neural network architecture and inference.
+Neural network architecture: SwingPredictor.
 
-A regularised MLP with dropout. Input is the assembled, normalised feature vector.
-Output is a vector of length N_PRED_HOURS (35): predicted hourly log-return trajectory
-over the next 5 trading days, each value relative to the reference close price.
+Two CNN branches feed into a shared MLP head:
 
-Architecture:
-  Input(n_features) → Dense(512, relu) → Dropout(0.30)
-                    → Dense(256, relu) → Dropout(0.30)
-                    → Dense(128, relu) → Dropout(0.20)
-                    → Dense(64,  relu) → Dropout(0.15)
-                    → Dense(32,  relu) → Dropout(0.10)
-                    → Dense(N_PRED_HOURS)
+  Market branch (shared weights across all N companies):
+    Input:  (N_MARKET_DAYS, N_MARKET_CHANNELS, N, B)  — reshaped to (28, 2, N×B)
+    CNN:    Conv(3, 2→32) → Conv(3, 32→64) → Conv(3, 64→128) → GlobalMeanPool
+    Output: (128, N, B)  split into:
+              target_emb  = embedding of the stock being predicted        (128, B)
+              market_ctx  = mean of the other N-1 company embeddings      (128, B)
 
-L2 weight regularisation is applied during training (see train.jl).
+  Hourly branch (target stock only):
+    Input:  (N_HOURLY_BARS, 1, B)
+    CNN:    Conv(5, 1→32) → Conv(5, 32→64) → Conv(3, 64→128) → Conv(3, 128→256)
+            → GlobalMeanPool
+    Output: (256, B)
+
+  MLP head:
+    Input:  concat(target_emb, market_ctx, hourly_emb, llm)  → (527, B)
+    Layers: 527 → 512 → 256 → 128 → 64 → N_PRED_HOURS
+
+The target stock is always placed at column index 1 of the market tensor by
+`assemble_batch` so the split is a simple slice rather than an index lookup.
 """
 
-using Flux, BSON, JSON3
+using Flux, BSON
+
+struct SwingPredictor
+    market_cnn :: Chain   # shared; processes every company's 28-day series
+    hourly_cnn :: Chain   # processes the target stock's 280-bar hourly series
+    mlp_head   :: Chain
+end
+Flux.@functor SwingPredictor
 
 """
-Build the MLP. `n_features` must match the feature vector assembled by `features.jl`.
-Output dimension is always `N_PRED_HOURS` (35).
+Build a `SwingPredictor`. Dropout rate applies to the MLP head only.
+CNN branches use no dropout — they are compact enough to regularise via shared weights.
 """
-function build_model(n_features::Int; dropout_rate::Float64=0.3)
-    Chain(
-        Dense(n_features => 512, relu),
+function build_model(; dropout_rate::Float64=0.3)::SwingPredictor
+    market_cnn = Chain(
+        Conv((3,), N_MARKET_CHANNELS => 32, relu),
+        Conv((3,), 32 => 64, relu),
+        Conv((3,), 64 => 128, relu),
+        GlobalMeanPool(),
+        Flux.flatten,          # (1, 128, batch) → (128, batch)
+    )
+    hourly_cnn = Chain(
+        Conv((5,), 1 => 32, relu),
+        Conv((5,), 32 => 64, relu),
+        Conv((3,), 64 => 128, relu),
+        Conv((3,), 128 => 256, relu),
+        GlobalMeanPool(),
+        Flux.flatten,
+    )
+    mlp_in = 128 + 128 + 256 + N_LLM_FEATURES   # 527
+    mlp_head = Chain(
+        Dense(mlp_in => 512, relu),
         Dropout(dropout_rate),
         Dense(512 => 256, relu),
-        Dropout(dropout_rate),
-        Dense(256 => 128, relu),
         Dropout(dropout_rate * 2/3),
-        Dense(128 => 64, relu),
-        Dropout(dropout_rate / 2),
-        Dense(64 => 32, relu),
+        Dense(256 => 128, relu),
         Dropout(dropout_rate / 3),
-        Dense(32 => N_PRED_HOURS),
+        Dense(128 => 64, relu),
+        Dense(64 => N_PRED_HOURS),
     )
+    return SwingPredictor(market_cnn, hourly_cnn, mlp_head)
 end
 
 """
-Run inference on a matrix of normalised features.
-`X`: (n_features × n_examples) Float32 matrix.
-Returns a (N_PRED_HOURS × n_examples) Float32 matrix of predicted trajectories.
+Forward pass.
+
+# Arguments
+- `market`: `(N_MARKET_DAYS, N_MARKET_CHANNELS, N_companies, batch)` Float32 array.
+  Column 1 along dim 3 is always the target stock (set by `assemble_batch`).
+- `hourly`: `(N_HOURLY_BARS, batch)` Float32 matrix — target stock hourly series.
+- `llm`:    `(N_LLM_FEATURES, batch)` Float32 matrix.
+
+# Returns
+`(N_PRED_HOURS, batch)` Float32 matrix of predicted log-return trajectories.
 """
-function predict(model, X::Matrix{Float32})::Matrix{Float32}
-    Flux.testmode!(model)
-    return model(X)
+function (m::SwingPredictor)(market::Array{Float32,4},
+                              hourly::Matrix{Float32},
+                              llm::Matrix{Float32})
+    _, _, N, B = size(market)
+
+    # ── Market CNN: shared across all N companies ─────────────────────────────
+    x    = reshape(market, N_MARKET_DAYS, N_MARKET_CHANNELS, N * B)
+    embs = m.market_cnn(x)                                    # (128, N*B)
+    embs = reshape(embs, 128, N, B)                           # (128, N, B)
+
+    target_emb = embs[:, 1, :]                                # (128, B)
+    market_ctx = dropdims(mean(embs[:, 2:end, :], dims=2), dims=2)  # (128, B)
+
+    # ── Hourly CNN: target stock only ─────────────────────────────────────────
+    h          = reshape(hourly, N_HOURLY_BARS, 1, B)         # (280, 1, B)
+    hourly_emb = m.hourly_cnn(h)                              # (256, B)
+
+    # ── MLP head ──────────────────────────────────────────────────────────────
+    combined = vcat(target_emb, market_ctx, hourly_emb, llm)  # (527, B)
+    return m.mlp_head(combined)                               # (N_PRED_HOURS, B)
 end
 
+# ── Inference helpers ─────────────────────────────────────────────────────────
+
 """
-Run inference on a single normalised feature vector.
-Returns a `Vector{Float32}` of length N_PRED_HOURS.
+Run inference on a pre-assembled batch. Returns (N_PRED_HOURS × batch) matrix.
 """
-function predict(model, x::Vector{Float32})::Vector{Float32}
+function predict(model::SwingPredictor,
+                 market::Array{Float32,4},
+                 hourly::Matrix{Float32},
+                 llm::Matrix{Float32})::Matrix{Float32}
     Flux.testmode!(model)
-    return vec(model(reshape(x, :, 1)))
+    return model(market, hourly, llm)
 end
 
 # ── Persistence ───────────────────────────────────────────────────────────────
 
-"""
-Save model weights and metadata to `path` (BSON format).
-`meta` is any Dict-serialisable metadata (e.g. n_features, training_date).
-"""
-function save_model(model, norm_stats::NormStats, sector_vocab::Vector{String},
+"""Save model weights, universe metadata, and arbitrary `meta` Dict to BSON."""
+function save_model(model::SwingPredictor, companies::Vector{String},
                     path::String; meta::Dict=Dict())
     state = Flux.state(model)
-    BSON.@save path state norm_stats sector_vocab meta
-    @info "Model saved: $path"
+    BSON.@save path state companies meta
+    @info "Model saved → $path"
 end
 
 """
-Load model, NormStats, and sector vocabulary from a BSON file.
-Returns `(model, norm_stats, sector_vocab, meta)`.
-`n_features` must be provided to reconstruct the model architecture.
+Load a `SwingPredictor` from BSON. Returns `(model, companies, meta)`.
+`companies` is the fixed universe ordering required at inference time.
 """
-function load_model(path::String, n_features::Int)
-    BSON.@load path state norm_stats sector_vocab meta
-    model = build_model(n_features)
+function load_model(path::String)
+    BSON.@load path state companies meta
+    model = build_model()
     Flux.loadmodel!(model, state)
-    return model, norm_stats, sector_vocab, meta
+    return model, companies, meta
 end

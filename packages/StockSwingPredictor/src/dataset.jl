@@ -1,189 +1,202 @@
 """
-Sliding-window dataset assembly, normalisation, and train/val/test splitting.
+Dataset assembly, batch construction, train/val/test splitting, and persistence.
 
-Sampling strategy:
-  - For each company, slide a window forward in weekly steps (every 5 trading days).
-  - At each step T, assemble all features from data observable at T.
-  - Label = Vector{Float32} of length N_PRED_HOURS (35): hourly log returns relative
-    to close(T), covering the next 5 trading days at 60-minute granularity.
-  - Examples where any required data block is unavailable are dropped.
+## Market matrix layout
 
-Train/val/test split is time-ordered (not random) to prevent look-ahead leakage:
-  80% oldest data → train, 10% → val, 10% newest → test.
+For a training example predicting stock X on date T (date_idx = t):
+
+  closes[t-N_MARKET_DAYS+1 : t, :]   — (28, N) raw closing prices
+  Normalised per company: divide each column by its value at row t-N_MARKET_DAYS+1
+  so every series starts at 1.0 and subsequent values are relative returns.
+
+  vols[t-N_MARKET_DAYS+1 : t, :]     — (28, N) daily (H-L)/C, no normalisation needed.
+
+  Column ordering in the assembled batch tensor: stock X is moved to column 1
+  so `model.market_cnn` output[:, 1, :] is always the target stock's embedding.
+
+## Hourly series
+
+Each TrainingExample pre-stores the target stock's N_HOURLY_BARS-length normalised
+closing series (close / close[1] of the 8-week window). This is small per example
+(~1 KB) and avoids re-slicing the hourly CSVs during training.
+
+## Label
+
+5-trading-day hourly log-return trajectory after date T:
+  label[h] = log(hourly_close[h] / daily_close[T])  for h in 1 … N_PRED_HOURS
 """
 
-using DataFrames, Statistics, Dates, JSON3, CSV
+using DataFrames, CSV, Dates, Statistics, JSON3, Printf, BSON
 
-# ── Label computation ─────────────────────────────────────────────────────────
+# ── Label computation (reused from hourly OHLCV) ─────────────────────────────
 
 """
-Compute the N_PRED_HOURS-length hourly log-return trajectory starting after
-bar `t` in the daily DataFrame `daily_df`, using `hourly_df` for intraday prices.
+Compute the N_PRED_HOURS-length hourly log-return trajectory following daily bar
+at index `t` in `daily_df`, using `hourly_df` for intraday prices.
 
-Each trajectory value is `log(hourly_close / daily_df.close[t])` — i.e., the
-cumulative return from the reference daily close at T.
-
-When a day has fewer than N_HOURS_PER_DAY hourly bars (e.g. a shortened session),
-the last observed close is carried forward so the output is always length N_PRED_HOURS.
-
-Returns `nothing` when:
-  - Fewer than N_PRED_DAYS trading days remain after `t` in the daily data.
-  - No hourly bars exist for any of the next N_PRED_DAYS dates.
+Each value is `log(hourly_close / daily_df.close[t])`.
+Returns `nothing` when N_PRED_DAYS trading days don't exist after `t`,
+or when no hourly bars fall on those days.
 """
 function label_5d_hourly(hourly_df::DataFrame, daily_df::DataFrame,
                           t::Int)::Union{Vector{Float32}, Nothing}
     t + N_PRED_DAYS > nrow(daily_df) && return nothing
 
-    ref_close   = daily_df.close[t]
+    ref_close    = daily_df.close[t]
     target_dates = Set(daily_df.date[t+1 : t+N_PRED_DAYS])
 
-    # Filter and sort hourly bars that fall on the 5 target trading days.
     mask   = [Date(row.datetime) in target_dates for row in eachrow(hourly_df)]
     window = sort(hourly_df[mask, :], :datetime)
     nrow(window) == 0 && return nothing
 
-    closes = window.close
-    n_bars = length(closes)
-
-    traj = Vector{Float32}(undef, N_PRED_HOURS)
+    closes  = window.close
+    n_bars  = length(closes)
+    traj    = Vector{Float32}(undef, N_PRED_HOURS)
     for i in 1:min(n_bars, N_PRED_HOURS)
         traj[i] = Float32(log(closes[i] / ref_close))
     end
     if n_bars < N_PRED_HOURS
-        # Carry forward the last observed close when session is short.
         last_val = Float32(log(closes[end] / ref_close))
         for i in n_bars+1:N_PRED_HOURS
             traj[i] = last_val
         end
     end
-
     return traj
 end
 
-# ── Sliding window ────────────────────────────────────────────────────────────
+# ── Master market-matrix construction ────────────────────────────────────────
 
 """
-Generate all training examples for one company by sliding a weekly window.
+Build the (n_dates × n_companies) closing price and daily-vol matrices from
+cached daily OHLCV CSVs. Missing dates for a company are forward-filled with
+the last known price (correct: the previous close is the last observable price).
 
-# Arguments
-- `symbol`: NSE tradingsymbol
-- `company`: display name
-- `ohlcv`: full daily OHLCV DataFrame for the stock (sorted ascending)
-- `hourly_ohlcv`: 60-minute OHLCV DataFrame for the stock (column: `datetime::DateTime`)
-- `nifty_ohlcv`: daily OHLCV for NIFTY 50
-- `sector_ohlcv`: daily OHLCV for the relevant sector index
-- `llm_cache`: Dict mapping Date → LLMFeatures (date of the document)
-- `fund_cache`: Dict mapping Date → FundamentalFeatures (quarter start date)
-- `company_meta`: NamedTuple with market_cap_cr, confidence_score,
-                  promoter_pledge_pct, is_fo, sector
-- `sector_vocab`: ordered sector list for one-hot
-- `step`: slide step in trading days (default 5 = weekly)
-- `min_history_days`: minimum bars before first example (default 130 ≈ 6 months)
-
-# Returns
-Vector of `Example` structs (label=nothing for the most recent windows where the
-next 5 days' hourly data is not yet available).
+Returns `(closes, vols, master_dates)`.
 """
-function generate_examples(symbol::String, company::String,
-                            ohlcv::DataFrame,
-                            hourly_ohlcv::DataFrame,
-                            nifty_ohlcv::DataFrame,
-                            sector_ohlcv::DataFrame,
-                            llm_cache::Dict{Date, LLMFeatures},
-                            fund_cache::Dict{Date, FundamentalFeatures},
-                            earnings_dates::Vector{Date},
-                            company_meta::NamedTuple,
-                            sector_vocab::Vector{String};
-                            step::Int=5,
-                            min_history_days::Int=130)::Vector{Example}
+function build_market_matrices(ohlcv_dir::String,
+                                companies::Vector{String})::Tuple{Matrix{Float32},
+                                                                   Matrix{Float32},
+                                                                   Vector{Date}}
+    # ── Collect the union of all trading dates ────────────────────────────────
+    all_dates = Set{Date}()
+    for sym in companies
+        path = joinpath(ohlcv_dir, "$(sym)_daily.csv")
+        isfile(path) || continue
+        df = CSV.read(path, DataFrame; types=Dict(:date => Date), select=[:date])
+        union!(all_dates, df.date)
+    end
+    master_dates = sort(collect(all_dates))
+    n_dates = length(master_dates)
+    n_comp  = length(companies)
+    date_index = Dict(d => i for (i, d) in enumerate(master_dates))
 
-    examples = Example[]
-    n = nrow(ohlcv)
-    n < min_history_days + step && return examples
+    closes = fill(NaN32, n_dates, n_comp)
+    vols   = fill(NaN32, n_dates, n_comp)
 
-    for t in min_history_days:step:n
-        date = ohlcv.date[t]
+    for (j, sym) in enumerate(companies)
+        path = joinpath(ohlcv_dir, "$(sym)_daily.csv")
+        isfile(path) || continue
+        df = CSV.read(path, DataFrame; types=Dict(:date => Date))
 
-        # ── Time-series features ──
-        ts_stock  = compute_ts_features(ohlcv,        find_date_index(ohlcv,        date))
-        ts_nifty  = compute_ts_features(nifty_ohlcv,  find_date_index(nifty_ohlcv,  date))
-        ts_sector = compute_ts_features(sector_ohlcv, find_date_index(sector_ohlcv, date))
+        for row in eachrow(df)
+            i = get(date_index, row.date, 0)
+            i == 0 && continue
+            closes[i, j] = Float32(row.close)
+            if row.high > row.low && row.close > 0
+                vols[i, j] = Float32((row.high - row.low) / row.close)
+            else
+                vols[i, j] = 0f0
+            end
+        end
 
-        # ── Fundamentals: last available quarter before date ──
-        fund = _latest_before(fund_cache, date, FundamentalFeatures(zeros(Float32, N_FUNDAMENTAL_FEATURES)))
+        # Forward-fill missing values along the time dimension
+        last_c = NaN32; last_v = 0f0
+        for i in 1:n_dates
+            if !isnan(closes[i, j])
+                last_c = closes[i, j]
+                last_v = vols[i, j]
+            elseif !isnan(last_c)
+                closes[i, j] = last_c
+                vols[i, j]   = last_v
+            end
+        end
+    end
 
-        # ── LLM features: most recent document published before date ──
-        llm = _latest_before(llm_cache, date, MISSING_LLM)
+    return closes, vols, master_dates
+end
 
-        # ── Days until next earnings ──
-        days_until = _days_until_next(earnings_dates, date)
+# ── Per-company example generation ───────────────────────────────────────────
 
-        # ── Meta ──
-        meta = meta_to_vec(
-            company_meta.market_cap_cr,
-            company_meta.confidence_score,
-            days_until,
-            company_meta.promoter_pledge_pct,
-            company_meta.is_fo,
-            company_meta.sector,
-            sector_vocab,
-        )
+"""
+Generate all `TrainingExample`s for one company by sliding a weekly window
+over the master date calendar.
 
-        features = assemble_features(ts_stock, ts_nifty, ts_sector, fund, llm, meta)
+Skips windows where:
+  - The company has no daily data on the training date.
+  - Fewer than N_HOURLY_BARS hourly bars exist up to the training date.
+  - The 5-day label window extends beyond available hourly data.
+"""
+function generate_company_examples(
+    symbol::String,
+    sym_idx::Int,
+    daily_df::DataFrame,
+    hourly_df::DataFrame,
+    master_dates::Vector{Date},
+    llm_cache::Dict{Date, LLMFeatures};
+    step::Int = 5,
+)::Vector{TrainingExample}
 
-        label = isempty(hourly_ohlcv) ? nothing :
-                label_5d_hourly(hourly_ohlcv, ohlcv, t)
+    examples = TrainingExample[]
+    n_master = length(master_dates)
 
-        push!(examples, Example(symbol, date, features, label))
+    for (t, date) in enumerate(master_dates)
+        # Weekly stride over the master calendar
+        t % step != 0  && continue
+        # Need N_MARKET_DAYS of market history (handled at batch time via closes matrix,
+        # but we guard here to avoid incomplete windows at dataset edges)
+        t < N_MARKET_DAYS + 1   && continue
+        t + N_PRED_DAYS > n_master && continue
+
+        # Company must have data on this exact trading date
+        daily_idx = searchsortedlast(daily_df.date, date)
+        (daily_idx == 0 || daily_df.date[daily_idx] != date) && continue
+
+        # ── Hourly series: last N_HOURLY_BARS bars ending at `date` ──────────
+        h_end  = DateTime(date, Time(23, 59, 59))
+        h_mask = hourly_df.datetime .<= h_end
+        h_sub  = hourly_df[h_mask, :]
+        nrow(h_sub) < N_HOURLY_BARS && continue
+
+        h_slice = h_sub[end-N_HOURLY_BARS+1:end, :]
+        ref     = Float32(h_slice.close[1])
+        ref <= 0 && continue
+        hourly_norm = Float32.(h_slice.close) ./ ref
+
+        # ── LLM scalars ───────────────────────────────────────────────────────
+        llm_feat = latest_before(llm_cache, date, MISSING_LLM)
+        llm_vec  = llm_to_vec(llm_feat)
+
+        # ── Label: 5-day hourly trajectory ───────────────────────────────────
+        label = label_5d_hourly(hourly_df, daily_df, daily_idx)
+        isnothing(label) && continue
+
+        push!(examples, TrainingExample(date, symbol, t, sym_idx,
+                                        hourly_norm, llm_vec, label))
     end
 
     return examples
 end
 
-# ── Dataset assembly ──────────────────────────────────────────────────────────
-
-"""
-Build a `Dataset` from a vector of `Example` structs.
-Drops examples with `label === nothing` (future / incomplete hourly data).
-Rows are sorted by date (ascending) — essential for time-ordered splitting.
-"""
-function build_dataset(examples::Vector{Example},
-                       feature_names::Vector{String},
-                       sector_vocab::Vector{String})::Dataset
-
-    labeled = filter(e -> !isnothing(e.label), examples)
-    isempty(labeled) && error("No labeled examples — cannot build dataset")
-
-    sort!(labeled, by = e -> (e.date, e.symbol))
-
-    n  = length(labeled)
-    nf = length(feature_names)
-    X  = Matrix{Float32}(undef, nf, n)
-    y  = Matrix{Float32}(undef, N_PRED_HOURS, n)
-    syms  = String[]
-    dates = Date[]
-
-    for (i, ex) in enumerate(labeled)
-        X[:, i] = ex.features
-        y[:, i] = ex.label
-        push!(syms,  ex.symbol)
-        push!(dates, ex.date)
-    end
-
-    return Dataset(X, y, feature_names, syms, dates, sector_vocab)
-end
-
 # ── Train / val / test split ──────────────────────────────────────────────────
 
 """
-Time-ordered split: oldest 80% → train, next 10% → val, newest 10% → test.
-Returns `(train, val, test)` index ranges into `dataset`.
+Time-ordered split of dataset examples. Returns (train_idx, val_idx, test_idx).
+Examples must already be sorted ascending by date (guaranteed by `build_dataset.jl`).
 """
 function time_split(dataset::Dataset; train_frac=0.80, val_frac=0.10)
-    n = size(dataset.X, 2)
+    n       = length(dataset.examples)
     n_train = floor(Int, n * train_frac)
     n_val   = floor(Int, n * val_frac)
-    n_test  = n - n_train - n_val
 
     train_idx = 1:n_train
     val_idx   = n_train+1 : n_train+n_val
@@ -192,96 +205,96 @@ function time_split(dataset::Dataset; train_frac=0.80, val_frac=0.10)
     return train_idx, val_idx, test_idx
 end
 
-# ── Normalisation ─────────────────────────────────────────────────────────────
+# ── Batch assembly (called inside training loop) ──────────────────────────────
 
 """
-Compute per-feature mean and std from the training split. Returns a `NormStats`.
-Features with zero variance are left unnormalised (std clamped to 1).
+Assemble a mini-batch from `dataset` given a vector of example indices.
+
+Returns `(market, hourly, llm, y)` where:
+  market — `(N_MARKET_DAYS, N_MARKET_CHANNELS, N_companies, B)` Float32
+  hourly — `(N_HOURLY_BARS, B)` Float32
+  llm    — `(N_LLM_FEATURES, B)` Float32
+  y      — `(N_PRED_HOURS, B)` Float32
+
+The target stock is placed at column 1 of dim 3 in `market`.
+Closing prices are normalised so the first day of each company's 28-day window = 1.0.
 """
-function compute_norm_stats(dataset::Dataset, train_idx)::NormStats
-    X_train = dataset.X[:, train_idx]
-    means = vec(mean(X_train, dims=2))
-    stds  = vec(std(X_train,  dims=2))
-    stds  = max.(stds, 1f-6)
-    return NormStats(dataset.feature_names, Float32.(means), Float32.(stds))
-end
+function assemble_batch(dataset::Dataset, indices::AbstractVector{Int})
+    B = length(indices)
+    N = length(dataset.companies)
 
-"""Apply normalisation in-place to a feature matrix."""
-function normalise!(X::Matrix{Float32}, stats::NormStats)
-    X .= (X .- stats.means) ./ stats.stds
-    return X
-end
+    market = Array{Float32}(undef, N_MARKET_DAYS, N_MARKET_CHANNELS, N, B)
+    hourly = Matrix{Float32}(undef, N_HOURLY_BARS,   B)
+    llm    = Matrix{Float32}(undef, N_LLM_FEATURES,  B)
+    y      = Matrix{Float32}(undef, N_PRED_HOURS,    B)
 
-"""Apply normalisation to a single feature vector (copy)."""
-function normalise(x::Vector{Float32}, stats::NormStats)::Vector{Float32}
-    return (x .- stats.means) ./ stats.stds
-end
+    for (b, idx) in enumerate(indices)
+        ex = dataset.examples[idx]
+        t  = ex.date_idx   # row in closes/vols matrices
+        k  = ex.sym_idx    # column of the target company
 
-# ── Serialisation ─────────────────────────────────────────────────────────────
+        # ── Market closes: 28-day window, normalised to first day = 1.0 ──────
+        raw_c  = dataset.closes[t-N_MARKET_DAYS+1:t, :]   # (28, N)
+        anchor = raw_c[1:1, :]                              # (1, N)
+        norm_c = raw_c ./ max.(anchor, 1f-6)               # (28, N)
+        norm_c[isnan.(norm_c)] .= 1f0
 
-"""Save `NormStats` to a JSON file."""
-function save_norm_stats(stats::NormStats, path::String)
-    open(path, "w") do io
-        JSON3.pretty(io, Dict(
-            "feature_names" => stats.feature_names,
-            "means"         => stats.means,
-            "stds"          => stats.stds,
-        ))
+        raw_v  = dataset.vols[t-N_MARKET_DAYS+1:t, :]     # (28, N)
+        raw_v[isnan.(raw_v)] .= 0f0
+
+        # ── Rearrange columns: target company at position 1 ──────────────────
+        others = filter(!=(k), 1:N)
+        order  = [k; others]
+
+        market[:, 1, :, b] = norm_c[:, order]
+        market[:, 2, :, b] = raw_v[:, order]
+
+        hourly[:, b] = ex.hourly
+        llm[:, b]    = ex.llm
+        y[:, b]      = ex.label
     end
+
+    return market, hourly, llm, y
 end
 
-"""Load `NormStats` from a JSON file."""
-function load_norm_stats(path::String)::NormStats
-    d = JSON3.read(read(path, String))
-    NormStats(
-        collect(String, d.feature_names),
-        collect(Float32, d.means),
-        collect(Float32, d.stds),
-    )
-end
+# ── Persistence ───────────────────────────────────────────────────────────────
 
 """
-Save a `Dataset` to CSV. Features are columns; trajectory labels are stored
-as columns `traj_h001` … `traj_h035` (one per hourly bar).
+Save a `Dataset` to `path` (BSON). Serialises all arrays as primitives to
+avoid struct versioning issues on load.
 """
 function save_dataset(dataset::Dataset, path::String)
-    df = DataFrame(dataset.X', dataset.feature_names)
-    for h in 1:N_PRED_HOURS
-        df[!, @sprintf("traj_h%03d", h)] = dataset.y[h, :]
-    end
-    df.symbol = dataset.symbols
-    df.date   = dataset.dates
-    CSV.write(path, df)
-    @info "Dataset written: $(size(dataset.X, 2)) examples × $(size(dataset.X, 1)) features → $path"
+    closes    = dataset.closes
+    vols      = dataset.vols
+    dates     = dataset.dates
+    companies = dataset.companies
+
+    n = length(dataset.examples)
+    ex_dates    = [ex.date     for ex in dataset.examples]
+    ex_symbols  = [ex.symbol   for ex in dataset.examples]
+    ex_date_idx = Int32[ex.date_idx for ex in dataset.examples]
+    ex_sym_idx  = Int32[ex.sym_idx  for ex in dataset.examples]
+    ex_hourly   = reduce(hcat, [ex.hourly for ex in dataset.examples])  # (N_HOURLY_BARS, n)
+    ex_llm      = reduce(hcat, [ex.llm    for ex in dataset.examples])  # (N_LLM_FEATURES, n)
+    ex_labels   = reduce(hcat, [ex.label  for ex in dataset.examples])  # (N_PRED_HOURS, n)
+
+    BSON.@save path closes vols dates companies ex_dates ex_symbols ex_date_idx ex_sym_idx ex_hourly ex_llm ex_labels
+    @info "Dataset saved → $path  ($(n) examples, $(length(companies)) companies, $(length(dates)) dates)"
 end
 
-"""Load a `Dataset` from a CSV saved by `save_dataset`."""
+"""Load a `Dataset` previously saved by `save_dataset`."""
 function load_dataset(path::String)::Dataset
-    df        = CSV.read(path, DataFrame)
-    traj_cols = sort(filter(c -> startswith(c, "traj_h"), names(df)))
-    meta_cols = vcat(traj_cols, ["symbol", "date"])
-    feat_cols = setdiff(names(df), meta_cols)
-    X  = Matrix{Float32}(df[:, feat_cols])'
-    y  = Matrix{Float32}(df[:, traj_cols])'   # (N_PRED_HOURS × n_examples)
-    syms  = Vector{String}(df.symbol)
-    dates = Vector{Date}(df.date)
-    return Dataset(X, y, feat_cols, syms, dates, String[])
-end
+    BSON.@load path closes vols dates companies ex_dates ex_symbols ex_date_idx ex_sym_idx ex_hourly ex_llm ex_labels
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-"""Return the value from `cache` with the largest key ≤ `date`, or `default`."""
-function _latest_before(cache::Dict{K,V}, date::Date, default::V)::V where {K,V}
-    best_key = nothing
-    for k in keys(cache)
-        (k <= date) && (isnothing(best_key) || k > best_key) && (best_key = k)
+    n = length(ex_dates)
+    examples = Vector{TrainingExample}(undef, n)
+    for i in 1:n
+        examples[i] = TrainingExample(
+            ex_dates[i], ex_symbols[i],
+            Int(ex_date_idx[i]), Int(ex_sym_idx[i]),
+            ex_hourly[:, i], ex_llm[:, i], ex_labels[:, i],
+        )
     end
-    isnothing(best_key) ? default : cache[best_key]
-end
 
-"""Days until the next earnings date after `date`. Returns 90 if none known."""
-function _days_until_next(earnings_dates::Vector{Date}, date::Date)::Int
-    future = filter(d -> d > date, earnings_dates)
-    isempty(future) && return 90
-    return Dates.value(minimum(future) - date)
+    return Dataset(closes, vols, dates, companies, examples)
 end

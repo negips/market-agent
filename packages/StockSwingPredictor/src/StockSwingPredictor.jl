@@ -3,31 +3,36 @@ StockSwingPredictor
 
 Neural-network-based large-move predictor for NSE-listed equities.
 
-Architecture: regularised 6-layer MLP trained on weekly sliding-window snapshots
-covering all NSE equities over a rolling 3–5 year history.
+## Architecture
 
-Input features per example:
-  • Time-series derived (stock + Nifty 50 + sector index): 39 values
-  • Quarterly fundamentals (last 4 quarters, 7 metrics):   28 values
-  • LLM-extracted scalars (conference call / earnings PDF): 15 values
-  • Company metadata (market cap, confidence, sector …):   ~40 values
-  Total: ~120 features
+Two CNN branches feed a shared MLP head:
 
-Label: N_PRED_HOURS (35) hourly log-return values over the next 5 trading days,
-each relative to the reference daily close. The final value (trajectory[end])
-is the end-of-day-5 close — the primary actionable signal.
+- **Market branch** (shared weights across the full ~500-company universe):
+  Each company's 28-day normalised closing-price + daily-vol series is processed
+  by the same 1D-CNN → 128-dim embedding. The target stock's embedding and the
+  mean of the remaining 499 embeddings (market context) are kept separate.
 
-See also: [TijoriData](@ref), [CompanyConfidence](@ref), [EarningsCalendar](@ref)
+- **Hourly branch** (target stock only):
+  8 weeks of 60-minute normalised closes → deeper 1D-CNN → 256-dim embedding.
+
+- **MLP head**: concat(128 + 128 + 256 + 15 LLM scalars) → 527 → … → 35 outputs.
+
+## Label
+
+35-step hourly log-return trajectory over the next 5 trading days, each value
+relative to the reference daily close. The final bar (eod_return) is the headline
+actionable signal.
 
 ## Pipeline
 
 ```
-scripts/collect_ohlcv.jl          # download daily + hourly OHLCV for all companies
-scripts/extract_llm_features.jl   # LLM extraction from conference calls (resumable)
-scripts/build_dataset.jl          # assemble training examples, normalise, split
-scripts/train_model.jl            # train MLP, save to website/data/models/
-scripts/score_watchlist.jl        # run inference on current earnings watchlist
+scripts/collect_ohlcv.jl        # download daily + hourly OHLCV for all companies
+scripts/extract_llm_features.jl # LLM extraction from conference calls (resumable)
+scripts/build_dataset.jl        # assemble Dataset (market matrices + examples)
+scripts/train_model.jl          # train SwingPredictor, save BSON
 ```
+
+See also: [TijoriData](@ref), [CompanyConfidence](@ref), [EarningsCalendar](@ref)
 """
 module StockSwingPredictor
 
@@ -36,11 +41,10 @@ using Flux, BSON
 using DataFrames, CSV
 using HTTP, JSON3
 using Statistics, LinearAlgebra
-using Dates, Printf
+using Dates, Printf, Random
 
 include("types.jl")
 include("kite_data.jl")
-include("fundamentals.jl")
 include("llm_extract.jl")
 include("features.jl")
 include("dataset.jl")
@@ -49,13 +53,11 @@ include("train.jl")
 include("display.jl")
 
 export
-    # types
-    OHLCVBar, TSFeatures, FundamentalFeatures, LLMFeatures, MetaFeatures,
-    Example, Dataset, NormStats, SwingSignal,
-    MISSING_LLM,
-    N_TS_FEATURES, N_FUNDAMENTAL_FEATURES, N_LLM_FEATURES,
-    FUNDAMENTAL_METRICS, N_QUARTERS,
-    N_HOURS_PER_DAY, N_PRED_DAYS, N_PRED_HOURS,
+    # types / constants
+    LLMFeatures, MISSING_LLM,
+    TrainingExample, Dataset, SwingSignal,
+    N_LLM_FEATURES, N_MARKET_DAYS, N_MARKET_CHANNELS,
+    N_HOURLY_BARS, N_HOURS_PER_DAY, N_PRED_DAYS, N_PRED_HOURS,
 
     # kite_data
     load_kite_session, load_instruments, build_token_map,
@@ -63,26 +65,20 @@ export
     fetch_ohlcv_hourly, collect_ohlcv_hourly, load_cached_ohlcv_hourly,
     sector_index_name, NSE_INDICES,
 
-    # fundamentals
-    extract_fundamentals, fundamental_feature_names,
-
     # llm_extract
     extract_features, extract_features_from_kb,
 
     # features
-    compute_ts_features, find_date_index,
-    ts_to_vec, ts_feature_names,
-    llm_to_vec, llm_feature_names,
-    meta_to_vec, meta_feature_names,
-    assemble_features, all_feature_names,
+    llm_to_vec, llm_feature_names, latest_before, find_date_index,
 
     # dataset
-    label_5d_hourly, generate_examples, build_dataset,
-    time_split, compute_norm_stats, normalise!, normalise,
-    save_norm_stats, load_norm_stats, save_dataset, load_dataset,
+    label_5d_hourly,
+    build_market_matrices, generate_company_examples,
+    time_split, assemble_batch,
+    save_dataset, load_dataset,
 
     # model
-    build_model, predict, save_model, load_model,
+    SwingPredictor, build_model, predict, save_model, load_model,
 
     # train
     train!, evaluate, save_training_log

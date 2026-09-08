@@ -67,34 +67,9 @@ Output:
     token_map   = build_token_map(instruments)
     @info "  $(length(token_map)) instruments loaded"
 
-    # ── Collect index OHLCV ───────────────────────────────────────────────────
-
-    @info "Fetching index data…"
-    mkpath(OHLCV_DIR)
-    for idx_name in NSE_INDICES
-        # Kite index tradingsymbols often use spaces; the token_map key is the
-        # tradingsymbol as returned by /instruments (e.g. "NIFTY 50").
-        path = joinpath(OHLCV_DIR, "IDX_$(replace(idx_name, " " => "_"))_daily.csv")
-        if !refresh && isfile(path)
-            @info "  $idx_name — cached"
-            continue
-        end
-        token = get(token_map, idx_name, nothing)
-        if isnothing(token)
-            @warn "  $idx_name — no token found, skipping"
-            continue
-        end
-        df = fetch_ohlcv(token, from_date, to_date, session)
-        if isempty(df)
-            @warn "  $idx_name — empty response"
-        else
-            CSV.write(path, df)
-            @info "  $idx_name — $(nrow(df)) days"
-        end
-        sleep(0.35)
-    end
-
     # ── Collect equity OHLCV ──────────────────────────────────────────────────
+
+    mkpath(OHLCV_DIR)
 
     isfile(COMPANIES_FILE) || error("Not found: $COMPANIES_FILE\nRun: julia scripts/generate_nse_list.jl")
     raw   = JSON3.read(read(COMPANIES_FILE, String))

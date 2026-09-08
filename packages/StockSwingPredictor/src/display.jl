@@ -23,18 +23,13 @@ function Base.show(io::IO, ::MIME"text/plain", signals::Vector{SwingSignal})
 end
 
 function Base.show(io::IO, d::Dataset)
-    n_ex   = size(d.X, 2)
-    n_feat = size(d.X, 1)
-    # Show stats for the final-hour bar (end-of-day-5 close vs reference).
-    final_h = d.y[end, :]
+    n_ex   = length(d.examples)
+    final_h = [ex.label[end] for ex in d.examples]
     y_mean  = round(mean(final_h) * 100, digits=3)
     y_std   = round(std(final_h)  * 100, digits=3)
-    println(io, "Dataset: $n_ex examples × $n_feat features  →  $(N_PRED_HOURS)-step trajectory")
-    println(io, "  Final-bar return: mean=$(y_mean)%  std=$(y_std)%")
-    println(io, "  Symbols: $(length(unique(d.symbols)))  " *
-                "Date range: $(minimum(d.dates)) → $(maximum(d.dates))")
-end
-
-function Base.show(io::IO, stats::NormStats)
-    println(io, "NormStats: $(length(stats.feature_names)) features")
+    println(io, "Dataset: $(n_ex) examples | $(length(d.companies)) companies | $(length(d.dates)) trading dates")
+    println(io, "  Final-bar return (eod day5): mean=$(y_mean)%  std=$(y_std)%")
+    if !isempty(d.examples)
+        println(io, "  Date range: $(d.examples[1].date) → $(d.examples[end].date)")
+    end
 end
