@@ -12,6 +12,9 @@
     .date-cell    { white-space: nowrap; }
     .date-val     { font-weight: 500; font-size: 13px; }
     .purpose-text { font-size: 12px; color: var(--text-dim); }
+    .src-tag      { font-size: 10px; font-family: var(--mono); padding: 1px 5px; border-radius: 3px; vertical-align: middle; }
+    .src-confirmed { background: rgba(61,214,140,.12); color: var(--green); }
+    .src-projected { background: rgba(245,200,66,.1);  color: var(--yellow); }
     td.rank       { text-align: center; color: var(--muted); font-size: 12px; width: 48px; }
 
     /* ── Clickable data rows ── */
@@ -417,7 +420,12 @@ function renderPage() {
        </td>`,
       `<td class="sector-text">${esc(e.sector||'—')}</td>`,
       `<td class="date-cell">
-         <div class="date-val">${fmtDate(e.earnings_date)}</div>
+         <div class="date-val">
+           ${fmtDate(e.earnings_date)}
+           ${e.date_source === 'nse_confirmed'
+             ? '<span class="src-tag src-confirmed">confirmed</span>'
+             : '<span class="src-tag src-projected">projected</span>'}
+         </div>
          ${days >= 0 ? fmtDaysPill(days) : ''}
        </td>`,
       `<td class="purpose-text">${esc(e.purpose||'—')}</td>`,

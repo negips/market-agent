@@ -50,7 +50,8 @@ market-agent/
 ├── scripts/                        # standalone Julia scripts (not packages)
 │   ├── generate_nse_list.jl           # builds data/nse_companies_latest.json
 │   ├── run_confidence_checks.jl       # runs CompanyConfidence on top-N by market cap
-│   └── generate_earnings_watchlist.jl # joins EarningsCalendar + confidence → watchlist JSON
+│   ├── enrich_earnings_dates.jl       # projects next earnings date via Tijori history (run every 2 weeks)
+│   └── generate_earnings_watchlist.jl # merges NSE calendar + projections → watchlist JSON
 │
 │   ├── data/                           # generated artifacts (gitignored)
 │   │   ├── nse_companies_latest.json   # latest snapshot (read by companies.html)
