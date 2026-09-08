@@ -84,8 +84,8 @@ struct SwingPredictor{A <: SwingArchitecture}
     mlp_head   :: Chain
 end
 
-# Only expose the Flux layers to the optimiser — arch is metadata, not parameters.
-Flux.@functor SwingPredictor (market_cnn, hourly_cnn, mlp_head)
+# Flux ≥ 0.15 traverses structs automatically (opt-out model).
+# `arch` carries no arrays so the optimiser ignores it naturally.
 
 # ── DualCNN builder ───────────────────────────────────────────────────────────
 

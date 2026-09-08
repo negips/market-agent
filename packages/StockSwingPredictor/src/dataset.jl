@@ -45,6 +45,8 @@ function label_5d_hourly(hourly_df::DataFrame, daily_df::DataFrame,
     ref_close    = daily_df.close[t]
     target_dates = Set(daily_df.date[t+1 : t+N_PRED_DAYS])
 
+    (isempty(hourly_df) || !hasproperty(hourly_df, :datetime)) && return nothing
+
     mask   = [Date(row.datetime) in target_dates for row in eachrow(hourly_df)]
     window = sort(hourly_df[mask, :], :datetime)
     nrow(window) == 0 && return nothing
