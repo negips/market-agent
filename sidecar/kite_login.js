@@ -7,8 +7,8 @@
  * Required env vars (read from repo-root .env automatically):
  *   KITE_HISTORICAL_API_KEY    — Kite Connect Historical Data app key
  *   KITE_HISTORICAL_API_SECRET — Kite Connect Historical Data app secret
- *   KITE_CONNECT_ID            — Zerodha developer platform user ID
- *   KITE_CONNECT_PASSWORD      — Zerodha developer platform password
+ *   KITE_USER_ID               — Zerodha trading account client ID (e.g. AB1234)
+ *   KITE_PASSWORD              — Zerodha trading account password
  *   KITE_TOTP_SECRET           — Base32 TOTP secret from your authenticator app setup
  *
  * Output:
@@ -41,12 +41,12 @@ try {
 const {
   KITE_HISTORICAL_API_KEY:    API_KEY,
   KITE_HISTORICAL_API_SECRET: API_SECRET,
-  KITE_CONNECT_ID:            USER_ID,
-  KITE_CONNECT_PASSWORD:      PASSWORD,
+  KITE_USER_ID:               USER_ID,
+  KITE_PASSWORD:              PASSWORD,
   KITE_TOTP_SECRET:           TOTP_SECRET,
 } = process.env;
 
-const missing = ['KITE_HISTORICAL_API_KEY','KITE_HISTORICAL_API_SECRET','KITE_CONNECT_ID','KITE_CONNECT_PASSWORD','KITE_TOTP_SECRET']
+const missing = ['KITE_HISTORICAL_API_KEY','KITE_HISTORICAL_API_SECRET','KITE_USER_ID','KITE_PASSWORD','KITE_TOTP_SECRET']
   .filter(k => !process.env[k]);
 if (missing.length) {
   console.error(`Missing required env vars: ${missing.join(', ')}`);
