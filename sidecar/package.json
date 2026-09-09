@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node server_http.js",
     "setup-tijori": "cd tijori-finance-mcp && node setup.js",
-    "setup-kite": "node kite_setup.js"
+    "setup-kite": "node kite_login.js"
   },
   "dependencies": {
     "express": "^4.19.0"

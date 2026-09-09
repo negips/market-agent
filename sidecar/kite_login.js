@@ -1,8 +1,8 @@
 /**
- * kite_setup.js — Obtain a fresh Kite Connect access token via browser automation.
+ * kite_login.js — Obtain a fresh Kite Connect access token via browser automation.
  *
  * Run once per trading day before starting the Julia session:
- *   node sidecar/kite_setup.js
+ *   node sidecar/kite_login.js
  *
  * Required env vars (read from repo-root .env automatically):
  *   KITE_API_KEY       — Kite Connect app key

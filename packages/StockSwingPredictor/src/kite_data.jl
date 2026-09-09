@@ -53,12 +53,12 @@ Returns `(api_key, access_token)` or throws if not found / expired.
 """
 function load_kite_session(repo_root::String)
     path = joinpath(repo_root, "sidecar", "kite_session.json")
-    isfile(path) || error("No Kite session found. Run: node sidecar/kite_setup.js")
+    isfile(path) || error("No Kite session found. Run: node sidecar/kite_login.js")
     s = JSON3.read(read(path, String))
     date_str = string(get(s, :date, ""))
     if date_str != string(today())
         @warn "Kite session is from $date_str — token may be stale. " *
-              "Run: node sidecar/kite_setup.js"
+              "Run: node sidecar/kite_login.js"
     end
     return (api_key=string(s.api_key), access_token=string(s.access_token))
 end

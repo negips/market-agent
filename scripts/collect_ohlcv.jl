@@ -2,24 +2,26 @@
 collect_ohlcv.jl
 
 Download and cache daily and 60-minute OHLCV data from Kite Connect for all
-confidence-scored NSE companies and for key index benchmarks.
+NSE companies with confidence score > 40.
 
-Daily data is used for input features; hourly data is used for trajectory labels.
+Daily data is used for the market context matrix; hourly data is used for
+trajectory labels. Both are needed for training, but daily can be collected
+independently first.
 
 Output:
-  website/data/ohlcv/{SYMBOL}_daily.csv     — daily bars (features)
-  website/data/ohlcv/{SYMBOL}_hourly.csv    — 60-minute bars (labels)
-  website/data/ohlcv/IDX_{NAME}_daily.csv  — index daily bars
+  website/data/ohlcv/{SYMBOL}_daily.csv   — daily bars
+  website/data/ohlcv/{SYMBOL}_hourly.csv  — 60-minute bars
 
 The script is resumable — already-cached symbols are skipped unless --refresh.
 
 Prerequisites:
-  - sidecar/kite_session.json present (node sidecar/kite_setup.js)
-  - website/data/nse_companies_latest.json present
+  - sidecar/kite_session.json present (node sidecar/kite_login.js)
+  - website/data/nse_companies_latest.json present (run generate_nse_list.jl)
 
 Usage:
   julia --project=packages/StockSwingPredictor scripts/collect_ohlcv.jl
-  julia --project=packages/StockSwingPredictor scripts/collect_ohlcv.jl 3      # years of history
+  julia --project=packages/StockSwingPredictor scripts/collect_ohlcv.jl 3            # years of history
+  julia --project=packages/StockSwingPredictor scripts/collect_ohlcv.jl 5 --daily-only
   julia --project=packages/StockSwingPredictor scripts/collect_ohlcv.jl 5 --refresh
 """
 
@@ -33,22 +35,26 @@ function main()
     if "--help" in ARGS || "-h" in ARGS
         println("""
 Usage:
-  julia --project=packages/StockSwingPredictor scripts/collect_ohlcv.jl [YEARS] [--refresh]
+  julia --project=packages/StockSwingPredictor scripts/collect_ohlcv.jl [YEARS] [FLAGS]
 
 Arguments:
-  YEARS      Years of history to fetch (default: 5).
-  --refresh  Re-download even if a cached file exists.
+  YEARS         Years of history to fetch (default: 5).
+  --daily-only  Fetch only daily bars; skip the slow hourly collection.
+  --refresh     Re-download even if a cached file exists.
 
 Output:
-  website/data/ohlcv/{SYMBOL}_daily.csv for each company
-  website/data/ohlcv/IDX_{NAME}_daily.csv for each index
+  website/data/ohlcv/{SYMBOL}_daily.csv   — one row per trading day
+  website/data/ohlcv/{SYMBOL}_hourly.csv  — one row per 60-minute bar
+
+Universe: companies in nse_companies_latest.json with confidence score > 40.
 """)
         return
     end
 
-    refresh = "--refresh" in ARGS
-    args    = filter(a -> a != "--refresh", ARGS)
-    years   = length(args) >= 1 ? parse(Int, args[1]) : 5
+    refresh     = "--refresh"    in ARGS
+    daily_only  = "--daily-only" in ARGS
+    args        = filter(a -> a ∉ ("--refresh", "--daily-only"), ARGS)
+    years       = length(args) >= 1 ? parse(Int, args[1]) : 5
 
     to_date   = today()
     from_date = to_date - Year(years)
@@ -75,22 +81,32 @@ Output:
     raw   = JSON3.read(read(COMPANIES_FILE, String))
     all_c = collect(raw.companies)
 
-    # Only companies with a confidence score and a valid symbol.
+    # Companies with confidence score > 40 and a valid symbol, sorted by market cap.
+    CONFIDENCE_THRESHOLD = 40
     eligible = filter(all_c) do c
-        !isnothing(get(c, :confidence, nothing)) &&
-        !isempty(string(get(c, :symbol, "")))
+        conf = get(c, :confidence, nothing)
+        !isnothing(conf) &&
+        !isempty(string(get(c, :symbol, ""))) &&
+        get(conf, :score, 0) > CONFIDENCE_THRESHOLD
     end
     sort!(eligible, by = c -> Float64(get(c, :market_cap_cr, 0.0)), rev=true)
     symbols = [string(c.symbol) for c in eligible]
 
-    @info "Collecting daily OHLCV for $(length(symbols)) confidence-scored companies…"
+    @info "Universe: $(length(symbols)) companies with confidence > $CONFIDENCE_THRESHOLD"
+
+    @info "Collecting daily OHLCV for $(length(symbols)) companies…"
     collect_ohlcv(symbols, token_map, session, OHLCV_DIR, from_date, to_date; refresh=refresh)
 
     # ── Collect 60-minute OHLCV (for trajectory labels) ───────────────────────
 
-    @info "Collecting 60-minute OHLCV for $(length(symbols)) companies…"
-    @info "  (~$(60 * ceil(Int, years * 365 / 59)) API calls total — this takes a while)"
-    collect_ohlcv_hourly(symbols, token_map, session, OHLCV_DIR, from_date, to_date; refresh=refresh)
+    if daily_only
+        @info "Skipping hourly collection (--daily-only). Re-run without --daily-only to fetch hourly bars."
+    else
+        n_chunks = ceil(Int, years * 365 / 59)
+        @info "Collecting 60-minute OHLCV for $(length(symbols)) companies…"
+        @info "  (~$(n_chunks) API calls per company, ~$(round(Int, length(symbols) * n_chunks * 0.35 / 60)) min total)"
+        collect_ohlcv_hourly(symbols, token_map, session, OHLCV_DIR, from_date, to_date; refresh=refresh)
+    end
 end
 
 main()

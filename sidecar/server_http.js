@@ -95,18 +95,18 @@ app.get('/health', (_req, res) => {
 /**
  * GET /kite/token
  * Returns today's Kite Connect access token from kite_session.json.
- * Run `node kite_setup.js` once per trading day to refresh it.
+ * Run `node kite_login.js` once per trading day to refresh it.
  */
 app.get('/kite/token', route(_req => {
   let session;
   try {
     session = JSON.parse(readFileSync(path.join(__dirname, 'kite_session.json'), 'utf8'));
   } catch {
-    throw new Error('No Kite session found. Run: node sidecar/kite_setup.js');
+    throw new Error('No Kite session found. Run: node sidecar/kite_login.js');
   }
   const today = new Date().toISOString().slice(0, 10);
   if (session.date !== today) {
-    throw new Error(`Kite session expired (was for ${session.date}). Run: node sidecar/kite_setup.js`);
+    throw new Error(`Kite session expired (was for ${session.date}). Run: node sidecar/kite_login.js`);
   }
   return {
     access_token: session.access_token,

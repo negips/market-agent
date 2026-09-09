@@ -15,7 +15,7 @@ Prerequisites:
   - website/data/nse_companies_latest.json    (julia scripts/generate_nse_list.jl)
   - website/data/earnings_projections.json    (julia --project=packages/TijoriData scripts/enrich_earnings_dates.jl)
   - Confidence checks run                     (julia --project=packages/CompanyConfidence scripts/run_confidence_checks.jl)
-  - sidecar/kite_session.json                 (node sidecar/kite_setup.js — daily)
+  - sidecar/kite_session.json                 (node sidecar/kite_login.js — daily)
 
 Usage:
   julia --project=packages/EarningsCalendar scripts/generate_earnings_watchlist.jl
@@ -47,7 +47,7 @@ function load_kite_session()::Union{NamedTuple, Nothing}
         # Warn if session is from a previous day but still try — market may be closed
         if string(get(s, :date, "")) != string(today())
             @warn "Kite session is from $(get(s, :date, "?")) — token may be expired. " *
-                  "Run: node sidecar/kite_setup.js"
+                  "Run: node sidecar/kite_login.js"
         end
         return (api_key=string(s.api_key), access_token=string(s.access_token))
     catch
@@ -58,7 +58,7 @@ end
 function fetch_kite_quotes(symbols::Vector{String})::Dict{String, KiteQuote}
     session = load_kite_session()
     if isnothing(session)
-        @warn "No Kite session found — using bhavcopy prices. Run: node sidecar/kite_setup.js"
+        @warn "No Kite session found — using bhavcopy prices. Run: node sidecar/kite_login.js"
         return Dict{String, KiteQuote}()
     end
 
@@ -79,7 +79,7 @@ function fetch_kite_quotes(symbols::Vector{String})::Dict{String, KiteQuote}
     end
 
     if resp.status == 403
-        @warn "Kite token rejected (403) — session may have expired. Run: node sidecar/kite_setup.js"
+        @warn "Kite token rejected (403) — session may have expired. Run: node sidecar/kite_login.js"
         return Dict{String, KiteQuote}()
     elseif resp.status != 200
         @warn "Kite quote returned HTTP $(resp.status)"
