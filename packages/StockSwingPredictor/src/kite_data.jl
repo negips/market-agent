@@ -208,7 +208,7 @@ function collect_ohlcv(symbols::Vector{String}, token_map::Dict{String,Int},
 
         CSV.write(path, df)
         ok += 1
-        i % 20 == 0 && @info "[$i/$total] $sym — $(nrow(df)) days"
+        @info "[$i/$total] $sym — $(nrow(df)) days"
         sleep(0.35)   # ~3 req/s rate limit
     end
 
@@ -331,8 +331,7 @@ function collect_ohlcv_hourly(symbols::Vector{String}, token_map::Dict{String,In
 
         CSV.write(path, df)
         ok += 1
-        i % 20 == 0 && @info "[$i/$total] $sym hourly — $(nrow(df)) bars"
-        # fetch_ohlcv_hourly already sleeps between chunks; no extra sleep needed
+        @info "[$i/$total] $sym hourly — $(nrow(df)) bars"
     end
 
     @info "Hourly OHLCV done: $ok fetched, $skipped skipped, $failed failed"
