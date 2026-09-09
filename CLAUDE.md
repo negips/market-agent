@@ -319,11 +319,13 @@ loads it automatically; Julia code can use `DotEnv.jl` or read it manually.
 | Variable | Used by | Purpose |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | LLM calls (planned) | Claude API authentication |
-| `KITE_API_KEY` | `kite_login.js`, BrokerClient | Zerodha Kite Connect app key |
-| `KITE_API_SECRET` | `kite_login.js`, BrokerClient | Zerodha Kite Connect app secret |
-| `KITE_USER_ID` | `kite_login.js` | Zerodha client ID (e.g. AB1234) |
-| `KITE_PASSWORD` | `kite_login.js` | Zerodha login password |
+| `KITE_HISTORICAL_API_KEY` | `kite_login.js`, `kite_data.jl` | Kite Historical Data app key |
+| `KITE_HISTORICAL_API_SECRET` | `kite_login.js` | Kite Historical Data app secret |
+| `KITE_CONNECT_ID` | `kite_login.js` | Zerodha developer platform user ID |
+| `KITE_CONNECT_PASSWORD` | `kite_login.js` | Zerodha developer platform password |
 | `KITE_TOTP_SECRET` | `kite_login.js` | Base32 TOTP secret from authenticator app |
+| `KITE_API_KEY` | BrokerClient (planned) | Kite trading app key (not used for data) |
+| `KITE_API_SECRET` | BrokerClient (planned) | Kite trading app secret (not used for data) |
 | `PORT` | sidecar | HTTP port (default 3001) |
 
 The daily access token is **not** an env var — `kite_login.js` writes it to
