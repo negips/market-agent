@@ -126,9 +126,7 @@ Sorted ascending by date. Returns empty DataFrame on failure.
 function fetch_ohlcv(token::Int, from_date::Date, to_date::Date, session)::DataFrame
     from_s = Dates.format(from_date, "yyyy-mm-dd") * "+09:15:00"
     to_s   = Dates.format(to_date,   "yyyy-mm-dd") * "+15:30:00"
-    url = "$KITE_BASE/historical/$token/day" *
-          "?from=$(HTTP.URIs.escapeuri(from_s))&to=$(HTTP.URIs.escapeuri(to_s))" *
-          "&continuous=0&oi=0"
+    url = "$KITE_BASE/instruments/historical/$token/day?from=$from_s&to=$to_s&continuous=0&oi=0"
 
     resp = try
         HTTP.get(url; headers=_kite_headers(session), request_timeout=20,
@@ -254,11 +252,9 @@ function fetch_ohlcv_hourly(token::Int, from_date::Date, to_date::Date,
     chunk_start = from_date
     while chunk_start <= to_date
         chunk_end = min(chunk_start + Day(chunk_days), to_date)
-        from_s = Dates.format(chunk_start, "yyyy-mm-dd") * " 09:00:00"
-        to_s   = Dates.format(chunk_end,   "yyyy-mm-dd") * " 15:30:00"
-        url = "$KITE_BASE/historical/$token/60minute" *
-              "?from=$(HTTP.URIs.escapeuri(from_s))&to=$(HTTP.URIs.escapeuri(to_s))" *
-              "&continuous=0&oi=0"
+        from_s = Dates.format(chunk_start, "yyyy-mm-dd") * "+09:00:00"
+        to_s   = Dates.format(chunk_end,   "yyyy-mm-dd") * "+15:30:00"
+        url = "$KITE_BASE/instruments/historical/$token/60minute?from=$from_s&to=$to_s&continuous=0&oi=0"
 
         resp = try
             HTTP.get(url; headers=_kite_headers(session), request_timeout=30,
