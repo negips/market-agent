@@ -11,7 +11,7 @@ Usage:
   julia scripts/test_kite_fetch.jl INFY 90  # specific symbol + days of history
 """
 
-using StockSwingPredictor, Dates
+using StockSwingPredictor, DataFrames, Dates
 
 const REPO_ROOT = joinpath(@__DIR__, "..")
 
