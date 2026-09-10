@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Training — market-agent</title>
+  <link rel="stylesheet" href="assets/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    .training-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+    .stat-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px 18px;
+    }
+    .stat-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .07em;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+    .stat-value {
+      font-family: var(--mono);
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--text);
+    }
+    .stat-value.accent { color: var(--accent); }
+    .stat-value.green  { color: var(--green);  }
+    .stat-value.yellow { color: var(--yellow); }
+    .stat-sub {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 3px;
+      font-family: var(--mono);
+    }
+
+    .chart-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px 24px;
+      margin-bottom: 14px;
+    }
+    .chart-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+    .chart-title {
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .chart-legend {
+      display: flex;
+      gap: 16px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .legend-dot {
+      display: inline-block;
+      width: 10px; height: 3px;
+      border-radius: 2px;
+      margin-right: 5px;
+      vertical-align: middle;
+    }
+    canvas { display: block; width: 100% !important; }
+
+    .status-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 20px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .live-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      animation: pulse 2s infinite;
+    }
+    .live-dot.idle { background: var(--muted); animation: none; }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: .3; }
+    }
+
+    .epoch-bar-wrap {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px 18px;
+      margin-bottom: 14px;
+    }
+    .epoch-bar-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .07em;
+      color: var(--muted);
+      margin-bottom: 10px;
+      display: flex;
+      justify-content: space-between;
+    }
+    .epoch-bar-track {
+      height: 6px;
+      background: var(--surface2);
+      border-radius: 99px;
+      overflow: hidden;
+    }
+    .epoch-bar-fill {
+      height: 100%;
+      border-radius: 99px;
+      background: linear-gradient(90deg, var(--accent), var(--green));
+      transition: width .4s ease;
+    }
+
+    .model-selector {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+    .model-selector label { font-size: 12px; color: var(--muted); }
+    .model-selector input {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 12px;
+      padding: 5px 10px;
+      width: 220px;
+    }
+    .model-selector button {
+      background: var(--accent);
+      border: none;
+      border-radius: 6px;
+      color: #fff;
+      font-size: 12px;
+      padding: 5px 14px;
+      cursor: pointer;
+    }
+    .refresh-info { margin-left: auto; font-size: 11px; color: var(--muted); font-family: var(--mono); }
+  </style>
+</head>
+<body>
+<script src="assets/nav.js"></script>
+
+<div class="main">
+  <div class="page-header">
+    <div class="page-title">Training Monitor</div>
+    <div class="page-subtitle">Live loss curves from epoch_log.jsonl</div>
+  </div>
+
+  <div class="page-content">
+
+    <div class="model-selector">
+      <label>Model</label>
+      <input type="text" id="model-name" value="DualCNN_v1" placeholder="model folder name">
+      <button onclick="load()">Load</button>
+      <span class="refresh-info">Auto-refresh in <span id="countdown">30</span>s</span>
+    </div>
+
+    <div class="status-bar">
+      <div class="live-dot" id="live-dot"></div>
+      <span id="status-text">Loading…</span>
+    </div>
+
+    <!-- Epoch progress bar -->
+    <div class="epoch-bar-wrap">
+      <div class="epoch-bar-label">
+        <span>Epoch progress</span>
+        <span id="epoch-progress-label">—</span>
+      </div>
+      <div class="epoch-bar-track">
+        <div class="epoch-bar-fill" id="epoch-bar" style="width:0%"></div>
+      </div>
+    </div>
+
+    <!-- Stat cards -->
+    <div class="training-grid">
+      <div class="stat-card">
+        <div class="stat-label">Current Epoch</div>
+        <div class="stat-value accent" id="stat-epoch">—</div>
+        <div class="stat-sub" id="stat-epoch-sub">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Train MSE (now)</div>
+        <div class="stat-value" id="stat-train">—</div>
+        <div class="stat-sub" id="stat-train-sub">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Best Val MSE</div>
+        <div class="stat-value green" id="stat-val">—</div>
+        <div class="stat-sub" id="stat-val-sub">no val yet</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Elapsed</div>
+        <div class="stat-value yellow" id="stat-elapsed">—</div>
+        <div class="stat-sub" id="stat-elapsed-sub">—</div>
+      </div>
+    </div>
+
+    <!-- Loss chart -->
+    <div class="chart-card">
+      <div class="chart-header">
+        <div class="chart-title">Loss over time</div>
+        <div class="chart-legend">
+          <span><span class="legend-dot" style="background:#4f8ef7"></span>Train MSE</span>
+          <span><span class="legend-dot" style="background:#f76f6f"></span>Val MSE</span>
+          <span><span class="legend-dot" style="background:#3dd68c;width:6px;height:6px;border-radius:50%"></span>Improved ★</span>
+        </div>
+      </div>
+      <canvas id="loss-chart" height="320"></canvas>
+    </div>
+
+    <!-- Val-only chart (epoch level) -->
+    <div class="chart-card" id="val-chart-card" style="display:none">
+      <div class="chart-header">
+        <div class="chart-title">Validation loss by epoch</div>
+      </div>
+      <canvas id="val-chart" height="200"></canvas>
+    </div>
+
+  </div>
+</div>
+
+<script src="assets/utils.js"></script>
+<script>
+  const LOG_BASE = 'data/models/';
+  let lossChart = null;
+  let valChart  = null;
+  let countdown = 30;
+  let timer     = null;
+
+  // Chart.js defaults for dark theme
+  Chart.defaults.color          = '#6b7280';
+  Chart.defaults.borderColor    = '#2e3350';
+  Chart.defaults.backgroundColor = 'transparent';
+
+  function fmtMSE(v)  { return v == null ? '—' : v.toFixed(6); }
+  function fmtMin(s)  {
+    const m = Math.floor(s / 60), sec = Math.round(s % 60);
+    return m > 0 ? `${m}m ${sec}s` : `${sec}s`;
+  }
+
+  function dedup(records) {
+    const seen = new Map();
+    for (const r of records) {
+      const key = `${r.epoch}|${r.batch ?? 'null'}`;
+      seen.set(key, r);
+    }
+    return [...seen.values()].sort((a, b) => {
+      if (a.epoch !== b.epoch) return a.epoch - b.epoch;
+      const ba = a.batch ?? 1e9, bb = b.batch ?? 1e9;
+      return ba - bb;
+    });
+  }
+
+  async function load() {
+    const model = document.getElementById('model-name').value.trim();
+    const url   = `${LOG_BASE}${model}/epoch_log.jsonl`;
+
+    let text;
+    try {
+      const resp = await fetch(url + '?_=' + Date.now());
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      text = await resp.text();
+    } catch (e) {
+      document.getElementById('status-text').textContent = `Error: ${e.message}`;
+      document.getElementById('live-dot').className = 'live-dot idle';
+      return;
+    }
+
+    const records = dedup(
+      text.trim().split('\n').filter(l => l.trim()).map(l => JSON.parse(l))
+    );
+
+    const batchRecs = records.filter(r => r.batch != null);
+    const epochRecs = records.filter(r => r.batch == null);
+
+    const last      = records[records.length - 1];
+    const lastEpoch = epochRecs[epochRecs.length - 1] ?? null;
+    const bestVal   = lastEpoch
+      ? Math.min(...epochRecs.map(r => r.val_mse))
+      : null;
+
+    // ── Status bar ──
+    const ageSecs = last ? (Date.now()/1000 - last.elapsed_secs - (Date.now()/1000 - last.elapsed_secs)) : null;
+    // Use last elapsed as proxy for "is live" (file written recently)
+    const isLive = true; // can't check mtime from browser; assume live if data exists
+    document.getElementById('live-dot').className = 'live-dot' + (isLive ? '' : ' idle');
+    document.getElementById('status-text').textContent =
+      `${model} · ${records.length} records · last at ${fmtMin(last?.elapsed_secs ?? 0)} elapsed`;
+
+    // ── Epoch progress bar ──
+    const curEpoch    = last?.epoch ?? 1;
+    const curBatch    = last?.batch ?? 0;
+    const totalEpochs = 150; // from default config
+    const totalBatches = 8758;
+    const epochPct = curBatch != null
+      ? Math.round(curBatch / totalBatches * 100)
+      : 100;
+    document.getElementById('epoch-bar').style.width = epochPct + '%';
+    document.getElementById('epoch-progress-label').textContent =
+      `Epoch ${curEpoch} · batch ${curBatch ?? '✓'} / ${totalBatches}  (${epochPct}%)`;
+
+    // ── Stat cards ──
+    document.getElementById('stat-epoch').textContent     = `${curEpoch} / ${totalEpochs}`;
+    document.getElementById('stat-epoch-sub').textContent = `${epochRecs.length} epoch(s) completed`;
+    document.getElementById('stat-train').textContent     = fmtMSE(last?.train_mse);
+    document.getElementById('stat-train-sub').textContent = last?.batch != null
+      ? `batch ${last.batch} / ${totalBatches}`
+      : 'epoch end';
+    document.getElementById('stat-val').textContent       = fmtMSE(bestVal);
+    document.getElementById('stat-val-sub').textContent   = lastEpoch
+      ? `epoch ${lastEpoch.epoch} · improved: ${epochRecs.filter(r=>r.improved).length}×`
+      : 'no val yet';
+    document.getElementById('stat-elapsed').textContent   = fmtMin(last?.elapsed_secs ?? 0);
+    document.getElementById('stat-elapsed-sub').textContent = last
+      ? `${batchRecs.length} batch records`
+      : '';
+
+    // ── Loss chart ──
+    const xAll = records.map(r => parseFloat((r.elapsed_secs / 60).toFixed(2)));
+    const yTrain = records.map(r => r.train_mse);
+
+    const valPoints = epochRecs.map(r => ({ x: parseFloat((r.elapsed_secs/60).toFixed(2)), y: r.val_mse }));
+    const starPoints = epochRecs.filter(r => r.improved).map(r => ({
+      x: parseFloat((r.elapsed_secs/60).toFixed(2)), y: r.val_mse
+    }));
+
+    const datasets = [
+      {
+        label: 'Train MSE',
+        data: records.map(r => ({ x: parseFloat((r.elapsed_secs/60).toFixed(2)), y: r.train_mse })),
+        borderColor: '#4f8ef7',
+        borderWidth: 1.5,
+        pointRadius: 0,
+        tension: 0.3,
+      },
+    ];
+    if (valPoints.length) {
+      datasets.push({
+        label: 'Val MSE',
+        data: valPoints,
+        borderColor: '#f76f6f',
+        borderWidth: 2,
+        pointRadius: 3,
+        pointBackgroundColor: '#f76f6f',
+        tension: 0.2,
+      });
+    }
+    if (starPoints.length) {
+      datasets.push({
+        label: 'Improved ★',
+        data: starPoints,
+        borderColor: 'transparent',
+        pointRadius: 6,
+        pointBackgroundColor: '#3dd68c',
+        pointStyle: 'star',
+        showLine: false,
+      });
+    }
+
+    const chartCfg = {
+      type: 'line',
+      data: { datasets },
+      options: {
+        animation: false,
+        parsing: false,
+        scales: {
+          x: {
+            type: 'linear',
+            title: { display: true, text: 'Elapsed (min)', color: '#6b7280' },
+            grid: { color: '#2e3350' },
+            ticks: { color: '#6b7280' },
+          },
+          y: {
+            title: { display: true, text: 'MSE', color: '#6b7280' },
+            grid: { color: '#2e3350' },
+            ticks: { color: '#6b7280' },
+            min: 0,
+          }
+        },
+        plugins: { legend: { display: false } },
+      }
+    };
+
+    if (lossChart) {
+      lossChart.data.datasets = datasets;
+      lossChart.update();
+    } else {
+      lossChart = new Chart(document.getElementById('loss-chart'), chartCfg);
+    }
+
+    // ── Val-only chart ──
+    if (epochRecs.length >= 2) {
+      document.getElementById('val-chart-card').style.display = '';
+      const valDs = [{
+        label: 'Val MSE',
+        data: epochRecs.map((r, i) => ({ x: r.epoch, y: r.val_mse })),
+        borderColor: '#f76f6f',
+        borderWidth: 2,
+        pointRadius: 4,
+        pointBackgroundColor: epochRecs.map(r => r.improved ? '#3dd68c' : '#f76f6f'),
+        tension: 0.2,
+      }];
+      const valCfg = {
+        type: 'line',
+        data: { datasets: valDs },
+        options: {
+          animation: false,
+          parsing: false,
+          scales: {
+            x: {
+              type: 'linear',
+              title: { display: true, text: 'Epoch', color: '#6b7280' },
+              grid: { color: '#2e3350' },
+              ticks: { color: '#6b7280', stepSize: 1 },
+            },
+            y: {
+              title: { display: true, text: 'Val MSE', color: '#6b7280' },
+              grid: { color: '#2e3350' },
+              ticks: { color: '#6b7280' },
+              min: 0,
+            }
+          },
+          plugins: { legend: { display: false } },
+        }
+      };
+      if (valChart) {
+        valChart.data.datasets = valDs;
+        valChart.update();
+      } else {
+        valChart = new Chart(document.getElementById('val-chart'), valCfg);
+      }
+    }
+  }
+
+  // Auto-refresh countdown
+  function tick() {
+    countdown--;
+    document.getElementById('countdown').textContent = countdown;
+    if (countdown <= 0) {
+      countdown = 30;
+      load();
+    }
+  }
+
+  load();
+  timer = setInterval(tick, 1000);
+</script>
+</body>
+</html>

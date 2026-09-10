@@ -25,6 +25,13 @@
                 <path d="M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01M16 18h.01"/>
               </svg>`,
     },
+    {
+      href:  'training.html',
+      label: 'Training',
+      icon:  `<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24">
+                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+              </svg>`,
+    },
   ];
 
   function injectSidebar() {
