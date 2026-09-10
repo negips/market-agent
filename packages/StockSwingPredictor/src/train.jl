@@ -106,6 +106,15 @@ function train!(model::SwingPredictor,
             if n_batches % PROGRESS_EVERY == 0
                 print("\r  Epoch $epoch | batch $n_batches/$n_batches_ep | loss $(round(loss_val, sigdigits=4))    ")
                 flush(stdout)
+                if !isempty(epoch_log_path)
+                    open(epoch_log_path, "a") do io
+                        JSON3.write(io, (epoch=epoch, batch=n_batches,
+                                         train_mse=Float32(epoch_loss / n_batches),
+                                         val_mse=nothing,
+                                         elapsed_secs=round(time() - train_start, digits=1)))
+                        println(io)
+                    end
+                end
             end
         end
         print("\r" * " "^72 * "\r")   # clear batch progress line
@@ -146,9 +155,10 @@ function train!(model::SwingPredictor,
 
         if !isempty(epoch_log_path)
             open(epoch_log_path, "a") do io
-                JSON3.write(io, (epoch=epoch, train_mse=train_mse, val_mse=val_mse,
+                JSON3.write(io, (epoch=epoch, batch=nothing,
+                                 train_mse=train_mse, val_mse=val_mse,
                                  best_val_mse=best_val_loss, improved=improved,
-                                 epoch_secs=round(epoch_secs, digits=1)))
+                                 elapsed_secs=round(time() - train_start, digits=1)))
                 println(io)
             end
         end
