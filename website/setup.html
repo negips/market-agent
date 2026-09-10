@@ -456,8 +456,8 @@
           <input type="checkbox" checked>
           <div class="checkbox"></div>
           <div class="item-content">
-            <div class="item-label">Zerodha Kite Connect API key obtained</div>
-            <div class="item-note">kite.trade → create app → set KITE_API_KEY + KITE_API_SECRET in .env</div>
+            <div class="item-label">Zerodha Kite Historical Data API key obtained</div>
+            <div class="item-note">kite.trade → create Historical Data app → set KITE_HISTORICAL_API_KEY + KITE_HISTORICAL_API_SECRET in .env. This single token covers OHLCV, portfolio, positions, funds, and orders.</div>
             <span class="item-tag tag-once">one-time</span>
           </div>
         </label>
@@ -466,7 +466,7 @@
           <div class="checkbox"></div>
           <div class="item-content">
             <div class="item-label">Environment variables configured in .env</div>
-            <div class="item-note">ANTHROPIC_API_KEY, KITE_API_KEY, KITE_API_SECRET, KITE_USER_ID, KITE_PASSWORD, KITE_TOTP_SECRET</div>
+            <div class="item-note">ANTHROPIC_API_KEY, KITE_HISTORICAL_API_KEY, KITE_HISTORICAL_API_SECRET, KITE_USER_ID, KITE_PASSWORD, KITE_TOTP_SECRET</div>
             <span class="item-tag tag-once">one-time</span>
           </div>
         </label>
@@ -650,17 +650,17 @@
           <div class="status-dot partial"></div>
           <div style="flex:1">
             <div class="roadmap-name">StockSwingPredictor</div>
-            <div class="roadmap-sub">OHLCV collected (1918 CSVs). InferenceCache architecture complete — aligned daily + hourly matrices (~42 MB) loaded once at session start, O(1) array slices at prediction time. Dataset builder (~30 MB, index pointers only) + dual-CNN Flux.jl model + training loop all written. Ready to run build_cache.jl → build_dataset.jl → train_model.jl.</div>
+            <div class="roadmap-sub">OHLCV collected (1918 CSVs). InferenceCache architecture complete — aligned daily + hourly matrices (~42 MB) loaded once at session start, O(1) array slices at prediction time. Dataset builder (~30 MB, index pointers only) + dual-CNN Flux.jl model + training loop all written. Ready to run build_cache.jl → build_dataset.jl → train_model.jl. Also includes broker.jl — portfolio, positions, funds, and orders via Kite.</div>
           </div>
           <span class="roadmap-badge partial">in progress</span>
         </div>
         <div class="roadmap-item">
-          <div class="status-dot planned"></div>
+          <div class="status-dot partial"></div>
           <div style="flex:1">
             <div class="roadmap-name">BrokerClient</div>
-            <div class="roadmap-sub">Zerodha Kite Connect REST wrapper — auth, orders, positions, OHLCV</div>
+            <div class="roadmap-sub">Core read endpoints live in StockSwingPredictor/broker.jl — get_holdings, get_positions, get_margins, get_orders. Order placement (buy/sell/GTT) still to be added.</div>
           </div>
-          <span class="roadmap-badge planned">planned</span>
+          <span class="roadmap-badge partial">in progress</span>
         </div>
         <div class="roadmap-item">
           <div class="status-dot planned"></div>
@@ -681,7 +681,7 @@
       </div>
     </div>
 
-    <div class="updated">Checklist state saved in browser · Roadmap as of 2026-09-09 · Last checked: <span id="last-updated">never</span></div>
+    <div class="updated">Checklist state saved in browser · Roadmap as of 2026-09-10 · Last checked: <span id="last-updated">never</span></div>
 
   </div><!-- /page-content -->
 </div><!-- /main -->
