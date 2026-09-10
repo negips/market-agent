@@ -27,8 +27,10 @@ actionable signal.
 
 ```
 scripts/collect_ohlcv.jl        # download daily + hourly OHLCV for all companies
-scripts/extract_llm_features.jl # LLM extraction from conference calls (resumable)
-scripts/build_dataset.jl        # assemble Dataset (market matrices + examples)
+scripts/update_ohlcv.jl         # daily incremental update (append new bars)
+scripts/build_cache.jl          # build inference_cache.bson from CSVs (run each morning)
+scripts/extract_llm_features.jl # LLM extraction from conference calls (resumable, optional)
+scripts/build_dataset.jl        # assemble Dataset — index pointers + labels only (~30 MB)
 scripts/train_model.jl          # train SwingPredictor, save BSON
 ```
 
@@ -45,6 +47,7 @@ using Dates, Printf, Random
 
 include("types.jl")
 include("kite_data.jl")
+include("inference_cache.jl")
 include("llm_extract.jl")
 include("features.jl")
 include("fundamentals.jl")   # not active in current pipeline — see file header
@@ -66,6 +69,10 @@ export
     fetch_ohlcv_hourly, collect_ohlcv_hourly, load_cached_ohlcv_hourly,
     sector_index_name, NSE_INDICES,
 
+    # inference_cache
+    InferenceCache, build_inference_cache, load_inference_cache,
+    find_hourly_end, find_date,
+
     # llm_extract
     extract_features, extract_features_from_kb,
 
@@ -77,8 +84,7 @@ export
     extract_fundamentals, fundamental_feature_names,
 
     # dataset
-    label_5d_hourly,
-    build_market_matrices, generate_company_examples,
+    label_5d_hourly, generate_company_examples,
     time_split, assemble_batch,
     save_dataset, load_dataset,
 

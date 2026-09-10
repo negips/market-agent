@@ -1,128 +1,79 @@
 """
 build_dataset.jl
 
-Assemble the training Dataset from cached daily OHLCV, 60-minute OHLCV,
-and LLM scalar features.
+Assemble the training Dataset from the inference cache and LLM features.
+
+All price data is read from the pre-built inference cache — no OHLCV CSVs
+are touched here. The resulting dataset.bson contains only index pointers
+and small feature vectors (~30 MB regardless of universe size).
 
 Steps:
-  1. Load confidence-scored company list → universe ordering.
-  2. Build master trading calendar + (n_dates × n_companies) closes and vols matrices.
-  3. For each company, slide a weekly window over the calendar:
-       - Slice and normalise the hourly series (N_HOURLY_BARS bars).
+  1. Load inference cache → company universe + price matrices.
+  2. For each company, slide a weekly window over the master calendar:
+       - Record hourly_end_idx pointer (no hourly data stored per example).
        - Look up LLM scalars (most recent doc before the window date).
-       - Compute 5-day hourly trajectory label.
-  4. Sort all examples by date, save to BSON.
-
-The saved Dataset is loaded directly by train_model.jl.
+       - Compute 5-day hourly log-return trajectory label.
+  3. Sort all examples by date, save to BSON.
 
 Prerequisites:
-  - website/data/ohlcv/{SYMBOL}_daily.csv (from collect_ohlcv.jl)
-  - website/data/ohlcv/{SYMBOL}_hourly.csv (from collect_ohlcv.jl)
-  - website/data/llm_features/{SYMBOL}.json (from extract_llm_features.jl)
-  - website/data/nse_companies_latest.json (with confidence scores)
+  - website/data/inference_cache.bson    (from build_cache.jl)
+  - website/data/llm_features/{SYM}.json (from extract_llm_features.jl, optional)
 
 Usage:
   julia --project=packages/StockSwingPredictor scripts/build_dataset.jl
-  julia --project=packages/StockSwingPredictor scripts/build_dataset.jl 100  # top-N only
 """
 
-using StockSwingPredictor, TijoriData, JSON3, DataFrames, CSV, Dates, Printf
+using StockSwingPredictor, JSON3, Dates, Printf
 
-const REPO_ROOT       = joinpath(@__DIR__, "..")
-const COMPANIES_FILE  = joinpath(REPO_ROOT, "website", "data", "nse_companies_latest.json")
-const OHLCV_DIR       = joinpath(REPO_ROOT, "website", "data", "ohlcv")
-const LLM_DIR         = joinpath(REPO_ROOT, "website", "data", "llm_features")
-const OUT_DIR         = joinpath(REPO_ROOT, "website", "data", "training")
-const DATASET_FILE    = joinpath(OUT_DIR, "dataset.bson")
+const REPO_ROOT    = joinpath(@__DIR__, "..")
+const CACHE_FILE   = joinpath(REPO_ROOT, "website", "data", "inference_cache.bson")
+const LLM_DIR      = joinpath(REPO_ROOT, "website", "data", "llm_features")
+const OUT_DIR      = joinpath(REPO_ROOT, "website", "data", "training")
+const DATASET_FILE = joinpath(OUT_DIR, "dataset.bson")
 
 function main()
     if "--help" in ARGS || "-h" in ARGS
         println("""
 Usage:
-  julia --project=packages/StockSwingPredictor scripts/build_dataset.jl [N]
+  julia --project=packages/StockSwingPredictor scripts/build_dataset.jl
 
-Arguments:
-  N   Top N companies by market cap to include (default: all scored).
-
-Output:
-  website/data/training/dataset.bson
+Input:   website/data/inference_cache.bson
+Output:  website/data/training/dataset.bson  (~30 MB)
 """)
         return
     end
 
-    top_n = length(ARGS) >= 1 ? parse(Int, ARGS[1]) : typemax(Int)
+    # ── Load inference cache ──────────────────────────────────────────────────
 
-    # ── Load company universe ─────────────────────────────────────────────────
-
-    isfile(COMPANIES_FILE) || error("Not found: $COMPANIES_FILE")
-    raw     = JSON3.read(read(COMPANIES_FILE, String))
-    all_c   = collect(raw.companies)
-    eligible = filter(all_c) do c
-        !isnothing(get(c, :confidence, nothing)) &&
-        !isempty(string(get(c, :symbol, "")))
-    end
-    sort!(eligible, by = c -> Float64(get(c, :market_cap_cr, 0.0)), rev=true)
-    universe = first(eligible, top_n)
-    companies = [string(c.symbol) for c in universe]
-
-    @info "Universe: $(length(companies)) companies"
-
-    # ── Build master market matrices ──────────────────────────────────────────
-
-    @info "Building market matrices from daily OHLCV…"
-    closes, vols, master_dates = build_market_matrices(OHLCV_DIR, companies)
-    @info "  $(length(master_dates)) trading dates × $(length(companies)) companies"
-    @info "  closes range: $(minimum(filter(!isnan, closes)))  →  $(maximum(filter(!isnan, closes)))"
+    @info "Loading inference cache…"
+    cache = load_inference_cache(CACHE_FILE)
+    @info "  $(length(cache.dates)) trading dates"
+    @info "  $(length(cache.hourly_datetimes)) hourly bars"
+    @info "  $(length(cache.companies)) companies"
 
     # ── Generate training examples ────────────────────────────────────────────
 
     all_examples = TrainingExample[]
-    ok = missing_daily = missing_hourly = 0
+    n_comp       = length(cache.companies)
 
-    for (j, c) in enumerate(universe)
-        sym  = string(get(c, :symbol, ""))
-        name = string(get(c, :name, sym))
-
-        daily_path  = joinpath(OHLCV_DIR, "$(sym)_daily.csv")
-        hourly_path = joinpath(OHLCV_DIR, "$(sym)_hourly.csv")
-
-        if !isfile(daily_path)
-            missing_daily += 1
-            continue
-        end
-        if !isfile(hourly_path)
-            missing_hourly += 1
-            continue
-        end
-
-        daily  = sort!(CSV.read(daily_path,  DataFrame; types=Dict(:date => Date)), :date)
-        hourly = sort!(CSV.read(hourly_path, DataFrame; types=Dict(:datetime => DateTime)), :datetime)
-
+    for (j, sym) in enumerate(cache.companies)
         llm_cache = _load_llm_cache(sym, LLM_DIR)
-
-        examples = generate_company_examples(sym, j, daily, hourly,
-                                              master_dates, llm_cache)
+        examples  = generate_company_examples(sym, j, cache, llm_cache)
         append!(all_examples, examples)
-        ok += 1
-
-        j % 50 == 0 && @info "[$j/$(length(universe))] $sym — $(length(examples)) examples (total: $(length(all_examples)))"
+        j % 100 == 0 &&
+            @info "[$j/$n_comp] $sym — $(length(examples)) examples (total: $(length(all_examples)))"
     end
 
-    @info "Companies: $ok processed | $missing_daily no daily OHLCV | $missing_hourly no hourly OHLCV"
-    @info "Total examples before sorting: $(length(all_examples))"
-
-    # ── Sort by date (required for time-ordered split) ────────────────────────
-
+    @info "Total examples before sort: $(length(all_examples))"
     sort!(all_examples, by = ex -> (ex.date, ex.symbol))
 
     # ── Build and save Dataset ────────────────────────────────────────────────
 
-    dataset = Dataset(closes, vols, master_dates, companies, all_examples)
+    dataset = Dataset(cache.dates, cache.companies, all_examples)
     @info dataset
 
     mkpath(OUT_DIR)
     save_dataset(dataset, DATASET_FILE)
-    println()
     @info "Done → $DATASET_FILE"
 end
 
@@ -133,8 +84,8 @@ function _load_llm_cache(symbol::String, llm_dir::String)::Dict{Date, LLMFeature
     path  = joinpath(llm_dir, "$(symbol).json")
     isfile(path) || return cache
     try
-        d = JSON3.read(read(path, String))
-        f = d.features
+        d    = JSON3.read(read(path, String))
+        f    = d.features
         date_str     = string(get(d, :extracted_at, ""))
         extracted_at = tryparse(Date, length(date_str) >= 10 ? date_str[1:10] : "")
         doc_date     = isnothing(extracted_at) ? today() : extracted_at

@@ -364,7 +364,7 @@
       <div class="section-header" onclick="toggleSection('s-julia')">
         <span class="section-icon">⚡</span>
         <span class="section-title">Julia Environment</span>
-        <span class="section-badge" id="badge-s-julia">0 / 5</span>
+        <span class="section-badge" id="badge-s-julia">0 / 7</span>
         <span class="chevron">▾</span>
       </div>
       <div class="section-body">
@@ -401,6 +401,24 @@
           <div class="item-content">
             <div class="item-label">EarningsCalendar dev-installed in global environment</div>
             <div class="item-note">Pkg.develop(path="...packages/EarningsCalendar")</div>
+            <span class="item-tag tag-once">one-time</span>
+          </div>
+        </label>
+        <label class="item checked" onclick="toggle(this)">
+          <input type="checkbox" checked>
+          <div class="checkbox"></div>
+          <div class="item-content">
+            <div class="item-label">NewsMonitor dev-installed in global environment</div>
+            <div class="item-note">Pkg.develop(path="...packages/NewsMonitor")</div>
+            <span class="item-tag tag-once">one-time</span>
+          </div>
+        </label>
+        <label class="item checked" onclick="toggle(this)">
+          <input type="checkbox" checked>
+          <div class="checkbox"></div>
+          <div class="item-content">
+            <div class="item-label">StockSwingPredictor dev-installed in global environment</div>
+            <div class="item-note">Pkg.develop(path="...packages/StockSwingPredictor")</div>
             <span class="item-tag tag-once">one-time</span>
           </div>
         </label>
@@ -483,13 +501,29 @@
         <div class="flow-item">
           <div class="flow-step">3</div>
           <div>
+            <div class="flow-name">Update OHLCV data</div>
+            <div class="flow-cmd">julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl</div>
+            <div class="flow-sub">Appends only the missing bars since the last run — much faster than a full re-fetch. Use --daily-only to skip hourly.</div>
+          </div>
+        </div>
+        <div class="flow-item">
+          <div class="flow-step">4</div>
+          <div>
+            <div class="flow-name">Build inference cache</div>
+            <div class="flow-cmd">julia --project=packages/StockSwingPredictor scripts/build_cache.jl</div>
+            <div class="flow-sub">Reads all OHLCV CSVs once → aligned daily + hourly matrices → inference_cache.bson (~42 MB). Loaded into memory at session start for O(1) prediction slices.</div>
+          </div>
+        </div>
+        <div class="flow-item">
+          <div class="flow-step">5</div>
+          <div>
             <div class="flow-name">Refresh NSE data</div>
             <div class="flow-cmd">julia scripts/generate_nse_list.jl</div>
             <div class="flow-sub">Fetches latest bhavcopy — closing price &amp; market cap for all NSE EQ companies.</div>
           </div>
         </div>
         <div class="flow-item">
-          <div class="flow-step">4</div>
+          <div class="flow-step">6</div>
           <div>
             <div class="flow-name">Run confidence checks (optional — slow)</div>
             <div class="flow-cmd">julia --project=packages/CompanyConfidence scripts/run_confidence_checks.jl 100</div>
@@ -497,7 +531,7 @@
           </div>
         </div>
         <div class="flow-item">
-          <div class="flow-step">5</div>
+          <div class="flow-step">7</div>
           <div>
             <div class="flow-name">Refresh watchlist</div>
             <div class="flow-cmd">julia --project=packages/EarningsCalendar scripts/generate_earnings_watchlist.jl</div>
@@ -505,7 +539,15 @@
           </div>
         </div>
         <div class="flow-item">
-          <div class="flow-step">6</div>
+          <div class="flow-step">8</div>
+          <div>
+            <div class="flow-name">Start news monitor daemon (optional)</div>
+            <div class="flow-cmd">julia scripts/monitor_news.jl</div>
+            <div class="flow-sub">Polls BSE every 60s + 3 RSS feeds every 5 min. Classifies with Claude Haiku → website/data/news_signals.jsonl. Kill with Ctrl-C; safe to restart.</div>
+          </div>
+        </div>
+        <div class="flow-item">
+          <div class="flow-step">9</div>
           <div>
             <div class="flow-name">Open the website</div>
             <div class="flow-cmd">./serve.sh</div>
@@ -597,12 +639,20 @@
           <span class="roadmap-badge done">complete</span>
         </div>
         <div class="roadmap-item">
-          <div class="status-dot planned"></div>
+          <div class="status-dot done"></div>
+          <div style="flex:1">
+            <div class="roadmap-name">NewsMonitor</div>
+            <div class="roadmap-sub">Real-time BSE announcements + RSS polling, Claude Haiku classification → JSONL signal stream</div>
+          </div>
+          <span class="roadmap-badge done">complete</span>
+        </div>
+        <div class="roadmap-item">
+          <div class="status-dot partial"></div>
           <div style="flex:1">
             <div class="roadmap-name">StockSwingPredictor</div>
-            <div class="roadmap-sub">Options implied move + multi-source signals + LLM synthesis</div>
+            <div class="roadmap-sub">OHLCV collected (1918 CSVs). InferenceCache architecture complete — aligned daily + hourly matrices (~42 MB) loaded once at session start, O(1) array slices at prediction time. Dataset builder (~30 MB, index pointers only) + dual-CNN Flux.jl model + training loop all written. Ready to run build_cache.jl → build_dataset.jl → train_model.jl.</div>
           </div>
-          <span class="roadmap-badge planned">planned</span>
+          <span class="roadmap-badge partial">in progress</span>
         </div>
         <div class="roadmap-item">
           <div class="status-dot planned"></div>
@@ -631,7 +681,7 @@
       </div>
     </div>
 
-    <div class="updated">Checklist state saved in browser · Last updated: <span id="last-updated">never</span></div>
+    <div class="updated">Checklist state saved in browser · Roadmap as of 2026-09-09 · Last checked: <span id="last-updated">never</span></div>
 
   </div><!-- /page-content -->
 </div><!-- /main -->

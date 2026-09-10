@@ -12,8 +12,9 @@ Usage:
 using StockSwingPredictor, Flux, JSON3, Dates, Printf, Statistics
 
 const REPO_ROOT  = joinpath(@__DIR__, "..")
+const CACHE_FILE = joinpath(REPO_ROOT, "website", "data", "inference_cache.bson")
 const TRAIN_DIR  = joinpath(REPO_ROOT, "website", "data", "training")
-const MODELS_DIR = joinpath(REPO_ROOT, "website", "data", "models")
+const MODELS_DIR = joinpath(REPO_ROOT, "website", "data", "models")  # subdirs per arch name
 
 function parse_args()
     opts = Dict{String,Any}("epochs"=>150, "lr"=>1e-3, "batch"=>32,
@@ -52,6 +53,10 @@ end
 function main()
     opts = parse_args()
 
+    @info "Loading inference cache…"
+    cache = load_inference_cache(CACHE_FILE)
+    @info "  $(length(cache.dates)) dates × $(length(cache.companies)) companies"
+
     dataset_file = joinpath(TRAIN_DIR, "dataset.bson")
     isfile(dataset_file) || error("Not found: $dataset_file\nRun: julia scripts/build_dataset.jl")
 
@@ -79,7 +84,7 @@ function main()
 
     @info "Training…"
     model, log = train!(
-        model, dataset, train_idx, val_idx;
+        model, dataset, cache, train_idx, val_idx;
         epochs    = opts["epochs"],
         batchsize = opts["batch"],
         lr        = Float32(opts["lr"]),
@@ -91,7 +96,7 @@ function main()
 
     println()
     @info "Test set evaluation:"
-    test_metrics = evaluate(model, dataset, test_idx)
+    test_metrics = evaluate(model, dataset, cache, test_idx)
     merge!(log, test_metrics)
     log["trained_at"]  = string(now(UTC))
     log["n_companies"] = length(dataset.companies)
@@ -100,19 +105,73 @@ function main()
 
     # ── Save ──────────────────────────────────────────────────────────────────
 
-    mkpath(MODELS_DIR)
-    model_path = joinpath(MODELS_DIR, "swing_predictor.bson")
-    log_path   = joinpath(MODELS_DIR, "training_log.json")
+    model_dir  = joinpath(MODELS_DIR, arch.name)
+    mkpath(model_dir)
+    model_path = joinpath(model_dir, "swing_predictor.bson")
+    log_path   = joinpath(model_dir, "training_log.json")
+
+    card_path  = joinpath(model_dir, "model_card.json")
 
     save_model(model, dataset.companies, model_path;
                meta=Dict("trained_at"  => string(now(UTC)),
                          "n_companies" => length(dataset.companies),
                          "test_ic"     => get(test_metrics, "information_coefficient", 0.0)))
     save_training_log(log, log_path)
+    _save_model_card(card_path, arch, model, dataset, log, test_metrics, opts)
 
     println()
     @info "Saved → $model_path"
     @info "Saved → $log_path"
+    @info "Saved → $card_path"
+end
+
+function _save_model_card(path, arch, model, dataset, log, test_metrics, opts)
+    n_params = sum(length, Flux.trainables(model))
+    ex = dataset.examples
+    card = Dict(
+        "name"         => arch.name,
+        "trained_at"   => log["trained_at"],
+        "architecture" => Dict(
+            "type"                => "DualCNN",
+            "market_channels"     => arch.market_channels,
+            "market_kernel"       => arch.market_kernel,
+            "hourly_channels"     => arch.hourly_channels,
+            "hourly_kernel_large" => arch.hourly_kernel_large,
+            "hourly_kernel_small" => arch.hourly_kernel_small,
+            "mlp_hidden"          => arch.mlp_hidden,
+            "dropout_rate"        => arch.dropout_rate,
+            "n_params"            => n_params,
+        ),
+        "inputs" => Dict(
+            "market_days"     => N_MARKET_DAYS,
+            "market_channels" => N_MARKET_CHANNELS,
+            "hourly_bars"     => N_HOURLY_BARS,
+            "llm_features"    => N_LLM_FEATURES,
+            "pred_hours"      => N_PRED_HOURS,
+        ),
+        "dataset" => Dict(
+            "n_companies" => length(dataset.companies),
+            "n_examples"  => length(ex),
+            "date_range"  => isempty(ex) ? "" : "$(ex[1].date) → $(ex[end].date)",
+        ),
+        "training" => Dict(
+            "epochs_run"    => log["epochs_run"],
+            "best_epoch"    => log["best_epoch"],
+            "stopped_early" => log["stopped_early"],
+            "best_val_mse"  => log["best_val_mse"],
+            "lr"            => opts["lr"],
+            "batch"         => opts["batch"],
+            "l2"            => opts["l2"],
+            "patience"      => opts["patience"],
+        ),
+        "metrics" => Dict(
+            "test_mse"                => get(test_metrics, "test_mse",                nothing),
+            "test_mae"                => get(test_metrics, "test_mae",                nothing),
+            "direction_accuracy"      => get(test_metrics, "direction_accuracy",      nothing),
+            "information_coefficient" => get(test_metrics, "information_coefficient", nothing),
+        ),
+    )
+    open(path, "w") do io; JSON3.pretty(io, card); end
 end
 
 main()

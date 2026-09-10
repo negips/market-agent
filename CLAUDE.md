@@ -4,9 +4,10 @@ Self-improving trading agent for Indian stock markets (NSE/BSE), built entirely 
 
 ## Project goal
 
-Identify stocks likely to make large price moves around earnings events, using a
-multi-source data pipeline, a company fraud/confidence filter, and an LLM reasoning
-layer. Eventually self-improves by analyzing its own trade history.
+Identify stocks likely to make large price moves (swing prediction), using a
+multi-source data pipeline: OHLCV price history, a company fraud/confidence filter,
+real-time news signals classified by an LLM, and a CNN-based swing predictor.
+Eventually self-improves by analyzing its own trade history.
 
 ## Repository layout
 
@@ -33,6 +34,15 @@ market-agent/
 │   ├── TijoriData/                 # Tijori Finance data client
 │   ├── CompanyConfidence/          # Fraud/reliability scoring module
 │   ├── EarningsCalendar/           # NSE earnings event fetcher (no sidecar)
+│   ├── NewsMonitor/             # BSE + RSS news poller → LLM-classified signals
+│   │   ├── Project.toml
+│   │   └── src/
+│   │       ├── NewsMonitor.jl      # module entry + exports
+│   │       ├── types.jl            # NewsItem, NewsSignal, PollerConfig
+│   │       ├── bse.jl              # BSE corporate announcements API
+│   │       ├── rss.jl              # RSS feed fetcher + XML parser
+│   │       ├── llm_classify.jl     # Claude API → NewsSignal (symbol, sentiment, severity)
+│   │       └── poller.jl           # concurrent polling loop + JSONL writer
 │   └── StockSwingPredictor/     # Neural network large-move predictor
 │       ├── Project.toml
 │       └── src/
@@ -66,7 +76,9 @@ market-agent/
 │   ├── enrich_earnings_dates.jl          # projects next earnings date via Tijori history (run every 2 weeks)
 │   ├── generate_earnings_watchlist.jl    # merges NSE calendar + projections → watchlist JSON
 │   ├── collect_ohlcv.jl                  # download daily OHLCV for all companies + indices (Kite)
+│   ├── update_ohlcv.jl                   # incremental update: append only missing bars since last run
 │   ├── extract_llm_features.jl           # Claude API → 14 scalar signals per company (resumable)
+│   ├── monitor_news.jl                   # real-time BSE + RSS news monitor daemon
 │   ├── build_dataset.jl                  # sliding-window dataset assembly + normalisation
 │   └── train_model.jl                    # train StockSwingPredictor MLP, save BSON
 │
@@ -110,7 +122,8 @@ packages with `See also: [OtherModule](@ref)`.
 TijoriData              — data only, no trading logic
 CompanyConfidence       — depends on TijoriData
 EarningsCalendar        — NSE data only, no dependencies on other packages
-StockSwingPredictor  — depends on TijoriData; Kite used directly via HTTP
+NewsMonitor             — BSE/RSS news polling + LLM classification; no dependencies on other packages
+StockSwingPredictor     — depends on TijoriData; Kite used directly via HTTP
 Backtest                — no external data dependencies (planned)
 BrokerClient            — Kite Connect REST wrapper (planned)
 ```
@@ -185,6 +198,42 @@ git clone https://github.com/LaZZy0v0/tijori-finance-mcp.git
 cd tijori-finance-mcp && node setup.js   # opens browser for Tijori login
 cd ..
 npm install                              # installs express
+```
+
+## Using NewsMonitor
+
+```julia
+using NewsMonitor
+
+# Run manually from the REPL
+items = fetch_bse_announcements()                    # today's BSE corporate announcements
+items = fetch_rss("https://economictimes.indiatimes.com/markets/rss.cms", "ET")
+
+sig = classify_item(items[1]; api_key=ENV["ANTHROPIC_API_KEY"])
+sig.symbol      # "RELIANCE"
+sig.event_type  # "results"
+sig.sentiment   # +0.8
+sig.severity    # 0.9
+sig.summary     # "Reliance Q2 PAT beats estimates by 12% — strong refining margins"
+```
+
+### Run the live daemon
+
+```bash
+# Polls BSE every 60s + 3 RSS feeds every 5 min, classifies with Claude Haiku
+julia scripts/monitor_news.jl
+
+# Flags
+julia scripts/monitor_news.jl --all-hours   # don't restrict to 09:00–16:30 IST
+julia scripts/monitor_news.jl --bse-only    # skip RSS, BSE announcements only
+```
+
+Output: `website/data/news_signals.jsonl` — one JSON line per classified item.
+
+### One-time setup
+
+```julia
+using Pkg; Pkg.develop(path="packages/NewsMonitor")
 ```
 
 ## Daily session workflow
@@ -267,6 +316,23 @@ Writes `data/earnings_watchlist_latest.json` consumed by `website/watchlist.html
 ```bash
 julia --project=packages/EarningsCalendar scripts/generate_earnings_watchlist.jl        # 30 days
 julia --project=packages/EarningsCalendar scripts/generate_earnings_watchlist.jl 60     # 60 days
+```
+
+### update_ohlcv.jl
+
+Incrementally updates all existing OHLCV CSVs with bars added since the last run.
+Reads the last date from each CSV and fetches only the gap to yesterday — much
+faster than `collect_ohlcv.jl` for routine maintenance. Appends rows in-place.
+
+```bash
+# Run every trading day after kite_login.js (no arguments needed)
+julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl
+
+# Preview what would be fetched without hitting the API
+julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --dry-run
+
+# Update only daily bars (skip the slower hourly pass)
+julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --daily-only
 ```
 
 ### Website

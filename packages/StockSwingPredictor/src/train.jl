@@ -30,6 +30,7 @@ Train `model` on `dataset`. Returns `(model, training_log)`.
 """
 function train!(model::SwingPredictor,
                 dataset::Dataset,
+                cache::InferenceCache,
                 train_idx, val_idx;
                 epochs::Int        = DEFAULT_EPOCHS,
                 batchsize::Int     = DEFAULT_BATCHSIZE,
@@ -57,9 +58,8 @@ function train!(model::SwingPredictor,
     train_ids = collect(train_idx)
     val_ids   = collect(val_idx)
 
-    # Pre-assemble validation batch once (val set is fixed)
     @info "Assembling validation batch ($(length(val_ids)) examples)…"
-    val_market, val_hourly, val_llm, val_y = assemble_batch(dataset, val_ids)
+    val_market, val_hourly, val_llm, val_y = assemble_batch(dataset, cache, val_ids)
 
     for epoch in 1:epochs
         Flux.trainmode!(model)
@@ -69,7 +69,7 @@ function train!(model::SwingPredictor,
         shuffled = shuffle(train_ids)
         for start in 1:batchsize:length(shuffled)
             batch_idx = shuffled[start : min(start + batchsize - 1, end)]
-            market, hourly, llm, yb = assemble_batch(dataset, batch_idx)
+            market, hourly, llm, yb = assemble_batch(dataset, cache, batch_idx)
 
             loss_val, grads = Flux.withgradient(model) do m
                 ŷ       = m(market, hourly, llm)
@@ -124,10 +124,11 @@ end
 Evaluate a trained model on a set of example indices.
 Metrics are computed over the final hourly bar (end-of-day-5 close vs ref).
 """
-function evaluate(model::SwingPredictor, dataset::Dataset, test_idx)::Dict
+function evaluate(model::SwingPredictor, dataset::Dataset, cache::InferenceCache,
+                  test_idx)::Dict
     Flux.testmode!(model)
     test_ids = collect(test_idx)
-    market, hourly, llm, y = assemble_batch(dataset, test_ids)
+    market, hourly, llm, y = assemble_batch(dataset, cache, test_ids)
     ŷ = model(market, hourly, llm)
 
     mse = Float32(mean((ŷ .- y).^2))
