@@ -60,7 +60,7 @@ export
     # types / constants
     LLMFeatures, MISSING_LLM,
     TrainingExample, Dataset, SwingSignal,
-    N_LLM_FEATURES, N_MARKET_DAYS, N_MARKET_CHANNELS,
+    N_LLM_FEATURES, N_MARKET_DAYS, N_MARKET_CHANNELS, N_MARKET_COMPANIES,
     N_HOURLY_BARS, N_HOURS_PER_DAY, N_PRED_DAYS, N_PRED_HOURS,
 
     # kite_data

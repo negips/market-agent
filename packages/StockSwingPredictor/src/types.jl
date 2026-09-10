@@ -17,6 +17,14 @@ const N_PRED_HOURS    = N_HOURS_PER_DAY * N_PRED_DAYS   # 35 output neurons
 
 const N_LLM_FEATURES = 15
 
+# Number of companies included in the market context matrix per training example.
+# Companies are pre-sorted by market cap, so this is always the top-N most liquid.
+# The target company is always placed at column 1 regardless of its rank.
+# Keeping this well below the full universe (~942) is critical for memory:
+#   market tensor = (N_MARKET_DAYS × N_MARKET_CHANNELS × N_MARKET_COMPANIES × batch)
+#   at N=150, B=32 → ~1 MB;  CNN gradient intermediates → ~200 MB.
+const N_MARKET_COMPANIES = 150
+
 # ── LLM scalar features ───────────────────────────────────────────────────────
 
 """

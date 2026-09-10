@@ -157,9 +157,8 @@ sample = 1.0. All slicing is O(1) into the pre-loaded cache matrices.
 function assemble_batch(dataset::Dataset, cache::InferenceCache,
                          indices::AbstractVector{Int})
     B = length(indices)
-    N = length(dataset.companies)
 
-    market = Array{Float32}(undef, N_MARKET_DAYS, N_MARKET_CHANNELS, N, B)
+    market = Array{Float32}(undef, N_MARKET_DAYS, N_MARKET_CHANNELS, N_MARKET_COMPANIES, B)
     hourly = Matrix{Float32}(undef, N_HOURLY_BARS,  B)
     llm    = Matrix{Float32}(undef, N_LLM_FEATURES, B)
     y      = Matrix{Float32}(undef, N_PRED_HOURS,   B)
@@ -169,19 +168,26 @@ function assemble_batch(dataset::Dataset, cache::InferenceCache,
         t  = ex.date_idx
         k  = ex.sym_idx
 
+        # ── Market columns: target at col 1, then top N_MARKET_COMPANIES-1 ───
+        # Companies are sorted by market cap so top-N is always 1:N_MARKET_COMPANIES.
+        # If the target falls outside the top-N, substitute it for the Nth slot.
+        market_cols = if k <= N_MARKET_COMPANIES
+            [k; filter(!=(k), 1:N_MARKET_COMPANIES)]
+        else
+            [k; collect(1:N_MARKET_COMPANIES-1)]
+        end
+
         # ── Market context: 28-day window, normalised to first day = 1.0 ──────
-        raw_c  = cache.closes[t-N_MARKET_DAYS+1:t, :]
+        raw_c  = cache.closes[t-N_MARKET_DAYS+1:t, market_cols]
         anchor = raw_c[1:1, :]
         norm_c = raw_c ./ max.(anchor, 1f-6)
         norm_c[isnan.(norm_c)] .= 1f0
 
-        raw_v  = cache.vols[t-N_MARKET_DAYS+1:t, :]
+        raw_v  = cache.vols[t-N_MARKET_DAYS+1:t, market_cols]
         raw_v[isnan.(raw_v)] .= 0f0
 
-        # Target company at column 1
-        order = [k; filter(!=(k), 1:N)]
-        market[:, 1, :, b] = norm_c[:, order]
-        market[:, 2, :, b] = raw_v[:, order]
+        market[:, 1, :, b] = norm_c
+        market[:, 2, :, b] = raw_v
 
         # ── Hourly series: O(1) slice from cache, normalised to start = 1.0 ──
         h_end   = ex.hourly_end_idx
