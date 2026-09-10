@@ -256,56 +256,179 @@
 <script src="assets/utils.js"></script>
 <script>
   const LOG_BASE = 'data/models/';
-  let lossChart = null;
-  let valChart  = null;
-  let countdown = 30;
-  let timer     = null;
-  let logScale  = false;
+  let lossChart     = null;
+  let valChart      = null;
+  let cachedRecords = null;
+  let countdown     = 30;
+  let timer         = null;
+  let logScale      = false;
+
+  // ── Log-2 helpers ──────────────────────────────────────────────────────────
+  // Data is pre-transformed to log2 space so the y-axis stays linear.
+  // Each grid line = one bit = a halving of error.
+  function toPlot(v) {
+    return (logScale && v != null && v > 0) ? Math.log2(v) : v;
+  }
+  function tickLabel(v) {
+    if (!logScale) return v.toPrecision ? v.toPrecision(3) : v;
+    const orig = Math.pow(2, v);
+    return orig >= 0.01 ? orig.toPrecision(2) : orig.toExponential(1);
+  }
+  function tooltipLabel(ctx) {
+    const raw = ctx.parsed.y;
+    const val = logScale ? Math.pow(2, raw) : raw;
+    return ` ${ctx.dataset.label}: ${val.toExponential(4)}`;
+  }
 
   function toggleLog() {
     logScale = !logScale;
-    const btn = document.getElementById('log-toggle');
-    btn.classList.toggle('active', logScale);
-    if (lossChart) {
-      lossChart.options.scales.y.type = logScale ? 'logarithmic' : 'linear';
-      lossChart.options.scales.y.min  = logScale ? undefined : 0;
-      lossChart.update();
-    }
-    if (valChart) {
-      valChart.options.scales.y.type = logScale ? 'logarithmic' : 'linear';
-      valChart.options.scales.y.min  = logScale ? undefined : 0;
-      valChart.update();
-    }
+    document.getElementById('log-toggle').classList.toggle('active', logScale);
+    // Destroy and re-render — data transform changes, can't just update scale type
+    if (lossChart) { lossChart.destroy(); lossChart = null; }
+    if (valChart)  { valChart.destroy();  valChart  = null; }
+    if (cachedRecords) render(cachedRecords);
   }
 
   // Chart.js defaults for dark theme
-  Chart.defaults.color          = '#6b7280';
-  Chart.defaults.borderColor    = '#2e3350';
+  Chart.defaults.color           = '#6b7280';
+  Chart.defaults.borderColor     = '#2e3350';
   Chart.defaults.backgroundColor = 'transparent';
 
-  function fmtMSE(v)  { return v == null ? '—' : v.toFixed(6); }
-  function fmtMin(s)  {
+  function fmtMSE(v) { return v == null ? '—' : v.toFixed(6); }
+  function fmtMin(s) {
     const m = Math.floor(s / 60), sec = Math.round(s % 60);
     return m > 0 ? `${m}m ${sec}s` : `${sec}s`;
   }
 
   function dedup(records) {
     const seen = new Map();
-    for (const r of records) {
-      const key = `${r.epoch}|${r.batch ?? 'null'}`;
-      seen.set(key, r);
-    }
+    for (const r of records) seen.set(`${r.epoch}|${r.batch ?? 'null'}`, r);
     return [...seen.values()].sort((a, b) => {
       if (a.epoch !== b.epoch) return a.epoch - b.epoch;
-      const ba = a.batch ?? 1e9, bb = b.batch ?? 1e9;
-      return ba - bb;
+      return (a.batch ?? 1e9) - (b.batch ?? 1e9);
     });
+  }
+
+  function yAxis(label) {
+    return {
+      type: 'linear',   // always linear; data pre-transformed to log2 if needed
+      title: { display: true, text: logScale ? `log₂(${label})` : label, color: '#6b7280' },
+      grid: { color: '#2e3350' },
+      ticks: { color: '#6b7280', callback: tickLabel },
+    };
+  }
+
+  function tooltipPlugin() {
+    return { legend: { display: false }, tooltip: { callbacks: { label: tooltipLabel } } };
+  }
+
+  function render(records) {
+    const batchRecs = records.filter(r => r.batch != null);
+    const epochRecs = records.filter(r => r.batch == null);
+    const last      = records[records.length - 1];
+    const lastEpoch = epochRecs[epochRecs.length - 1] ?? null;
+    const bestVal   = lastEpoch ? Math.min(...epochRecs.map(r => r.val_mse)) : null;
+
+    // ── Status ──
+    document.getElementById('live-dot').className = 'live-dot';
+    document.getElementById('status-text').textContent =
+      `${document.getElementById('model-name').value.trim()} · ${records.length} records · last at ${fmtMin(last?.elapsed_secs ?? 0)} elapsed`;
+
+    // ── Epoch progress bar ──
+    const curEpoch     = last?.epoch ?? 1;
+    const curBatch     = last?.batch ?? 0;
+    const totalEpochs  = 150;
+    const totalBatches = 8758;
+    const epochPct = Math.round((curBatch ?? totalBatches) / totalBatches * 100);
+    document.getElementById('epoch-bar').style.width = epochPct + '%';
+    document.getElementById('epoch-progress-label').textContent =
+      `Epoch ${curEpoch} · batch ${curBatch ?? '✓'} / ${totalBatches}  (${epochPct}%)`;
+
+    // ── Stat cards ──
+    document.getElementById('stat-epoch').textContent     = `${curEpoch} / ${totalEpochs}`;
+    document.getElementById('stat-epoch-sub').textContent = `${epochRecs.length} epoch(s) completed`;
+    document.getElementById('stat-train').textContent     = fmtMSE(last?.train_mse);
+    document.getElementById('stat-train-sub').textContent = last?.batch != null ? `batch ${last.batch} / ${totalBatches}` : 'epoch end';
+    document.getElementById('stat-val').textContent       = fmtMSE(bestVal);
+    document.getElementById('stat-val-sub').textContent   = lastEpoch
+      ? `epoch ${lastEpoch.epoch} · improved: ${epochRecs.filter(r => r.improved).length}×`
+      : 'no val yet';
+    document.getElementById('stat-elapsed').textContent     = fmtMin(last?.elapsed_secs ?? 0);
+    document.getElementById('stat-elapsed-sub').textContent = `${batchRecs.length} batch records`;
+
+    // ── Loss chart ──
+    const pt = (r, y) => ({ x: parseFloat((r.elapsed_secs / 60).toFixed(2)), y: toPlot(y) });
+
+    const datasets = [{
+      label: 'Train MSE',
+      data: records.map(r => pt(r, r.train_mse)),
+      borderColor: '#4f8ef7', borderWidth: 1.5, pointRadius: 0, tension: 0.3,
+    }];
+    if (epochRecs.length) {
+      datasets.push({
+        label: 'Val MSE',
+        data: epochRecs.map(r => pt(r, r.val_mse)),
+        borderColor: '#f76f6f', borderWidth: 2, pointRadius: 3,
+        pointBackgroundColor: '#f76f6f', tension: 0.2,
+      });
+      const stars = epochRecs.filter(r => r.improved);
+      if (stars.length) datasets.push({
+        label: 'Improved ★',
+        data: stars.map(r => pt(r, r.val_mse)),
+        borderColor: 'transparent', pointRadius: 6,
+        pointBackgroundColor: '#3dd68c', pointStyle: 'star', showLine: false,
+      });
+    }
+
+    if (lossChart) {
+      lossChart.data.datasets = datasets;
+      lossChart.update();
+    } else {
+      lossChart = new Chart(document.getElementById('loss-chart'), {
+        type: 'line', data: { datasets },
+        options: {
+          animation: false, parsing: false,
+          scales: {
+            x: { type: 'linear', title: { display: true, text: 'Elapsed (min)', color: '#6b7280' }, grid: { color: '#2e3350' }, ticks: { color: '#6b7280' } },
+            y: yAxis('MSE'),
+          },
+          plugins: tooltipPlugin(),
+        }
+      });
+    }
+
+    // ── Val-by-epoch chart ──
+    if (epochRecs.length >= 2) {
+      document.getElementById('val-chart-card').style.display = '';
+      const valDs = [{
+        label: 'Val MSE',
+        data: epochRecs.map(r => ({ x: r.epoch, y: toPlot(r.val_mse) })),
+        borderColor: '#f76f6f', borderWidth: 2, pointRadius: 4,
+        pointBackgroundColor: epochRecs.map(r => r.improved ? '#3dd68c' : '#f76f6f'),
+        tension: 0.2,
+      }];
+      if (valChart) {
+        valChart.data.datasets = valDs;
+        valChart.update();
+      } else {
+        valChart = new Chart(document.getElementById('val-chart'), {
+          type: 'line', data: { datasets: valDs },
+          options: {
+            animation: false, parsing: false,
+            scales: {
+              x: { type: 'linear', title: { display: true, text: 'Epoch', color: '#6b7280' }, grid: { color: '#2e3350' }, ticks: { color: '#6b7280', stepSize: 1 } },
+              y: yAxis('Val MSE'),
+            },
+            plugins: tooltipPlugin(),
+          }
+        });
+      }
+    }
   }
 
   async function load() {
     const model = document.getElementById('model-name').value.trim();
     const url   = `${LOG_BASE}${model}/epoch_log.jsonl`;
-
     let text;
     try {
       const resp = await fetch(url + '?_=' + Date.now());
@@ -316,187 +439,14 @@
       document.getElementById('live-dot').className = 'live-dot idle';
       return;
     }
-
-    const records = dedup(
-      text.trim().split('\n').filter(l => l.trim()).map(l => JSON.parse(l))
-    );
-
-    const batchRecs = records.filter(r => r.batch != null);
-    const epochRecs = records.filter(r => r.batch == null);
-
-    const last      = records[records.length - 1];
-    const lastEpoch = epochRecs[epochRecs.length - 1] ?? null;
-    const bestVal   = lastEpoch
-      ? Math.min(...epochRecs.map(r => r.val_mse))
-      : null;
-
-    // ── Status bar ──
-    const ageSecs = last ? (Date.now()/1000 - last.elapsed_secs - (Date.now()/1000 - last.elapsed_secs)) : null;
-    // Use last elapsed as proxy for "is live" (file written recently)
-    const isLive = true; // can't check mtime from browser; assume live if data exists
-    document.getElementById('live-dot').className = 'live-dot' + (isLive ? '' : ' idle');
-    document.getElementById('status-text').textContent =
-      `${model} · ${records.length} records · last at ${fmtMin(last?.elapsed_secs ?? 0)} elapsed`;
-
-    // ── Epoch progress bar ──
-    const curEpoch    = last?.epoch ?? 1;
-    const curBatch    = last?.batch ?? 0;
-    const totalEpochs = 150; // from default config
-    const totalBatches = 8758;
-    const epochPct = curBatch != null
-      ? Math.round(curBatch / totalBatches * 100)
-      : 100;
-    document.getElementById('epoch-bar').style.width = epochPct + '%';
-    document.getElementById('epoch-progress-label').textContent =
-      `Epoch ${curEpoch} · batch ${curBatch ?? '✓'} / ${totalBatches}  (${epochPct}%)`;
-
-    // ── Stat cards ──
-    document.getElementById('stat-epoch').textContent     = `${curEpoch} / ${totalEpochs}`;
-    document.getElementById('stat-epoch-sub').textContent = `${epochRecs.length} epoch(s) completed`;
-    document.getElementById('stat-train').textContent     = fmtMSE(last?.train_mse);
-    document.getElementById('stat-train-sub').textContent = last?.batch != null
-      ? `batch ${last.batch} / ${totalBatches}`
-      : 'epoch end';
-    document.getElementById('stat-val').textContent       = fmtMSE(bestVal);
-    document.getElementById('stat-val-sub').textContent   = lastEpoch
-      ? `epoch ${lastEpoch.epoch} · improved: ${epochRecs.filter(r=>r.improved).length}×`
-      : 'no val yet';
-    document.getElementById('stat-elapsed').textContent   = fmtMin(last?.elapsed_secs ?? 0);
-    document.getElementById('stat-elapsed-sub').textContent = last
-      ? `${batchRecs.length} batch records`
-      : '';
-
-    // ── Loss chart ──
-    const xAll = records.map(r => parseFloat((r.elapsed_secs / 60).toFixed(2)));
-    const yTrain = records.map(r => r.train_mse);
-
-    const valPoints = epochRecs.map(r => ({ x: parseFloat((r.elapsed_secs/60).toFixed(2)), y: r.val_mse }));
-    const starPoints = epochRecs.filter(r => r.improved).map(r => ({
-      x: parseFloat((r.elapsed_secs/60).toFixed(2)), y: r.val_mse
-    }));
-
-    const datasets = [
-      {
-        label: 'Train MSE',
-        data: records.map(r => ({ x: parseFloat((r.elapsed_secs/60).toFixed(2)), y: r.train_mse })),
-        borderColor: '#4f8ef7',
-        borderWidth: 1.5,
-        pointRadius: 0,
-        tension: 0.3,
-      },
-    ];
-    if (valPoints.length) {
-      datasets.push({
-        label: 'Val MSE',
-        data: valPoints,
-        borderColor: '#f76f6f',
-        borderWidth: 2,
-        pointRadius: 3,
-        pointBackgroundColor: '#f76f6f',
-        tension: 0.2,
-      });
-    }
-    if (starPoints.length) {
-      datasets.push({
-        label: 'Improved ★',
-        data: starPoints,
-        borderColor: 'transparent',
-        pointRadius: 6,
-        pointBackgroundColor: '#3dd68c',
-        pointStyle: 'star',
-        showLine: false,
-      });
-    }
-
-    const chartCfg = {
-      type: 'line',
-      data: { datasets },
-      options: {
-        animation: false,
-        parsing: false,
-        scales: {
-          x: {
-            type: 'linear',
-            title: { display: true, text: 'Elapsed (min)', color: '#6b7280' },
-            grid: { color: '#2e3350' },
-            ticks: { color: '#6b7280' },
-          },
-          y: {
-            type: logScale ? 'logarithmic' : 'linear',
-            title: { display: true, text: 'MSE', color: '#6b7280' },
-            grid: { color: '#2e3350' },
-            ticks: { color: '#6b7280' },
-            min: logScale ? undefined : 0,
-          }
-        },
-        plugins: { legend: { display: false } },
-      }
-    };
-
-    if (lossChart) {
-      lossChart.data.datasets = datasets;
-      lossChart.options.scales.y.type = logScale ? 'logarithmic' : 'linear';
-      lossChart.options.scales.y.min  = logScale ? undefined : 0;
-      lossChart.update();
-    } else {
-      lossChart = new Chart(document.getElementById('loss-chart'), chartCfg);
-    }
-
-    // ── Val-only chart ──
-    if (epochRecs.length >= 2) {
-      document.getElementById('val-chart-card').style.display = '';
-      const valDs = [{
-        label: 'Val MSE',
-        data: epochRecs.map((r, i) => ({ x: r.epoch, y: r.val_mse })),
-        borderColor: '#f76f6f',
-        borderWidth: 2,
-        pointRadius: 4,
-        pointBackgroundColor: epochRecs.map(r => r.improved ? '#3dd68c' : '#f76f6f'),
-        tension: 0.2,
-      }];
-      const valCfg = {
-        type: 'line',
-        data: { datasets: valDs },
-        options: {
-          animation: false,
-          parsing: false,
-          scales: {
-            x: {
-              type: 'linear',
-              title: { display: true, text: 'Epoch', color: '#6b7280' },
-              grid: { color: '#2e3350' },
-              ticks: { color: '#6b7280', stepSize: 1 },
-            },
-            y: {
-              type: logScale ? 'logarithmic' : 'linear',
-              title: { display: true, text: 'Val MSE', color: '#6b7280' },
-              grid: { color: '#2e3350' },
-              ticks: { color: '#6b7280' },
-              min: logScale ? undefined : 0,
-            }
-          },
-          plugins: { legend: { display: false } },
-        }
-      };
-      if (valChart) {
-        valChart.data.datasets = valDs;
-        valChart.options.scales.y.type = logScale ? 'logarithmic' : 'linear';
-        valChart.options.scales.y.min  = logScale ? undefined : 0;
-        valChart.update();
-      } else {
-        valChart = new Chart(document.getElementById('val-chart'), valCfg);
-      }
-    }
+    cachedRecords = dedup(text.trim().split('\n').filter(l => l.trim()).map(l => JSON.parse(l)));
+    render(cachedRecords);
   }
 
-  // Auto-refresh countdown
   function tick() {
     countdown--;
     document.getElementById('countdown').textContent = countdown;
-    if (countdown <= 0) {
-      countdown = 30;
-      load();
-    }
+    if (countdown <= 0) { countdown = 30; load(); }
   }
 
   load();
