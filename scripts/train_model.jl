@@ -7,6 +7,8 @@ Usage:
   julia --project=packages/StockSwingPredictor scripts/train_model.jl
   julia --project=packages/StockSwingPredictor scripts/train_model.jl --epochs 200
   julia --project=packages/StockSwingPredictor scripts/train_model.jl --lr 5e-4 --batch 64
+  julia --project=packages/StockSwingPredictor scripts/train_model.jl --resume
+  julia --project=packages/StockSwingPredictor scripts/train_model.jl --resume --epochs 50 --lr 1e-4
 """
 
 using StockSwingPredictor, Flux, JSON3, Dates, Printf, Statistics
@@ -14,11 +16,11 @@ using StockSwingPredictor, Flux, JSON3, Dates, Printf, Statistics
 const REPO_ROOT  = joinpath(@__DIR__, "..")
 const CACHE_FILE = joinpath(REPO_ROOT, "website", "data", "inference_cache.bson")
 const TRAIN_DIR  = joinpath(REPO_ROOT, "website", "data", "training")
-const MODELS_DIR = joinpath(REPO_ROOT, "website", "data", "models")  # subdirs per arch name
+const MODELS_DIR = joinpath(REPO_ROOT, "website", "data", "models")
 
 function parse_args()
     opts = Dict{String,Any}("epochs"=>150, "lr"=>1e-3, "batch"=>32,
-                             "l2"=>1e-4, "patience"=>15)
+                             "l2"=>1e-4, "patience"=>15, "resume"=>false)
     i = 1
     while i <= length(ARGS)
         a = ARGS[i]
@@ -33,10 +35,14 @@ Options:
   --batch N     Batch size (default: 32)
   --l2 FLOAT    L2 regularisation lambda (default: 1e-4)
   --patience N  Early stopping patience (default: 15)
+  --resume      Load existing weights and continue training from that checkpoint.
+                Useful for additional epochs or fine-tuning on new data.
 
 Input:  website/data/training/dataset.bson
-Output: website/data/models/swing_predictor.bson
-        website/data/models/training_log.json
+        website/data/inference_cache.bson
+Output: website/data/models/{arch.name}/swing_predictor.bson
+        website/data/models/{arch.name}/training_log.json
+        website/data/models/{arch.name}/model_card.json
 """)
             exit(0)
         elseif a == "--epochs"  ; opts["epochs"]   = parse(Int,     ARGS[i+1]); i += 2
@@ -44,6 +50,7 @@ Output: website/data/models/swing_predictor.bson
         elseif a == "--batch"   ; opts["batch"]     = parse(Int,     ARGS[i+1]); i += 2
         elseif a == "--l2"      ; opts["l2"]        = parse(Float64, ARGS[i+1]); i += 2
         elseif a == "--patience"; opts["patience"]  = parse(Int,     ARGS[i+1]); i += 2
+        elseif a == "--resume"  ; opts["resume"]    = true;                       i += 1
         else i += 1
         end
     end
@@ -71,16 +78,32 @@ function main()
     @printf("Train label (eod day5): mean=%.4f%%  std=%.4f%%\n",
             mean(final_h)*100, std(final_h)*100)
 
-    # ── Build and train model ─────────────────────────────────────────────────
+    # ── Build or resume model ─────────────────────────────────────────────────
 
-    arch  = DUAL_CNN_V1   # swap this line to try a different architecture
-    model = build_model(arch)
+    arch = DUAL_CNN_V1   # swap this line to try a different architecture
+
+    model_dir        = joinpath(MODELS_DIR, arch.name)
+    existing_model   = joinpath(model_dir, "swing_predictor.bson")
+    existing_card    = joinpath(model_dir, "model_card.json")
+
+    if opts["resume"]
+        isfile(existing_model) ||
+            error("--resume requested but no checkpoint found at $existing_model")
+        model, _, _ = load_model(existing_model)
+        prior_epochs = isfile(existing_card) ?
+            get(JSON3.read(read(existing_card, String)), :training, Dict())["epochs_run"] : "?"
+        @info "Resumed $(arch.name) from checkpoint (prior epochs_run: $prior_epochs)"
+    else
+        model = build_model(arch)
+        @info "Fresh model: $(arch.name)"
+    end
 
     n_params = sum(length, Flux.trainables(model))
-    @info "Architecture: $(arch.name)"
-    @info "Model parameters: $n_params"
-    @info "Universe: $(length(dataset.companies)) companies  ×  $(N_MARKET_DAYS) days  ×  $(N_MARKET_CHANNELS) channels"
+    @info "Parameters: $n_params"
+    @info "Market context: $(N_MARKET_COMPANIES) companies × $(N_MARKET_DAYS) days"
     println()
+
+    # ── Train ─────────────────────────────────────────────────────────────────
 
     @info "Training…"
     model, log = train!(
@@ -99,17 +122,16 @@ function main()
     test_metrics = evaluate(model, dataset, cache, test_idx)
     merge!(log, test_metrics)
     log["trained_at"]  = string(now(UTC))
+    log["resumed"]     = opts["resume"]
     log["n_companies"] = length(dataset.companies)
     log["n_examples"]  = length(dataset.examples)
     log["hyperparams"] = opts
 
     # ── Save ──────────────────────────────────────────────────────────────────
 
-    model_dir  = joinpath(MODELS_DIR, arch.name)
     mkpath(model_dir)
-    model_path = joinpath(model_dir, "swing_predictor.bson")
+    model_path = existing_model
     log_path   = joinpath(model_dir, "training_log.json")
-
     card_path  = joinpath(model_dir, "model_card.json")
 
     save_model(model, dataset.companies, model_path;
@@ -131,6 +153,7 @@ function _save_model_card(path, arch, model, dataset, log, test_metrics, opts)
     card = Dict(
         "name"         => arch.name,
         "trained_at"   => log["trained_at"],
+        "resumed"      => get(opts, "resume", false),
         "architecture" => Dict(
             "type"                => "DualCNN",
             "market_channels"     => arch.market_channels,
@@ -143,11 +166,12 @@ function _save_model_card(path, arch, model, dataset, log, test_metrics, opts)
             "n_params"            => n_params,
         ),
         "inputs" => Dict(
-            "market_days"     => N_MARKET_DAYS,
-            "market_channels" => N_MARKET_CHANNELS,
-            "hourly_bars"     => N_HOURLY_BARS,
-            "llm_features"    => N_LLM_FEATURES,
-            "pred_hours"      => N_PRED_HOURS,
+            "market_days"      => N_MARKET_DAYS,
+            "market_channels"  => N_MARKET_CHANNELS,
+            "market_companies" => N_MARKET_COMPANIES,
+            "hourly_bars"      => N_HOURLY_BARS,
+            "llm_features"     => N_LLM_FEATURES,
+            "pred_hours"       => N_PRED_HOURS,
         ),
         "dataset" => Dict(
             "n_companies" => length(dataset.companies),
