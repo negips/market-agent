@@ -150,6 +150,22 @@
       cursor: pointer;
     }
     .refresh-info { margin-left: auto; font-size: 11px; color: var(--muted); font-family: var(--mono); }
+    .toggle-btn {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--muted);
+      font-size: 11px;
+      font-family: var(--mono);
+      padding: 3px 10px;
+      cursor: pointer;
+      transition: all .15s;
+    }
+    .toggle-btn.active {
+      background: rgba(79,142,247,.15);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
   </style>
 </head>
 <body>
@@ -214,10 +230,13 @@
     <div class="chart-card">
       <div class="chart-header">
         <div class="chart-title">Loss over time</div>
-        <div class="chart-legend">
-          <span><span class="legend-dot" style="background:#4f8ef7"></span>Train MSE</span>
-          <span><span class="legend-dot" style="background:#f76f6f"></span>Val MSE</span>
-          <span><span class="legend-dot" style="background:#3dd68c;width:6px;height:6px;border-radius:50%"></span>Improved ★</span>
+        <div style="display:flex;align-items:center;gap:12px">
+          <button class="toggle-btn" id="log-toggle" onclick="toggleLog()">log scale</button>
+          <div class="chart-legend">
+            <span><span class="legend-dot" style="background:#4f8ef7"></span>Train MSE</span>
+            <span><span class="legend-dot" style="background:#f76f6f"></span>Val MSE</span>
+            <span><span class="legend-dot" style="background:#3dd68c;width:6px;height:6px;border-radius:50%"></span>Improved ★</span>
+          </div>
         </div>
       </div>
       <canvas id="loss-chart" height="320"></canvas>
@@ -241,6 +260,23 @@
   let valChart  = null;
   let countdown = 30;
   let timer     = null;
+  let logScale  = false;
+
+  function toggleLog() {
+    logScale = !logScale;
+    const btn = document.getElementById('log-toggle');
+    btn.classList.toggle('active', logScale);
+    if (lossChart) {
+      lossChart.options.scales.y.type = logScale ? 'logarithmic' : 'linear';
+      lossChart.options.scales.y.min  = logScale ? undefined : 0;
+      lossChart.update();
+    }
+    if (valChart) {
+      valChart.options.scales.y.type = logScale ? 'logarithmic' : 'linear';
+      valChart.options.scales.y.min  = logScale ? undefined : 0;
+      valChart.update();
+    }
+  }
 
   // Chart.js defaults for dark theme
   Chart.defaults.color          = '#6b7280';
@@ -386,10 +422,11 @@
             ticks: { color: '#6b7280' },
           },
           y: {
+            type: logScale ? 'logarithmic' : 'linear',
             title: { display: true, text: 'MSE', color: '#6b7280' },
             grid: { color: '#2e3350' },
             ticks: { color: '#6b7280' },
-            min: 0,
+            min: logScale ? undefined : 0,
           }
         },
         plugins: { legend: { display: false } },
@@ -398,6 +435,8 @@
 
     if (lossChart) {
       lossChart.data.datasets = datasets;
+      lossChart.options.scales.y.type = logScale ? 'logarithmic' : 'linear';
+      lossChart.options.scales.y.min  = logScale ? undefined : 0;
       lossChart.update();
     } else {
       lossChart = new Chart(document.getElementById('loss-chart'), chartCfg);
@@ -429,10 +468,11 @@
               ticks: { color: '#6b7280', stepSize: 1 },
             },
             y: {
+              type: logScale ? 'logarithmic' : 'linear',
               title: { display: true, text: 'Val MSE', color: '#6b7280' },
               grid: { color: '#2e3350' },
               ticks: { color: '#6b7280' },
-              min: 0,
+              min: logScale ? undefined : 0,
             }
           },
           plugins: { legend: { display: false } },
@@ -440,6 +480,8 @@
       };
       if (valChart) {
         valChart.data.datasets = valDs;
+        valChart.options.scales.y.type = logScale ? 'logarithmic' : 'linear';
+        valChart.options.scales.y.min  = logScale ? undefined : 0;
         valChart.update();
       } else {
         valChart = new Chart(document.getElementById('val-chart'), valCfg);
