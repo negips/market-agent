@@ -25,6 +25,7 @@ const DEFAULT_LR        = 1f-3
 const DEFAULT_L2        = 1f-4
 const DEFAULT_PATIENCE  = 15
 const VAL_CHUNKSIZE     = 256   # max examples assembled at once during val/test
+const PROGRESS_EVERY    = 50    # print batch progress every N batches
 
 """
 Train `model` on `dataset`. Returns `(model, training_log)`.
@@ -66,13 +67,19 @@ function train!(model::SwingPredictor,
         "started_at"    => string(now(UTC)),
     )
 
-    train_ids = collect(train_idx)
-    val_ids   = collect(val_idx)
+    train_ids    = collect(train_idx)
+    val_ids      = collect(val_idx)
+    n_batches_ep = ceil(Int, length(train_ids) / batchsize)
 
     @info "Training: $(length(train_ids)) examples | Val: $(length(val_ids)) examples"
     @info "Market context: $(N_MARKET_COMPANIES) companies × $(N_MARKET_DAYS) days"
+    @info "Batches per epoch: $n_batches_ep  |  Early stop patience: $patience"
+    println()
+
+    train_start = time()
 
     for epoch in 1:epochs
+        epoch_start = time()
         Flux.trainmode!(model)
         epoch_loss = 0f0
         n_batches  = 0
@@ -92,7 +99,13 @@ function train!(model::SwingPredictor,
             Flux.update!(opt_state, model, grads[1])
             epoch_loss += loss_val
             n_batches  += 1
+
+            if n_batches % PROGRESS_EVERY == 0
+                print("\r  Epoch $epoch | batch $n_batches/$n_batches_ep | loss $(round(loss_val, sigdigits=4))    ")
+                flush(stdout)
+            end
         end
+        print("\r" * " "^72 * "\r")   # clear batch progress line
 
         train_mse = epoch_loss / n_batches
 
@@ -102,7 +115,8 @@ function train!(model::SwingPredictor,
         push!(log["train_mse"], train_mse)
         push!(log["val_mse"],   val_mse)
 
-        if val_mse < best_val_loss
+        improved = val_mse < best_val_loss
+        if improved
             best_val_loss       = val_mse
             best_state          = Flux.state(model)
             no_improve          = 0
@@ -112,14 +126,21 @@ function train!(model::SwingPredictor,
             no_improve += 1
         end
 
-        if epoch % log_every == 0 || epoch == 1
-            @printf("Epoch %3d | train MSE %.6f | val MSE %.6f | best %.6f%s\n",
-                    epoch, train_mse, val_mse, best_val_loss,
-                    no_improve == 0 ? " ★" : "")
-        end
+        epoch_secs  = time() - epoch_start
+        avg_secs    = (time() - train_start) / epoch
+        eta_secs    = round(Int, avg_secs * (epochs - epoch))
+        patience_str = "$no_improve/$patience"
+
+        @printf("Epoch %3d/%d | train %.6f | val %.6f | best %.6f | %s | ETA %s | patience %s%s\n",
+                epoch, epochs, train_mse, val_mse, best_val_loss,
+                _fmt_duration(round(Int, epoch_secs)),
+                _fmt_duration(eta_secs),
+                patience_str,
+                improved ? " ★" : "")
 
         no_improve >= patience &&
-            (@info "Early stop at epoch $epoch"; log["stopped_early"] = true; break)
+            (@info "Early stop at epoch $epoch (patience $patience exhausted)";
+             log["stopped_early"] = true; break)
     end
 
     log["epochs_run"] = length(log["train_mse"])
@@ -193,6 +214,12 @@ function _mse_chunked(model, dataset, cache, ids)::Float32
         n     += 1
     end
     return total / n
+end
+
+function _fmt_duration(seconds::Int)::String
+    seconds < 60   && return "$(seconds)s"
+    seconds < 3600 && return "$(seconds ÷ 60)m $(seconds % 60)s"
+    return "$(seconds ÷ 3600)h $(seconds % 3600 ÷ 60)m"
 end
 
 function _spearman_corr(x::AbstractVector, y::AbstractVector)::Float32
