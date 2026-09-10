@@ -43,32 +43,21 @@ market-agent/
 │   │       ├── rss.jl              # RSS feed fetcher + XML parser
 │   │       ├── llm_classify.jl     # Claude API → NewsSignal (symbol, sentiment, severity)
 │   │       └── poller.jl           # concurrent polling loop + JSONL writer
-│   └── StockSwingPredictor/     # Neural network large-move predictor
+│   └── StockSwingPredictor/     # Neural network large-move predictor + broker client
 │       ├── Project.toml
 │       └── src/
 │           ├── StockSwingPredictor.jl  # module entry + exports
-│           ├── types.jl                   # all structs (OHLCVBar, LLMFeatures, Dataset, …)
-│           ├── kite_data.jl               # instrument lookup, daily OHLCV fetch + cache
-│           ├── fundamentals.jl            # quarterly P&L feature extraction via TijoriData
-│           ├── llm_extract.jl             # Claude API → 14 scalar signals from PDFs
-│           ├── features.jl                # TS derived features, vector assembly
-│           ├── dataset.jl                 # sliding-window examples, normalisation, split
-│           ├── model.jl                   # Flux.jl MLP, save/load
-│           ├── train.jl                   # training loop, early stopping, evaluation
-│           └── display.jl                 # Base.show overrides
-│       ├── Project.toml
-│       ├── src/
-│       │   ├── TijoriData.jl       # module entry point + exports
-│       │   ├── types.jl            # all structs
-│       │   ├── client.jl           # HTTP client, sidecar lifecycle, parsing helpers
-│       │   ├── display.jl          # Base.show overrides for REPL
-│       │   ├── company.jl          # search_company, get_overview, get_knowledge_base
-│       │   ├── financials.jl       # get_financials, get_operational_metrics, get_fund_flow
-│       │   ├── shareholding.jl     # get_shareholding (includes promoter pledging)
-│       │   ├── documents.jl        # fetch_document (PDF text extraction)
-│       │   └── screener.jl         # screen_companies, list_screens, search_fields
-│       └── test/
-│           └── runtests.jl         # unit tests (no sidecar) + integration tests
+│           ├── types.jl               # all structs (LLMFeatures, TrainingExample, Dataset, …)
+│           ├── kite_data.jl           # instrument lookup, daily + hourly OHLCV fetch + cache
+│           ├── inference_cache.jl     # InferenceCache: aligned price matrices for O(1) batch slicing
+│           ├── broker.jl              # Kite portfolio/funds: get_holdings, get_positions, get_margins, get_orders
+│           ├── fundamentals.jl        # quarterly P&L feature extraction via TijoriData (not active)
+│           ├── llm_extract.jl         # Claude API → 15 scalar signals from PDFs
+│           ├── features.jl            # TS derived features, vector assembly
+│           ├── dataset.jl             # sliding-window examples, normalisation, split
+│           ├── model.jl               # Flux.jl DualCNN, save/load
+│           ├── train.jl               # training loop, early stopping, chunked eval
+│           └── display.jl             # Base.show overrides
 │
 ├── scripts/                        # standalone Julia scripts (not packages)
 │   ├── generate_nse_list.jl              # builds data/nse_companies_latest.json
@@ -79,6 +68,7 @@ market-agent/
 │   ├── update_ohlcv.jl                   # incremental update: append only missing bars since last run
 │   ├── extract_llm_features.jl           # Claude API → 14 scalar signals per company (resumable)
 │   ├── monitor_news.jl                   # real-time BSE + RSS news monitor daemon
+│   ├── build_cache.jl                    # build inference_cache.bson from all OHLCV CSVs (run each morning)
 │   ├── build_dataset.jl                  # sliding-window dataset assembly + normalisation
 │   └── train_model.jl                    # train StockSwingPredictor MLP, save BSON
 │
@@ -124,8 +114,8 @@ CompanyConfidence       — depends on TijoriData
 EarningsCalendar        — NSE data only, no dependencies on other packages
 NewsMonitor             — BSE/RSS news polling + LLM classification; no dependencies on other packages
 StockSwingPredictor     — depends on TijoriData; Kite used directly via HTTP
+                          includes broker.jl (portfolio, positions, funds, orders)
 Backtest                — no external data dependencies (planned)
-BrokerClient            — Kite Connect REST wrapper (planned)
 ```
 
 ## Using CompanyConfidence
@@ -235,6 +225,39 @@ Output: `website/data/news_signals.jsonl` — one JSON line per classified item.
 ```julia
 using Pkg; Pkg.develop(path="packages/NewsMonitor")
 ```
+
+## Using broker functions (StockSwingPredictor)
+
+```julia
+using StockSwingPredictor, DataFrames
+
+# Requires a valid kite_session.json — run kite_login.js first
+session = load_kite_session(pwd())
+
+# Long-term demat holdings
+holdings = get_holdings(session)
+# → DataFrame: symbol, exchange, isin, quantity, average_price,
+#              last_price, close_price, pnl, day_change, day_change_pct
+
+# Open intraday and overnight positions
+positions = get_positions(session)             # net view (default)
+positions = get_positions(session; kind=:day)  # intraday only
+
+# Available funds
+margins = get_margins(session)                         # equity segment (default)
+margins = get_margins(session; segment=:commodity)
+margins.cash             # uninvested cash (₹)
+margins.net              # total available including collateral
+margins.debits           # margin currently utilised
+
+# Today's order book
+orders = get_orders(session)
+# → DataFrame: order_id, symbol, exchange, transaction_type, product,
+#              quantity, price, status, filled_quantity, placed_at
+```
+
+Note: the Kite Historical API session (`kite_session.json`) is a full Kite Connect
+session and works for all endpoints — no separate trading API key is needed.
 
 ## Daily session workflow
 
@@ -392,10 +415,9 @@ loads it automatically; Julia code can use `DotEnv.jl` or read it manually.
 | `KITE_TOTP_SECRET` | `kite_login.js` | Base32 TOTP secret from authenticator app |
 | `KITE_CONNECT_ID` | — | Kite developer portal login (not used in code) |
 | `KITE_CONNECT_PASSWORD` | — | Kite developer portal password (not used in code) |
-| `KITE_API_KEY` | BrokerClient (planned) | Kite trading app key (not used for data) |
-| `KITE_API_SECRET` | BrokerClient (planned) | Kite trading app secret (not used for data) |
 | `PORT` | sidecar | HTTP port (default 3001) |
 
 The daily access token is **not** an env var — `kite_login.js` writes it to
-`sidecar/kite_session.json` (gitignored), and the sidecar exposes it at
-`GET /kite/token`. The token is valid for one trading day.
+`sidecar/kite_session.json` (gitignored). `load_kite_session(pwd())` reads it in Julia.
+The token is valid for one trading day and works for all Kite Connect endpoints
+(historical data, portfolio, positions, funds, orders).
