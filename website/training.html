@@ -10,14 +10,14 @@
     .training-grid {
       display: grid;
       grid-template-columns: 1fr 1fr 1fr 1fr;
-      gap: 12px;
-      margin-bottom: 20px;
+      gap: 8px;
+      margin-bottom: 10px;
     }
     .stat-card {
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: var(--radius);
-      padding: 16px 18px;
+      padding: 10px 14px;
     }
     .stat-label {
       font-size: 11px;
@@ -28,7 +28,7 @@
     }
     .stat-value {
       font-family: var(--mono);
-      font-size: 22px;
+      font-size: 18px;
       font-weight: 700;
       color: var(--text);
     }
@@ -78,7 +78,7 @@
       display: flex;
       align-items: center;
       gap: 10px;
-      margin-bottom: 20px;
+      margin-bottom: 8px;
       font-size: 12px;
       color: var(--muted);
     }
@@ -98,8 +98,8 @@
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: var(--radius);
-      padding: 16px 18px;
-      margin-bottom: 14px;
+      padding: 10px 14px;
+      margin-bottom: 8px;
     }
     .epoch-bar-label {
       font-size: 11px;
@@ -127,7 +127,7 @@
       display: flex;
       align-items: center;
       gap: 10px;
-      margin-bottom: 20px;
+      margin-bottom: 8px;
     }
     .model-selector label { font-size: 12px; color: var(--muted); }
     .model-selector input {
@@ -164,6 +164,33 @@
       background: rgba(79,142,247,.15);
       color: var(--accent);
     }
+
+    /* ── No-scroll viewport fit ── */
+    body { overflow: hidden; }
+    .main { height: 100vh; overflow: hidden; }
+    .page-header { padding: 14px 32px 0; }
+    .page-content { overflow: hidden; padding-top: 12px; padding-bottom: 8px; }
+
+    /* Chart cards fill remaining vertical space */
+    .charts-area {
+      display: flex;
+      flex-direction: column;
+      height: calc(100vh - 340px);  /* viewport minus header + controls + stat cards */
+      gap: 10px;
+    }
+    .chart-card {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      min-height: 0;
+    }
+    .chart-card.val-card { flex: 0 0 160px; }
+    .canvas-wrap {
+      position: relative;
+      flex: 1;
+      min-height: 0;
+    }
+    canvas { position: absolute; inset: 0; }
   </style>
 </head>
 <body>
@@ -224,32 +251,40 @@
       </div>
     </div>
 
-    <!-- Loss chart -->
-    <div class="chart-card">
-      <div class="chart-header">
-        <div class="chart-title">Loss over time</div>
-        <div style="display:flex;align-items:center;gap:12px">
-          <div style="display:flex;border:1px solid var(--border);border-radius:6px;overflow:hidden;font-family:var(--mono);font-size:11px">
-            <button class="scale-btn active" id="btn-linear" onclick="setScale('linear')">linear</button>
-            <button class="scale-btn" id="btn-log2"   onclick="setScale('log2')">log₂</button>
-            <button class="scale-btn" id="btn-log10"  onclick="setScale('log10')">log₁₀</button>
-          </div>
-          <div class="chart-legend">
-            <span><span class="legend-dot" style="background:#4f8ef7"></span>Train MSE</span>
-            <span><span class="legend-dot" style="background:#f76f6f"></span>Val MSE</span>
-            <span><span class="legend-dot" style="background:#3dd68c;width:6px;height:6px;border-radius:50%"></span>Improved ★</span>
+    <div class="charts-area">
+
+      <!-- Loss chart -->
+      <div class="chart-card">
+        <div class="chart-header">
+          <div class="chart-title">Loss over time</div>
+          <div style="display:flex;align-items:center;gap:12px">
+            <div style="display:flex;border:1px solid var(--border);border-radius:6px;overflow:hidden;font-family:var(--mono);font-size:11px">
+              <button class="scale-btn active" id="btn-linear" onclick="setScale('linear')">linear</button>
+              <button class="scale-btn" id="btn-log2"   onclick="setScale('log2')">log₂</button>
+              <button class="scale-btn" id="btn-log10"  onclick="setScale('log10')">log₁₀</button>
+            </div>
+            <div class="chart-legend">
+              <span><span class="legend-dot" style="background:#4f8ef7"></span>Train MSE</span>
+              <span><span class="legend-dot" style="background:#f76f6f"></span>Val MSE</span>
+              <span><span class="legend-dot" style="background:#3dd68c;width:6px;height:6px;border-radius:50%"></span>Improved ★</span>
+            </div>
           </div>
         </div>
+        <div class="canvas-wrap">
+          <canvas id="loss-chart"></canvas>
+        </div>
       </div>
-      <canvas id="loss-chart" height="320"></canvas>
-    </div>
 
-    <!-- Val-only chart (epoch level) -->
-    <div class="chart-card" id="val-chart-card" style="display:none">
-      <div class="chart-header">
-        <div class="chart-title">Validation loss by epoch</div>
+      <!-- Val-only chart (epoch level) -->
+      <div class="chart-card val-card" id="val-chart-card" style="display:none">
+        <div class="chart-header">
+          <div class="chart-title">Validation loss by epoch</div>
+        </div>
+        <div class="canvas-wrap">
+          <canvas id="val-chart"></canvas>
+        </div>
       </div>
-      <canvas id="val-chart" height="200"></canvas>
+
     </div>
 
   </div>
@@ -404,6 +439,7 @@
         type: 'line', data: { datasets },
         options: {
           animation: false, parsing: false,
+          responsive: true, maintainAspectRatio: false,
           scales: {
             x: { type: 'linear', title: { display: true, text: 'Elapsed (min)', color: '#6b7280' }, grid: { color: '#2e3350' }, ticks: { color: '#6b7280' } },
             y: yAxis('MSE'),
@@ -431,6 +467,7 @@
           type: 'line', data: { datasets: valDs },
           options: {
             animation: false, parsing: false,
+            responsive: true, maintainAspectRatio: false,
             scales: {
               x: { type: 'linear', title: { display: true, text: 'Epoch', color: '#6b7280' }, grid: { color: '#2e3350' }, ticks: { color: '#6b7280', stepSize: 1 } },
               y: yAxis('Val MSE'),
