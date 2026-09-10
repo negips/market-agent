@@ -86,6 +86,8 @@ function main()
     existing_model   = joinpath(model_dir, "swing_predictor.bson")
     existing_card    = joinpath(model_dir, "model_card.json")
 
+    mkpath(model_dir)   # must exist before first checkpoint write during training
+
     if opts["resume"]
         isfile(existing_model) ||
             error("--resume requested but no checkpoint found at $existing_model")
@@ -131,7 +133,6 @@ function main()
 
     # ── Save ──────────────────────────────────────────────────────────────────
 
-    mkpath(model_dir)
     model_path = existing_model
     log_path   = joinpath(model_dir, "training_log.json")
     card_path  = joinpath(model_dir, "model_card.json")
