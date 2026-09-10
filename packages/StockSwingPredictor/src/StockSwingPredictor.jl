@@ -54,6 +54,7 @@ include("fundamentals.jl")   # not active in current pipeline — see file heade
 include("dataset.jl")
 include("model.jl")
 include("train.jl")
+include("broker.jl")
 include("display.jl")
 
 export
@@ -93,6 +94,9 @@ export
     SwingPredictor, build_model, predict, save_model, load_model,
 
     # train
-    train!, evaluate, save_training_log
+    train!, evaluate, save_training_log,
+
+    # broker
+    get_holdings, get_positions, get_margins, get_orders
 
 end
