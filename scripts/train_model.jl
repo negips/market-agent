@@ -107,8 +107,10 @@ function main()
 
     # ── Train ─────────────────────────────────────────────────────────────────
 
+    epoch_log = joinpath(model_dir, "epoch_log.jsonl")
     @info "Training…"
     @info "Checkpoint → $existing_model  (saved on every val improvement)"
+    @info "Epoch log  → $epoch_log"
     model, log = train!(
         model, dataset, cache, train_idx, val_idx;
         epochs          = opts["epochs"],
@@ -117,6 +119,7 @@ function main()
         l2_lambda       = Float32(opts["l2"]),
         patience        = opts["patience"],
         checkpoint_path = existing_model,
+        epoch_log_path  = epoch_log,
     )
 
     # ── Test evaluation ───────────────────────────────────────────────────────

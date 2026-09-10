@@ -50,7 +50,8 @@ function train!(model::SwingPredictor,
                 l2_lambda::Float32 = DEFAULT_L2,
                 patience::Int      = DEFAULT_PATIENCE,
                 log_every::Int     = 10,
-                checkpoint_path::String = "")
+                checkpoint_path::String = "",
+                epoch_log_path::String  = "")
 
     opt_state = Flux.setup(Flux.Adam(lr), model)
 
@@ -142,6 +143,15 @@ function train!(model::SwingPredictor,
                 _fmt_duration(eta_secs),
                 patience_str,
                 improved ? " ★" : "")
+
+        if !isempty(epoch_log_path)
+            open(epoch_log_path, "a") do io
+                JSON3.write(io, (epoch=epoch, train_mse=train_mse, val_mse=val_mse,
+                                 best_val_mse=best_val_loss, improved=improved,
+                                 epoch_secs=round(epoch_secs, digits=1)))
+                println(io)
+            end
+        end
 
         no_improve >= patience &&
             (@info "Early stop at epoch $epoch (patience $patience exhausted)";
