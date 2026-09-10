@@ -150,20 +150,18 @@
       cursor: pointer;
     }
     .refresh-info { margin-left: auto; font-size: 11px; color: var(--muted); font-family: var(--mono); }
-    .toggle-btn {
+    .scale-btn {
       background: var(--surface2);
-      border: 1px solid var(--border);
-      border-radius: 6px;
+      border: none;
+      border-right: 1px solid var(--border);
       color: var(--muted);
-      font-size: 11px;
-      font-family: var(--mono);
-      padding: 3px 10px;
+      padding: 4px 10px;
       cursor: pointer;
       transition: all .15s;
     }
-    .toggle-btn.active {
+    .scale-btn:last-child { border-right: none; }
+    .scale-btn.active {
       background: rgba(79,142,247,.15);
-      border-color: var(--accent);
       color: var(--accent);
     }
   </style>
@@ -231,7 +229,11 @@
       <div class="chart-header">
         <div class="chart-title">Loss over time</div>
         <div style="display:flex;align-items:center;gap:12px">
-          <button class="toggle-btn" id="log-toggle" onclick="toggleLog()">log scale</button>
+          <div style="display:flex;border:1px solid var(--border);border-radius:6px;overflow:hidden;font-family:var(--mono);font-size:11px">
+            <button class="scale-btn active" id="btn-linear" onclick="setScale('linear')">linear</button>
+            <button class="scale-btn" id="btn-log2"   onclick="setScale('log2')">log₂</button>
+            <button class="scale-btn" id="btn-log10"  onclick="setScale('log10')">log₁₀</button>
+          </div>
           <div class="chart-legend">
             <span><span class="legend-dot" style="background:#4f8ef7"></span>Train MSE</span>
             <span><span class="legend-dot" style="background:#f76f6f"></span>Val MSE</span>
@@ -261,29 +263,43 @@
   let cachedRecords = null;
   let countdown     = 30;
   let timer         = null;
-  let logScale      = false;
+  let scaleMode = 'linear';  // 'linear' | 'log2' | 'log10'
 
-  // ── Log-2 helpers ──────────────────────────────────────────────────────────
-  // Data is pre-transformed to log2 space so the y-axis stays linear.
-  // Each grid line = one bit = a halving of error.
+  // ── Scale helpers ──────────────────────────────────────────────────────────
+  // Data is pre-transformed so the y-axis always stays linear.
+  // log2:  each gridline = one halving of error
+  // log10: each gridline = one order of magnitude
   function toPlot(v) {
-    return (logScale && v != null && v > 0) ? Math.log2(v) : v;
+    if (v == null || v <= 0) return v;
+    if (scaleMode === 'log2')  return Math.log2(v);
+    if (scaleMode === 'log10') return Math.log10(v);
+    return v;
+  }
+  function fromPlot(v) {
+    if (scaleMode === 'log2')  return Math.pow(2,  v);
+    if (scaleMode === 'log10') return Math.pow(10, v);
+    return v;
   }
   function tickLabel(v) {
-    if (!logScale) return v.toPrecision ? v.toPrecision(3) : v;
-    const orig = Math.pow(2, v);
+    if (scaleMode === 'linear') return v.toPrecision ? v.toPrecision(3) : v;
+    const orig = fromPlot(v);
     return orig >= 0.01 ? orig.toPrecision(2) : orig.toExponential(1);
   }
   function tooltipLabel(ctx) {
-    const raw = ctx.parsed.y;
-    const val = logScale ? Math.pow(2, raw) : raw;
+    const val = scaleMode === 'linear' ? ctx.parsed.y : fromPlot(ctx.parsed.y);
     return ` ${ctx.dataset.label}: ${val.toExponential(4)}`;
   }
+  function yAxisLabel(base) {
+    if (scaleMode === 'log2')  return `log₂(${base})`;
+    if (scaleMode === 'log10') return `log₁₀(${base})`;
+    return base;
+  }
 
-  function toggleLog() {
-    logScale = !logScale;
-    document.getElementById('log-toggle').classList.toggle('active', logScale);
-    // Destroy and re-render — data transform changes, can't just update scale type
+  function setScale(mode) {
+    scaleMode = mode;
+    ['linear','log2','log10'].forEach(m =>
+      document.getElementById('btn-' + m).classList.toggle('active', m === mode)
+    );
     if (lossChart) { lossChart.destroy(); lossChart = null; }
     if (valChart)  { valChart.destroy();  valChart  = null; }
     if (cachedRecords) render(cachedRecords);
@@ -311,8 +327,8 @@
 
   function yAxis(label) {
     return {
-      type: 'linear',   // always linear; data pre-transformed to log2 if needed
-      title: { display: true, text: logScale ? `log₂(${label})` : label, color: '#6b7280' },
+      type: 'linear',   // always linear; data pre-transformed to log space if needed
+      title: { display: true, text: yAxisLabel(label), color: '#6b7280' },
       grid: { color: '#2e3350' },
       ticks: { color: '#6b7280', callback: tickLabel },
     };
