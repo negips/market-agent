@@ -106,13 +106,15 @@ function main()
     # ── Train ─────────────────────────────────────────────────────────────────
 
     @info "Training…"
+    @info "Checkpoint → $existing_model  (saved on every val improvement)"
     model, log = train!(
         model, dataset, cache, train_idx, val_idx;
-        epochs    = opts["epochs"],
-        batchsize = opts["batch"],
-        lr        = Float32(opts["lr"]),
-        l2_lambda = Float32(opts["l2"]),
-        patience  = opts["patience"],
+        epochs          = opts["epochs"],
+        batchsize       = opts["batch"],
+        lr              = Float32(opts["lr"]),
+        l2_lambda       = Float32(opts["l2"]),
+        patience        = opts["patience"],
+        checkpoint_path = existing_model,
     )
 
     # ── Test evaluation ───────────────────────────────────────────────────────

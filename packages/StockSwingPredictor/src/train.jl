@@ -49,7 +49,8 @@ function train!(model::SwingPredictor,
                 lr::Float32        = DEFAULT_LR,
                 l2_lambda::Float32 = DEFAULT_L2,
                 patience::Int      = DEFAULT_PATIENCE,
-                log_every::Int     = 10)
+                log_every::Int     = 10,
+                checkpoint_path::String = "")
 
     opt_state = Flux.setup(Flux.Adam(lr), model)
 
@@ -58,13 +59,14 @@ function train!(model::SwingPredictor,
     no_improve    = 0
 
     log = Dict{String, Any}(
-        "epochs_run"    => 0,
-        "train_mse"     => Float32[],
-        "val_mse"       => Float32[],
-        "best_val_mse"  => Inf32,
-        "best_epoch"    => 0,
-        "stopped_early" => false,
-        "started_at"    => string(now(UTC)),
+        "epochs_run"      => 0,
+        "train_mse"       => Float32[],
+        "val_mse"         => Float32[],
+        "best_val_mse"    => Inf32,
+        "best_epoch"      => 0,
+        "stopped_early"   => false,
+        "started_at"      => string(now(UTC)),
+        "checkpoint_path" => checkpoint_path,
     )
 
     train_ids    = collect(train_idx)
@@ -122,6 +124,9 @@ function train!(model::SwingPredictor,
             no_improve          = 0
             log["best_val_mse"] = best_val_loss
             log["best_epoch"]   = epoch
+            # Flush best weights to disk so --resume can recover from a crash.
+            isempty(get(log, "checkpoint_path", "")) ||
+                _save_checkpoint(log["checkpoint_path"], model, dataset.companies)
         else
             no_improve += 1
         end
@@ -214,6 +219,11 @@ function _mse_chunked(model, dataset, cache, ids)::Float32
         n     += 1
     end
     return total / n
+end
+
+function _save_checkpoint(path::String, model::SwingPredictor, companies::Vector{String})
+    save_model(model, companies, path;
+               meta=Dict("checkpoint" => true, "saved_at" => string(now(UTC))))
 end
 
 function _fmt_duration(seconds::Int)::String
