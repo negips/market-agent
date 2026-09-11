@@ -1,0 +1,896 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Predict — market-agent</title>
+  <link rel="stylesheet" href="assets/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    body { overflow: hidden; }
+    .main { height: 100vh; overflow: hidden; }
+    .page-header { padding: 14px 32px 0; }
+    .page-content { overflow: hidden; padding-top: 10px; padding-bottom: 8px; }
+
+    /* ── Query bar ── */
+    .query-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+    }
+    .query-bar label { font-size: 12px; color: var(--muted); white-space: nowrap; }
+    .query-bar input[type="text"],
+    .query-bar input[type="date"] {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 13px;
+      padding: 5px 10px;
+    }
+    .query-bar input[type="text"] { width: 160px; text-transform: uppercase; }
+    .query-bar input[type="date"] { width: 150px; color-scheme: dark; }
+
+    /* ── Symbol autocomplete ── */
+    .symbol-wrap { position: relative; }
+    .symbol-dropdown {
+      display: none;
+      position: absolute;
+      top: calc(100% + 4px);
+      left: 0;
+      min-width: 280px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.4);
+      z-index: 100;
+      max-height: 240px;
+      overflow-y: auto;
+    }
+    .symbol-dropdown.open { display: block; }
+    .symbol-option {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 7px 12px;
+      cursor: pointer;
+      border-bottom: 1px solid var(--border);
+    }
+    .symbol-option:last-child { border-bottom: none; }
+    .symbol-option:hover, .symbol-option.active { background: rgba(79,142,247,.12); }
+    .symbol-option .opt-ticker {
+      font-family: var(--mono);
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--accent);
+      min-width: 70px;
+    }
+    .symbol-option .opt-name {
+      font-size: 11px;
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .symbol-option .opt-cap {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--muted);
+      margin-left: auto;
+      white-space: nowrap;
+    }
+    .query-bar button {
+      background: var(--accent);
+      border: none;
+      border-radius: 6px;
+      color: #fff;
+      font-size: 12px;
+      padding: 6px 16px;
+      cursor: pointer;
+    }
+    .query-bar button:hover { opacity: .85; }
+    .load-btn {
+      background: var(--surface) !important;
+      border: 1px solid var(--border) !important;
+      color: var(--text) !important;
+      margin-left: 4px;
+    }
+    .load-btn:hover { border-color: var(--accent) !important; }
+
+    /* ── Command box ── */
+    .cmd-box {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 12px;
+      margin-bottom: 10px;
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .cmd-box code {
+      flex: 1;
+      color: var(--text);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .cmd-box button {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--muted);
+      font-size: 10px;
+      font-family: var(--mono);
+      padding: 2px 8px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .cmd-box button:hover { color: var(--text); border-color: var(--accent); }
+    .cmd-box.hidden { display: none; }
+
+    /* ── Stats row ── */
+    .stats-row {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .stat-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 8px 14px;
+    }
+    .stat-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: .07em;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+    .stat-value {
+      font-family: var(--mono);
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text);
+    }
+    .stat-value.up   { color: var(--green); }
+    .stat-value.down { color: #ef4444; }
+    .stat-value.muted { color: var(--muted); }
+    .stat-sub {
+      font-size: 10px;
+      color: var(--muted);
+      margin-top: 2px;
+      font-family: var(--mono);
+    }
+
+    /* ── Chart area ── */
+    .charts-area {
+      display: grid;
+      grid-template-columns: 2fr 3fr;
+      height: calc(100vh - 260px);
+      gap: 10px;
+    }
+    .chart-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px 20px;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+    .chart-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+      flex-shrink: 0;
+    }
+    .chart-title { font-size: 12px; font-weight: 600; }
+    .chart-legend {
+      display: flex;
+      gap: 14px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .legend-dot {
+      display: inline-block;
+      width: 10px; height: 3px;
+      border-radius: 2px;
+      margin-right: 4px;
+      vertical-align: middle;
+    }
+    .canvas-wrap {
+      position: relative;
+      flex: 1;
+      min-height: 0;
+    }
+    canvas { display: block; width: 100% !important; }
+
+    /* ── Empty state ── */
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .empty-state svg { opacity: .3; margin-bottom: 4px; }
+
+    /* ── Error banner ── */
+    .error-banner {
+      background: rgba(239,68,68,.1);
+      border: 1px solid rgba(239,68,68,.3);
+      border-radius: 6px;
+      color: #fca5a5;
+      font-size: 12px;
+      font-family: var(--mono);
+      padding: 8px 14px;
+      margin-bottom: 10px;
+    }
+    .error-banner.hidden { display: none; }
+
+    /* zoom reset */
+    .reset-zoom-btn {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--muted);
+      font-size: 11px;
+      font-family: var(--mono);
+      padding: 3px 9px;
+      cursor: pointer;
+    }
+    .reset-zoom-btn:hover { color: var(--text); border-color: var(--accent); }
+  </style>
+</head>
+<body>
+  <script src="assets/nav.js"></script>
+
+  <main class="main">
+    <div class="page-header">
+      <div class="page-title">Predict</div>
+      <div class="page-subtitle">Run the trained model on a symbol + date and compare against actual prices.</div>
+    </div>
+
+    <div class="page-content" style="padding: 10px 32px 0;">
+
+      <!-- Query bar -->
+      <div class="query-bar">
+        <label for="inp-symbol">Symbol</label>
+        <div class="symbol-wrap">
+          <input id="inp-symbol" type="text" value="INFY" placeholder="search…" maxlength="20" autocomplete="off">
+          <div class="symbol-dropdown" id="symbol-dropdown"></div>
+        </div>
+        <label for="inp-date">Date</label>
+        <input id="inp-date" type="date">
+        <button onclick="generateCommand()">Generate command</button>
+        <button class="load-btn" onclick="loadResult()">Load result</button>
+      </div>
+
+      <!-- Terminal command -->
+      <div class="cmd-box hidden" id="cmd-box">
+        <span style="color:var(--muted);flex-shrink:0">$</span>
+        <code id="cmd-text"></code>
+        <button onclick="copyCmd()">copy</button>
+      </div>
+
+      <!-- Error banner -->
+      <div class="error-banner hidden" id="error-banner"></div>
+
+      <!-- Stats -->
+      <div class="stats-row">
+        <div class="stat-card">
+          <div class="stat-label">Symbol</div>
+          <div class="stat-value muted" id="stat-symbol">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Date</div>
+          <div class="stat-value muted" id="stat-date">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Ref close</div>
+          <div class="stat-value muted" id="stat-close">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Day-5 return (pred)</div>
+          <div class="stat-value muted" id="stat-return">—</div>
+          <div class="stat-sub" id="stat-price">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Actual day-5 (if avail.)</div>
+          <div class="stat-value muted" id="stat-actual">—</div>
+          <div class="stat-sub" id="stat-actual-price">—</div>
+        </div>
+      </div>
+
+      <!-- Charts -->
+      <div class="charts-area">
+
+        <!-- Left: 28-day history -->
+        <div class="chart-card">
+          <div class="chart-header">
+            <div class="chart-title">28-day history</div>
+            <div class="chart-legend">
+              <span><span class="legend-dot" style="background:#6b7280"></span>Daily close</span>
+            </div>
+          </div>
+          <div class="canvas-wrap" id="hist-wrap">
+            <div class="empty-state" id="hist-empty">
+              <svg width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.4" viewBox="0 0 24 24">
+                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+              </svg>
+              <span>Run the command, then click Load result</span>
+            </div>
+            <canvas id="hist-chart" style="display:none"></canvas>
+          </div>
+        </div>
+
+        <!-- Right: 5-day prediction vs actual -->
+        <div class="chart-card">
+          <div class="chart-header">
+            <div class="chart-title" id="pred-title">5-day prediction</div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <div class="chart-legend">
+                <span><span class="legend-dot" style="background:#4f8ef7;opacity:.7;border-top:1px dashed #4f8ef7"></span>Predicted</span>
+                <span><span class="legend-dot" style="background:#34d399"></span>Actual</span>
+              </div>
+              <button class="reset-zoom-btn" onclick="resetZoom()">reset zoom</button>
+            </div>
+          </div>
+          <div class="canvas-wrap" id="pred-wrap">
+            <div class="empty-state" id="pred-empty">
+              <svg width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.4" viewBox="0 0 24 24">
+                <circle cx="11" cy="11" r="8"/>
+                <path d="M21 21l-4.35-4.35"/>
+              </svg>
+              <span>No prediction loaded</span>
+            </div>
+            <canvas id="pred-chart" style="display:none"></canvas>
+          </div>
+        </div>
+
+      </div><!-- .charts-area -->
+    </div><!-- .page-content -->
+  </main>
+
+  <script>
+  // ── State ─────────────────────────────────────────────────────────────────
+  let histChart = null;
+  let predChart = null;
+
+  // ── Init ──────────────────────────────────────────────────────────────────
+  document.addEventListener('DOMContentLoaded', () => {
+    // Default date to yesterday (most recent likely trading day)
+    const inp = document.getElementById('inp-date');
+    const d   = new Date();
+    d.setDate(d.getDate() - 1);
+    inp.value = d.toISOString().slice(0, 10);
+
+    // Auto-load if a result file already exists from a previous run
+    loadResult(true);
+  });
+
+  // ── Command generation ────────────────────────────────────────────────────
+  function generateCommand() {
+    const symbol = document.getElementById('inp-symbol').value.trim().toUpperCase();
+    const date   = document.getElementById('inp-date').value;
+    if (!symbol || !date) { showError('Enter a symbol and date first.'); return; }
+    clearError();
+
+    const [y, m, d] = date.split('-');
+    const fmtDate = `${d}-${m}-${y}`;
+    const cmd = `julia scripts/run_inference.jl --symbol ${symbol} --date ${fmtDate}`;
+    document.getElementById('cmd-text').textContent = cmd;
+    document.getElementById('cmd-box').classList.remove('hidden');
+  }
+
+  function copyCmd() {
+    const txt = document.getElementById('cmd-text').textContent;
+    navigator.clipboard.writeText(txt).catch(() => {});
+    const btn = document.querySelector('#cmd-box button');
+    btn.textContent = 'copied!';
+    setTimeout(() => btn.textContent = 'copy', 1500);
+  }
+
+  // ── Load result ───────────────────────────────────────────────────────────
+  async function loadResult(silent = false) {
+    try {
+      const res = await fetch('data/prediction_result.json?t=' + Date.now());
+      if (!res.ok) {
+        if (!silent) showError('prediction_result.json not found. Run the command above first.');
+        return;
+      }
+      const data = await res.json();
+      clearError();
+      render(data);
+    } catch (e) {
+      if (!silent) showError('Failed to load prediction_result.json: ' + e.message);
+    }
+  }
+
+  // ── Render ────────────────────────────────────────────────────────────────
+  function render(data) {
+    const { symbol, date, ref_close, predicted, actual, history } = data;
+
+    // Update query inputs to match loaded result
+    document.getElementById('inp-symbol').value = symbol;
+    document.getElementById('inp-date').value   = date;
+
+    // Stats
+    document.getElementById('stat-symbol').textContent = symbol;
+    document.getElementById('stat-symbol').className   = 'stat-value';
+    document.getElementById('stat-date').textContent   = formatDate(date);
+    document.getElementById('stat-date').className     = 'stat-value';
+    document.getElementById('stat-close').textContent  = '₹' + fmtPrice(ref_close);
+    document.getElementById('stat-close').className    = 'stat-value';
+
+    const lastPred = predicted.length > 0 ? predicted[predicted.length - 1] : null;
+    if (lastPred) {
+      const pct   = lastPred.log_return * 100;
+      const isUp  = pct >= 0;
+      const cls   = isUp ? 'stat-value up' : 'stat-value down';
+      const arrow = isUp ? '▲' : '▼';
+      document.getElementById('stat-return').textContent = arrow + ' ' + Math.abs(pct).toFixed(2) + '%';
+      document.getElementById('stat-return').className   = cls;
+      document.getElementById('stat-price').textContent  = '₹' + fmtPrice(lastPred.price);
+    }
+
+    const lastActual = actual.length > 0 ? actual[actual.length - 1] : null;
+    if (lastActual) {
+      const actLR  = Math.log(lastActual.close / ref_close);
+      const pct    = actLR * 100;
+      const isUp   = pct >= 0;
+      document.getElementById('stat-actual').textContent      = (isUp ? '▲ ' : '▼ ') + Math.abs(pct).toFixed(2) + '%';
+      document.getElementById('stat-actual').className        = isUp ? 'stat-value up' : 'stat-value down';
+      document.getElementById('stat-actual-price').textContent = '₹' + fmtPrice(lastActual.close);
+    } else {
+      document.getElementById('stat-actual').textContent = 'n/a';
+      document.getElementById('stat-actual').className   = 'stat-value muted';
+      document.getElementById('stat-actual-price').textContent = 'not yet in cache';
+    }
+
+    renderHistChart(history, ref_close);
+    renderPredChart(symbol, date, ref_close, predicted, actual);
+  }
+
+  // ── History chart (28-day daily closes) ───────────────────────────────────
+  function renderHistChart(history, ref_close) {
+    const { dates, closes } = history;
+
+    document.getElementById('hist-empty').style.display  = 'none';
+    document.getElementById('hist-chart').style.display  = '';
+
+    const labels = dates.map(d => {
+      const [, m, day] = d.split('-');
+      return `${day}-${m}`;
+    });
+
+    const ds = [{
+      label: 'Daily close',
+      data: closes,
+      borderColor: '#6b7280',
+      borderWidth: 1.5,
+      pointRadius: 0,
+      tension: 0.2,
+      fill: false,
+    }, {
+      // Highlight the reference close (last point)
+      label: 'Ref close',
+      data: closes.map((_, i) => i === closes.length - 1 ? ref_close : NaN),
+      borderColor: '#4f8ef7',
+      backgroundColor: '#4f8ef7',
+      pointRadius: 5,
+      pointStyle: 'circle',
+      borderWidth: 0,
+      showLine: false,
+    }];
+
+    if (histChart) {
+      histChart.data.labels   = labels;
+      histChart.data.datasets = ds;
+      histChart.update('none');
+      return;
+    }
+
+    histChart = new Chart(document.getElementById('hist-chart'), {
+      type: 'line',
+      data: { labels, datasets: ds },
+      options: {
+        animation: false,
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: {
+            grid: { color: '#2e3350' },
+            ticks: {
+              color: '#6b7280',
+              maxTicksLimit: 7,
+              maxRotation: 0,
+            },
+          },
+          y: {
+            grid: { color: '#2e3350' },
+            ticks: { color: '#6b7280', callback: v => '₹' + fmtPrice(v) },
+          },
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: '#1a1e2e',
+            borderColor: '#2e3350',
+            borderWidth: 1,
+            titleColor: '#9ca3af',
+            bodyColor: '#e5e7eb',
+            callbacks: {
+              label: ctx => '₹' + fmtPrice(ctx.parsed.y),
+            },
+          },
+        },
+      },
+    });
+  }
+
+  // ── Prediction chart (5-day hourly, pred vs actual) ───────────────────────
+  function renderPredChart(symbol, date, ref_close, predicted, actual) {
+    document.getElementById('pred-empty').style.display = 'none';
+    document.getElementById('pred-chart').style.display = '';
+    document.getElementById('pred-title').textContent =
+      `${symbol} · 5-day prediction from ${formatDate(date)}`;
+
+    // Build label array from predicted datetimes
+    const labels = predicted.map(p => fmtHourlyLabel(p.datetime));
+
+    // Mark day boundaries for vertical annotation lines
+    const dayBoundaries = [];
+    let lastDay = null;
+    predicted.forEach((p, i) => {
+      const day = p.datetime.slice(0, 10);
+      if (day !== lastDay) { dayBoundaries.push(i); lastDay = day; }
+    });
+
+    // Reference horizontal line at ref_close
+    const refLine = predicted.map(() => ref_close);
+
+    // Predicted prices
+    const predPrices = predicted.map(p => p.price);
+
+    // Actual prices — align by datetime
+    const actualMap = {};
+    actual.forEach(a => { actualMap[a.datetime] = a.close; });
+    const actualPrices = predicted.map(p => actualMap[p.datetime] ?? NaN);
+
+    const datasets = [
+      {
+        label: 'Ref close',
+        data: refLine,
+        borderColor: 'rgba(107,114,128,0.35)',
+        borderWidth: 1,
+        borderDash: [4, 4],
+        pointRadius: 0,
+        fill: false,
+        order: 3,
+      },
+      {
+        label: 'Predicted',
+        data: predPrices,
+        borderColor: 'rgba(79,142,247,0.8)',
+        borderWidth: 1.5,
+        borderDash: [5, 3],
+        pointRadius: 0,
+        tension: 0.3,
+        fill: false,
+        order: 2,
+      },
+      {
+        label: 'Actual',
+        data: actualPrices,
+        borderColor: '#34d399',
+        borderWidth: 1.5,
+        pointRadius: 0,
+        tension: 0.2,
+        fill: false,
+        order: 1,
+      },
+    ];
+
+    // Day-boundary annotation plugin (lightweight inline)
+    const dayLinesPlugin = {
+      id: 'dayLines',
+      afterDraw(chart) {
+        const { ctx, scales: { x, y } } = chart;
+        ctx.save();
+        ctx.strokeStyle = 'rgba(100,110,140,0.3)';
+        ctx.lineWidth   = 1;
+        ctx.setLineDash([3, 3]);
+        dayBoundaries.slice(1).forEach(i => {
+          const px = x.getPixelForValue(i);
+          ctx.beginPath();
+          ctx.moveTo(px, y.top);
+          ctx.lineTo(px, y.bottom);
+          ctx.stroke();
+        });
+        // Day labels
+        ctx.setLineDash([]);
+        ctx.fillStyle  = 'rgba(107,114,128,0.6)';
+        ctx.font       = '10px monospace';
+        ctx.textAlign  = 'center';
+        dayBoundaries.forEach(i => {
+          const iso = predicted[i]?.datetime?.slice(0, 10) ?? '';
+          const [yr, mo, dy] = iso.split('-');
+          const dt  = new Date(iso + 'T00:00:00');
+          const wd  = dt.toLocaleDateString('en-IN', { weekday: 'short' });
+          const txt = `${wd} ${dy}-${mo}`;
+          const px  = x.getPixelForValue(i);
+          ctx.fillText(txt, px, y.top - 4);
+        });
+        ctx.restore();
+      },
+    };
+
+    if (predChart) {
+      predChart.data.labels   = labels;
+      predChart.data.datasets = datasets;
+      predChart.update('none');
+      return;
+    }
+
+    predChart = new Chart(document.getElementById('pred-chart'), {
+      type: 'line',
+      data: { labels, datasets },
+      options: {
+        animation: false,
+        responsive: true,
+        maintainAspectRatio: false,
+        layout: { padding: { top: 18 } },
+        scales: {
+          x: {
+            grid: { color: '#2e3350' },
+            ticks: {
+              color: '#6b7280',
+              maxTicksLimit: 10,
+              maxRotation: 0,
+              callback(val, idx) {
+                // Show only bar-of-day label (e.g. "9:15") — not full datetime
+                return labels[idx]?.split(' ')[1] ?? '';
+              },
+            },
+          },
+          y: {
+            grid: { color: '#2e3350' },
+            ticks: { color: '#6b7280', callback: v => '₹' + fmtPrice(v) },
+          },
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: '#1a1e2e',
+            borderColor: '#2e3350',
+            borderWidth: 1,
+            titleColor: '#9ca3af',
+            bodyColor: '#e5e7eb',
+            callbacks: {
+              title: items => labels[items[0].dataIndex] ?? '',
+              label: ctx => {
+                const name = ctx.dataset.label;
+                const v    = ctx.parsed.y;
+                if (isNaN(v)) return null;
+                const pct = ((v / ref_close) - 1) * 100;
+                const sign = pct >= 0 ? '+' : '';
+                return `${name}: ₹${fmtPrice(v)} (${sign}${pct.toFixed(2)}%)`;
+              },
+            },
+          },
+        },
+      },
+      plugins: [dayLinesPlugin],
+    });
+
+    attachZoom(() => predChart, document.getElementById('pred-chart'));
+  }
+
+  // ── Zoom (same as training.html) ──────────────────────────────────────────
+  function attachZoom(chartGetter, canvasEl) {
+    let inZoomMode = false, dragStart = null;
+    let docMoveHandler = null, docUpHandler = null;
+    const wrap = canvasEl.parentElement;
+
+    const selEl = document.createElement('div');
+    selEl.style.cssText = `
+      position:absolute; display:none; pointer-events:none;
+      background:rgba(79,142,247,.12); border:1px solid rgba(79,142,247,.55);
+      top:0; height:100%;
+    `;
+    wrap.appendChild(selEl);
+
+    const badge = document.createElement('div');
+    badge.style.cssText = `
+      position:absolute; top:6px; right:6px; display:none; pointer-events:none;
+      background:rgba(79,142,247,.18); border:1px solid rgba(79,142,247,.45);
+      border-radius:4px; padding:2px 8px; font-size:10px;
+      font-family:var(--mono); color:rgba(79,142,247,.9);
+    `;
+    badge.textContent = 'drag to zoom  ·  ESC to cancel';
+    wrap.appendChild(badge);
+
+    function canvasPx(clientX) { return clientX - canvasEl.getBoundingClientRect().left; }
+    function clamp(px) {
+      const chart = chartGetter();
+      if (!chart) return px;
+      return Math.max(chart.scales.x.left, Math.min(chart.scales.x.right, px));
+    }
+    function enter() { inZoomMode = true; canvasEl.style.cursor = 'crosshair'; badge.style.display = ''; }
+    function exit() {
+      if (docMoveHandler) { document.removeEventListener('mousemove', docMoveHandler); docMoveHandler = null; }
+      if (docUpHandler)   { document.removeEventListener('mouseup',   docUpHandler);   docUpHandler   = null; }
+      inZoomMode = false; dragStart = null;
+      canvasEl.style.cursor = ''; badge.style.display = 'none'; selEl.style.display = 'none';
+    }
+
+    canvasEl.addEventListener('dblclick', () => inZoomMode ? exit() : enter());
+    document.addEventListener('keydown', e => { if (e.key === 'Escape' && inZoomMode) exit(); });
+
+    canvasEl.addEventListener('mousedown', e => {
+      if (!inZoomMode) return;
+      dragStart = clamp(canvasPx(e.clientX));
+      selEl.style.left = dragStart + 'px'; selEl.style.width = '0'; selEl.style.display = '';
+
+      docMoveHandler = ev => {
+        const cur = clamp(canvasPx(ev.clientX));
+        selEl.style.left  = Math.min(dragStart, cur) + 'px';
+        selEl.style.width = Math.abs(cur - dragStart) + 'px';
+      };
+      docUpHandler = ev => {
+        const cur = clamp(canvasPx(ev.clientX));
+        if (Math.abs(cur - dragStart) > 8) {
+          const chart = chartGetter();
+          if (chart) {
+            chart.options.scales.x.min = chart.scales.x.getValueForPixel(Math.min(dragStart, cur));
+            chart.options.scales.x.max = chart.scales.x.getValueForPixel(Math.max(dragStart, cur));
+            chart.update('none');
+          }
+        }
+        exit();
+      };
+      document.addEventListener('mousemove', docMoveHandler);
+      document.addEventListener('mouseup',   docUpHandler);
+    });
+  }
+
+  function resetZoom() {
+    if (predChart) {
+      delete predChart.options.scales.x.min;
+      delete predChart.options.scales.x.max;
+      predChart.update('none');
+    }
+  }
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  function fmtPrice(v) {
+    if (v == null || isNaN(v)) return '—';
+    return v >= 1000
+      ? v.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      : v.toFixed(2);
+  }
+
+  // "2024-01-16" → "16-01-2024"
+  function formatDate(s) {
+    const [y, m, d] = s.slice(0, 10).split('-');
+    return `${d}-${m}-${y}`;
+  }
+
+  // "2024-01-16T09:15:00" → "16-01 09:15"
+  function fmtHourlyLabel(dtStr) {
+    const [datePart, timePart] = dtStr.slice(0, 16).split('T');
+    const [y, m, d] = datePart.split('-');
+    return `${d}-${m} ${timePart}`;
+  }
+
+  // ── Symbol autocomplete ───────────────────────────────────────────────────
+  let universeCache = null;
+  let acActiveIdx   = -1;
+
+  async function loadUniverse() {
+    if (universeCache) return universeCache;
+    try {
+      const res = await fetch('data/market_universe.json');
+      if (!res.ok) return [];
+      const json = await res.json();
+      universeCache = json.companies ?? [];
+    } catch { universeCache = []; }
+    return universeCache;
+  }
+
+  async function onSymbolInput() {
+    const q    = document.getElementById('inp-symbol').value.trim().toUpperCase();
+    const drop = document.getElementById('symbol-dropdown');
+    acActiveIdx = -1;
+
+    if (q.length === 0) { closeDrop(); return; }
+
+    const universe = await loadUniverse();
+    const matches  = universe.filter(c =>
+      c.symbol.startsWith(q) ||
+      c.name.toUpperCase().includes(q)
+    ).slice(0, 12);
+
+    if (matches.length === 0) { closeDrop(); return; }
+
+    drop.innerHTML = matches.map((c, i) => `
+      <div class="symbol-option" data-symbol="${c.symbol}" data-idx="${i}"
+           onmousedown="pickSymbol('${c.symbol}')">
+        <span class="opt-ticker">${c.symbol}</span>
+        <span class="opt-name">${c.name}</span>
+        <span class="opt-cap">${c.market_cap_cr ? '₹' + Math.round(c.market_cap_cr).toLocaleString('en-IN') + ' Cr' : ''}</span>
+      </div>
+    `).join('');
+    drop.classList.add('open');
+  }
+
+  function pickSymbol(symbol) {
+    document.getElementById('inp-symbol').value = symbol;
+    closeDrop();
+  }
+
+  function closeDrop() {
+    const drop = document.getElementById('symbol-dropdown');
+    drop.classList.remove('open');
+    acActiveIdx = -1;
+  }
+
+  function onSymbolKeydown(e) {
+    const drop    = document.getElementById('symbol-dropdown');
+    const options = drop.querySelectorAll('.symbol-option');
+    if (!drop.classList.contains('open') || options.length === 0) return;
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      acActiveIdx = Math.min(acActiveIdx + 1, options.length - 1);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      acActiveIdx = Math.max(acActiveIdx - 1, 0);
+    } else if (e.key === 'Enter' && acActiveIdx >= 0) {
+      e.preventDefault();
+      pickSymbol(options[acActiveIdx].dataset.symbol);
+      return;
+    } else if (e.key === 'Escape') {
+      closeDrop(); return;
+    } else { return; }
+
+    options.forEach((o, i) => o.classList.toggle('active', i === acActiveIdx));
+    options[acActiveIdx]?.scrollIntoView({ block: 'nearest' });
+  }
+
+  // Wire up after DOM is ready
+  document.addEventListener('DOMContentLoaded', () => {
+    const inp = document.getElementById('inp-symbol');
+    inp.addEventListener('input',   onSymbolInput);
+    inp.addEventListener('keydown', onSymbolKeydown);
+    inp.addEventListener('focus',   () => inp.value && onSymbolInput());
+    document.addEventListener('click', e => {
+      if (!e.target.closest('.symbol-wrap')) closeDrop();
+    });
+  });
+
+  function showError(msg) {
+    const el = document.getElementById('error-banner');
+    el.textContent = msg;
+    el.classList.remove('hidden');
+  }
+  function clearError() {
+    document.getElementById('error-banner').classList.add('hidden');
+  }
+  </script>
+</body>
+</html>

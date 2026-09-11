@@ -7,18 +7,20 @@ after the cache is loaded.
 
 ## Layout
 
-`closes[i, j]`        — daily close for company j on trading date i (forward-filled).
-`vols[i, j]`          — daily (high-low)/close for company j on date i.
+`closes[i, j]`    — daily close for company j on trading date i (forward-filled).
+`vols[i, j]`      — daily (high-low)/close for company j on date i.
+`rel_vols[i, j]`  — volume[i] / trailing-20-day-avg-volume[i] (relative volume).
+                    0.0 on non-trading days; 1.0 when history is unavailable.
 `hourly_closes[h, j]` — 60-min close for company j at hourly bar h (forward-filled).
 
-Column ordering in both matrices matches `companies` exactly. Row ordering
+Column ordering in all matrices matches `companies` exactly. Row ordering
 matches `dates` (daily) and `hourly_datetimes` (hourly), both sorted ascending.
 
 ## Typical sizes (5 years, ~942 companies)
 
-  closes + vols : 2 × 1250 × 942 × 4 bytes ≈  9 MB
-  hourly_closes :     8750 × 942 × 4 bytes ≈ 33 MB
-  Total on disk  :                          ≈ 42 MB
+  closes + vols + rel_vols : 3 × 1250 × 942 × 4 bytes ≈ 14 MB
+  hourly_closes             :     8750 × 942 × 4 bytes ≈ 33 MB
+  Total on disk             :                          ≈ 47 MB
 """
 
 using CSV, DataFrames, Dates, BSON, Printf
@@ -33,7 +35,8 @@ they provide O(1) lookups from Date / symbol string to matrix row/column.
 """
 struct InferenceCache
     closes           :: Matrix{Float32}     # (n_dates,  n_companies)
-    vols             :: Matrix{Float32}     # (n_dates,  n_companies)
+    vols             :: Matrix{Float32}     # (n_dates,  n_companies) — (H-L)/C
+    rel_vols         :: Matrix{Float32}     # (n_dates,  n_companies) — volume / 20d avg
     hourly_closes    :: Matrix{Float32}     # (n_hourly, n_companies)
     dates            :: Vector{Date}
     hourly_datetimes :: Vector{DateTime}
@@ -75,8 +78,9 @@ function build_inference_cache(ohlcv_dir::String, companies::Vector{String},
     n_dates  = length(dates)
     date_idx = Dict(d => i for (i, d) in enumerate(dates))
 
-    closes = fill(NaN32, n_dates, n_comp)
-    vols   = fill(NaN32, n_dates, n_comp)
+    closes      = fill(NaN32, n_dates, n_comp)
+    vols        = fill(NaN32, n_dates, n_comp)
+    raw_volumes = zeros(Float32, n_dates, n_comp)
 
     for (j, sym) in enumerate(companies)
         p = joinpath(ohlcv_dir, "$(sym)_daily.csv")
@@ -86,9 +90,10 @@ function build_inference_cache(ohlcv_dir::String, companies::Vector{String},
         for row in eachrow(df)
             i = get(date_idx, row.date, 0)
             i == 0 && continue
-            closes[i, j] = Float32(row.close)
-            vols[i, j]   = (row.high > row.low && row.close > 0) ?
-                            Float32((row.high - row.low) / row.close) : 0f0
+            closes[i, j]      = Float32(row.close)
+            vols[i, j]        = (row.high > row.low && row.close > 0) ?
+                                 Float32((row.high - row.low) / row.close) : 0f0
+            raw_volumes[i, j] = Float32(row.volume)
         end
 
         last_c = NaN32; last_v = 0f0
@@ -98,6 +103,25 @@ function build_inference_cache(ohlcv_dir::String, companies::Vector{String},
             elseif !isnan(last_c)
                 closes[i, j] = last_c; vols[i, j] = last_v
             end
+        end
+    end
+
+    # ── Relative volume: volume[i] / trailing-20-day average ─────────────────
+    # Uses only the 20 trading days *before* day i to avoid lookahead bias.
+    # Non-trading days (raw_volumes == 0) get rel_vol = 0.
+    # Days with insufficient history default to 1.0 (neutral).
+    rel_vols = zeros(Float32, n_dates, n_comp)
+    for j in 1:n_comp
+        for i in 1:n_dates
+            raw_volumes[i, j] == 0f0 && continue
+            lo = max(1, i - 20); hi = i - 1
+            if hi < lo
+                rel_vols[i, j] = 1f0
+                continue
+            end
+            nonzero = [raw_volumes[k, j] for k in lo:hi if raw_volumes[k, j] > 0f0]
+            rel_vols[i, j] = isempty(nonzero) ? 1f0 :
+                              Float32(raw_volumes[i, j] / mean(nonzero))
         end
     end
 
@@ -146,11 +170,11 @@ function build_inference_cache(ohlcv_dir::String, companies::Vector{String},
     # ── Save ──────────────────────────────────────────────────────────────────
 
     mkpath(dirname(path))
-    BSON.@save path closes vols hourly_closes dates hourly_dts companies
-    mb = (sizeof(closes) + sizeof(vols) + sizeof(hourly_closes)) / 1e6
+    BSON.@save path closes vols rel_vols hourly_closes dates hourly_dts companies
+    mb = (sizeof(closes) + sizeof(vols) + sizeof(rel_vols) + sizeof(hourly_closes)) / 1e6
     @info "Cache saved → $path  ($(@sprintf("%.1f", mb)) MB)"
 
-    return InferenceCache(closes, vols, hourly_closes, dates, hourly_dts, companies,
+    return InferenceCache(closes, vols, rel_vols, hourly_closes, dates, hourly_dts, companies,
                           date_idx, Dict(s => i for (i, s) in enumerate(companies)))
 end
 
@@ -164,11 +188,19 @@ Typical load time: 1–3 seconds for a ~42 MB file.
 """
 function load_inference_cache(path::String)::InferenceCache
     isfile(path) || error("Cache not found: $path\nRun: julia --project=packages/StockSwingPredictor scripts/build_cache.jl")
-    BSON.@load path closes vols hourly_closes dates hourly_dts companies
+    d             = BSON.load(path)
+    closes        = d[:closes]
+    vols          = d[:vols]
+    hourly_closes = d[:hourly_closes]
+    dates         = d[:dates]
+    hourly_dts    = d[:hourly_dts]
+    companies     = d[:companies]
+    # rel_vols added in a later version — neutral fallback for old cache files
+    rel_vols      = get(d, :rel_vols, ones(Float32, size(closes)))
     InferenceCache(
-        closes, vols, hourly_closes, dates, hourly_dts, companies,
-        Dict(d => i for (i, d) in enumerate(dates)),
-        Dict(s => i for (i, s) in enumerate(companies)),
+        closes, vols, rel_vols, hourly_closes, dates, hourly_dts, companies,
+        Dict(dt => i for (i, dt) in enumerate(dates)),
+        Dict(s  => i for (i, s)  in enumerate(companies)),
     )
 end
 

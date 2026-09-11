@@ -66,6 +66,21 @@ Output:
     @info "Output: $CACHE_FILE"
 
     build_inference_cache(OHLCV_DIR, companies, CACHE_FILE)
+
+    # Write the market universe JSON so the model's column ordering is auditable.
+    universe_file = joinpath(REPO_ROOT, "website", "data", "market_universe.json")
+    universe_json = [(rank=i, symbol=string(c.symbol),
+                      name=string(get(c, :name, "")),
+                      market_cap_cr=Float64(get(c, :market_cap_cr, 0.0)),
+                      confidence=Int(get(get(c, :confidence, Dict()), :score, 0)))
+                     for (i, c) in enumerate(universe)]
+    open(universe_file, "w") do io
+        JSON3.pretty(io, Dict("generated_at" => string(Dates.now()),
+                              "n_market_companies" => length(universe),
+                              "confidence_threshold" => CONFIDENCE_THRESHOLD,
+                              "companies" => universe_json))
+    end
+    @info "Market universe → $universe_file ($(length(universe)) companies)"
 end
 
 main()

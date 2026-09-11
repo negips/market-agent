@@ -186,8 +186,13 @@ function assemble_batch(dataset::Dataset, cache::InferenceCache,
         raw_v  = cache.vols[t-N_MARKET_DAYS+1:t, market_cols]
         raw_v[isnan.(raw_v)] .= 0f0
 
+        # Relative volume: clamp to [0, 5] so single-day spikes don't dominate
+        raw_rv = cache.rel_vols[t-N_MARKET_DAYS+1:t, market_cols]
+        raw_rv = clamp.(raw_rv, 0f0, 5f0)
+
         market[:, 1, :, b] = norm_c
         market[:, 2, :, b] = raw_v
+        market[:, 3, :, b] = raw_rv
 
         # ── Hourly series: O(1) slice from cache, normalised to start = 1.0 ──
         h_end   = ex.hourly_end_idx

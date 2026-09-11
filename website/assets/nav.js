@@ -32,6 +32,21 @@
                 <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
               </svg>`,
     },
+    {
+      href:  'predict.html',
+      label: 'Predict',
+      icon:  `<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24">
+                <circle cx="11" cy="11" r="8"/>
+                <path d="M21 21l-4.35-4.35M11 8v6M8 11h6"/>
+              </svg>`,
+    },
+    {
+      href:  'jumps.html',
+      label: 'Jumps',
+      icon:  `<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24">
+                <polyline points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+              </svg>`,
+    },
   ];
 
   function injectSidebar() {

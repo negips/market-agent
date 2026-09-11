@@ -1,0 +1,910 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Jumps — market-agent</title>
+  <link rel="stylesheet" href="assets/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    .page-header { padding: 14px 32px 0; }
+    .page-content { padding-top: 10px; padding-bottom: 32px; }
+
+    /* ── Controls ── */
+    .controls-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 6px;
+      flex-wrap: wrap;
+    }
+    .controls-row label { font-size: 12px; color: var(--muted); white-space: nowrap; }
+    .controls-row input[type="number"] {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 12px;
+      padding: 5px 8px;
+      width: 56px;
+    }
+    .controls-row select {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 12px;
+      padding: 5px 8px;
+    }
+    .load-btn {
+      background: var(--accent);
+      border: none;
+      border-radius: 6px;
+      color: #fff;
+      font-size: 12px;
+      padding: 5px 16px;
+      cursor: pointer;
+    }
+    .cmd-wrap {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      max-width: 520px;
+    }
+    .cmd-box {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--muted);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px 10px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      flex: 1;
+    }
+    .copy-btn {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--muted);
+      font-size: 11px;
+      font-family: var(--mono);
+      padding: 4px 9px;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .copy-btn:hover { color: var(--text); border-color: var(--accent); }
+    .copy-btn.copied { color: var(--green); border-color: var(--green); }
+
+    /* ── Symbol autocomplete (same pattern as predict.html) ── */
+    .symbol-wrap { position: relative; }
+    .symbol-wrap input {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 12px;
+      padding: 5px 10px;
+      width: 160px;
+    }
+    .symbol-dropdown {
+      position: absolute;
+      top: calc(100% + 4px);
+      left: 0;
+      width: 260px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.5);
+      z-index: 100;
+      max-height: 280px;
+      overflow-y: auto;
+      display: none;
+    }
+    .symbol-dropdown.open { display: block; }
+    .sym-option {
+      padding: 7px 12px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .sym-option:hover, .sym-option.focused { background: rgba(79,142,247,.12); }
+    .sym-ticker { font-family: var(--mono); font-weight: 600; margin-right: 8px; }
+    .sym-name   { color: var(--muted); font-size: 11px; }
+
+    /* ── Status bar ── */
+    .status-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 6px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+    .live-dot.ok { background: var(--green); }
+    .live-dot.err { background: #f76f6f; }
+
+    /* ── Charts ── */
+    .charts-area {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .chart-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 18px;
+      display: flex;
+      flex-direction: column;
+    }
+    .chart-card.price-card { height: 52vh; min-height: 320px; }
+    .chart-card.lm-card    { height: 56vh; min-height: 340px; }
+    .chart-card.hist-card  { height: 42vh; min-height: 260px; }
+    .chart-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+      flex-shrink: 0;
+    }
+    .chart-title { font-size: 13px; font-weight: 600; }
+    .chart-legend {
+      display: flex;
+      gap: 14px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .legend-dot {
+      display: inline-block;
+      width: 10px; height: 3px;
+      border-radius: 2px;
+      margin-right: 4px;
+      vertical-align: middle;
+    }
+    .legend-circle {
+      display: inline-block;
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      margin-right: 4px;
+      vertical-align: middle;
+    }
+    .canvas-wrap {
+      position: relative;
+      flex: 1;
+    }
+    canvas { position: absolute; inset: 0; display: block; width: 100% !important; height: 100% !important; }
+
+    .reset-zoom-btn {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--muted);
+      font-size: 11px;
+      font-family: var(--mono);
+      padding: 3px 9px;
+      cursor: pointer;
+    }
+    .reset-zoom-btn:hover { color: var(--text); border-color: var(--accent); }
+  </style>
+</head>
+<body>
+<script src="assets/nav.js"></script>
+
+<div class="main">
+  <div class="page-header">
+    <div class="page-title">Jump Analysis</div>
+    <div class="page-subtitle">BNS window test + Lee-Mykland bar-level attribution</div>
+  </div>
+
+  <div class="page-content">
+
+    <!-- Controls -->
+    <div class="controls-row">
+      <label>Symbol</label>
+      <div class="symbol-wrap">
+        <input type="text" id="symbol-input" placeholder="e.g. RELIANCE" autocomplete="off"
+               oninput="onSymbolInput()" onkeydown="onSymbolKey(event)">
+        <div class="symbol-dropdown" id="symbol-dropdown"></div>
+      </div>
+
+      <label>K</label>
+      <input type="number" id="lm-k" value="7" min="2" max="50" title="LM spot-vol window (bars)">
+
+      <label>α</label>
+      <select id="alpha-select">
+        <option value="0.10">0.10</option>
+        <option value="0.05">0.05</option>
+        <option value="0.01" selected>0.01</option>
+        <option value="0.001">0.001</option>
+      </select>
+
+      <button class="load-btn" onclick="loadSymbol()">Load</button>
+      <button class="reset-zoom-btn" onclick="resetZoom()">⊙ reset zoom</button>
+      <div class="cmd-wrap">
+        <div class="cmd-box" id="cmd-box">—</div>
+        <button class="copy-btn" id="copy-btn" onclick="copyCommand()">copy</button>
+      </div>
+    </div>
+
+    <!-- Status -->
+    <div class="status-bar">
+      <div class="live-dot" id="live-dot"></div>
+      <span id="status-text">Enter a symbol and click Load.</span>
+    </div>
+
+    <!-- Charts -->
+    <div class="charts-area">
+
+      <div class="chart-card price-card">
+        <div class="chart-header">
+          <div class="chart-title">Hourly Close Price</div>
+          <div class="chart-legend">
+            <span><span class="legend-dot" style="background:#4f8ef7"></span>Close</span>
+            <span><span class="legend-circle" style="background:#f7a24f"></span>Overnight gap</span>
+            <span><span class="legend-circle" style="background:#f76f6f"></span>Intraday</span>
+            <span><span class="legend-circle" style="background:#f7d94f"></span>BNS only</span>
+          </div>
+        </div>
+        <div class="canvas-wrap">
+          <canvas id="price-chart"></canvas>
+        </div>
+      </div>
+
+      <div class="chart-card lm-card">
+        <div class="chart-header">
+          <div class="chart-title">Lee-Mykland L(i) statistic</div>
+          <div class="chart-legend">
+            <span><span class="legend-dot" style="background:#a0a8c0"></span>L(i)</span>
+            <span><span class="legend-circle" style="background:#f76f6f"></span>|L| &gt; cv</span>
+            <span id="cv-legend" style="font-family:var(--mono)">cv = —</span>
+          </div>
+        </div>
+        <div class="canvas-wrap">
+          <canvas id="lm-chart"></canvas>
+        </div>
+      </div>
+
+      <div class="chart-card hist-card">
+        <div class="chart-header">
+          <div class="chart-title">L(i) Distribution</div>
+          <div class="chart-legend">
+            <span><span class="legend-dot" style="background:#4f8ef7; height:10px; width:10px; border-radius:2px;"></span>|L| ≤ cv</span>
+            <span><span class="legend-dot" style="background:#f76f6f; height:10px; width:10px; border-radius:2px;"></span>|L| &gt; cv</span>
+            <span id="hist-cv-legend" style="font-family:var(--mono)">cv = —</span>
+          </div>
+        </div>
+        <div class="canvas-wrap">
+          <canvas id="hist-chart"></canvas>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script src="assets/utils.js"></script>
+<script>
+// ── Constants & state ─────────────────────────────────────────────────────────
+
+const BV_SCALE = Math.PI / 2;
+
+let priceChart    = null;
+let lmChart       = null;
+let histChart     = null;
+let universe      = [];
+let currentSymbol = '';
+
+// Shared x-axis zoom state (bar indices)
+let zoomMin = null;
+let zoomMax = null;
+
+// ── Symbol autocomplete ───────────────────────────────────────────────────────
+
+async function loadUniverse() {
+  try {
+    const r = await fetch('data/market_universe.json');
+    if (r.ok) universe = (await r.json()).companies ?? [];
+  } catch (_) {}
+}
+
+function onSymbolInput() {
+  const q = document.getElementById('symbol-input').value.trim().toUpperCase();
+  updateCommand();
+  if (!q) { closeDropdown(); return; }
+  const matches = universe
+    .filter(s => s.symbol.startsWith(q) || s.name.toLowerCase().includes(q.toLowerCase()))
+    .slice(0, 12);
+  if (!matches.length) { closeDropdown(); return; }
+  const dd = document.getElementById('symbol-dropdown');
+  dd.innerHTML = matches.map((s, i) =>
+    `<div class="sym-option" data-idx="${i}" onclick="selectSymbol('${s.symbol}')">
+       <span class="sym-ticker">${s.symbol}</span>
+       <span class="sym-name">${s.name}</span>
+     </div>`
+  ).join('');
+  dd.classList.add('open');
+}
+
+function onSymbolKey(e) {
+  const dd = document.getElementById('symbol-dropdown');
+  const items = dd.querySelectorAll('.sym-option');
+  const focused = dd.querySelector('.sym-option.focused');
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    const next = focused ? focused.nextElementSibling : items[0];
+    focused?.classList.remove('focused');
+    next?.classList.add('focused');
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    const prev = focused?.previousElementSibling;
+    focused?.classList.remove('focused');
+    prev?.classList.add('focused');
+  } else if (e.key === 'Enter') {
+    if (focused) { selectSymbol(focused.querySelector('.sym-ticker').textContent); }
+    else loadSymbol();
+  } else if (e.key === 'Escape') {
+    closeDropdown();
+  }
+}
+
+function selectSymbol(sym) {
+  document.getElementById('symbol-input').value = sym;
+  closeDropdown();
+  updateCommand();
+  loadSymbol();
+}
+
+function closeDropdown() {
+  document.getElementById('symbol-dropdown').classList.remove('open');
+}
+
+document.addEventListener('click', e => {
+  if (!e.target.closest('.symbol-wrap')) closeDropdown();
+});
+
+// ── Command display ───────────────────────────────────────────────────────────
+
+function updateCommand() {
+  const sym   = document.getElementById('symbol-input').value.trim().toUpperCase() || 'SYMBOL';
+  const K     = document.getElementById('lm-k').value;
+  const alpha = document.getElementById('alpha-select').value;
+  document.getElementById('cmd-box').textContent =
+    `julia --project=packages/StockSwingPredictor scripts/identify_jump_events.jl ${sym} --lm-K ${K} --alpha ${alpha}`;
+}
+
+function copyCommand() {
+  const text = document.getElementById('cmd-box').textContent;
+  if (text === '—') return;
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = document.getElementById('copy-btn');
+    btn.textContent = 'copied!';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = 'copy'; btn.classList.remove('copied'); }, 1500);
+  });
+}
+
+// ── BNS / LM math ─────────────────────────────────────────────────────────────
+
+function lmCriticalValue(n, alpha) {
+  const log2n = 2 * Math.log(n);
+  const cn = Math.sqrt(log2n) - (Math.log(Math.PI) + Math.log(Math.log(n))) / (2 * Math.sqrt(log2n));
+  const sn = 1 / Math.sqrt(log2n);
+  return cn - sn * Math.log(-Math.log(1 - alpha));
+}
+
+function computeLM(closes, K, alpha) {
+  const n = closes.length;
+  // returns[i] = log(closes[i+1] / closes[i]), associated with bar i+1
+  const returns = [];
+  for (let i = 0; i < n - 1; i++) {
+    returns.push(Math.log(closes[i + 1] / closes[i]));
+  }
+
+  const cv = lmCriticalValue(returns.length, alpha);
+  const lStats = new Array(returns.length).fill(null);
+
+  for (let i = K + 1; i < returns.length; i++) {
+    // Local BV from K returns preceding r[i]: r[i-K] … r[i-1]
+    let bv = 0, pairs = 0;
+    for (let j = i - K + 1; j <= i - 1; j++) {
+      bv += Math.abs(returns[j]) * Math.abs(returns[j - 1]);
+      pairs++;
+    }
+    if (pairs < 1 || bv <= 0) continue;
+    bv *= BV_SCALE;
+    const sigmaHat = Math.sqrt(bv / pairs);
+    if (sigmaHat <= 0) continue;
+    lStats[i] = returns[i] / sigmaHat;
+  }
+
+  return { returns, lStats, cv };
+}
+
+// ── Data loading ──────────────────────────────────────────────────────────────
+
+async function parseHourlyCSV(symbol) {
+  const resp = await fetch(`data/ohlcv/${symbol}_hourly.csv?_=${Date.now()}`);
+  if (!resp.ok) throw new Error(`HTTP ${resp.status} — ${symbol}_hourly.csv not found`);
+  const text = await resp.text();
+  const lines = text.trim().split('\n');
+  const data = [];
+  for (let i = 1; i < lines.length; i++) {
+    const parts = lines[i].split(',');
+    if (parts.length < 5) continue;
+    const close = parseFloat(parts[4]);
+    if (isNaN(close) || close <= 0) continue;
+    data.push({ datetime: new Date(parts[0]), close });
+  }
+  return data;
+}
+
+async function loadJumpEvents(symbol) {
+  try {
+    const resp = await fetch(`data/jump_events/${symbol}_jumps.json?_=${Date.now()}`);
+    if (!resp.ok) return null;
+    return await resp.json();
+  } catch (_) { return null; }
+}
+
+// ── Main load ─────────────────────────────────────────────────────────────────
+
+async function loadSymbol() {
+  const sym   = document.getElementById('symbol-input').value.trim().toUpperCase();
+  const K     = parseInt(document.getElementById('lm-k').value) || 7;
+  const alpha = parseFloat(document.getElementById('alpha-select').value);
+  if (!sym) return;
+
+  closeDropdown();
+  currentSymbol = sym;
+  updateCommand();
+
+  document.getElementById('live-dot').className = 'live-dot';
+  document.getElementById('status-text').textContent = `Loading ${sym}…`;
+
+  let data, jumpEvents;
+  try {
+    [data, jumpEvents] = await Promise.all([
+      parseHourlyCSV(sym),
+      loadJumpEvents(sym),
+    ]);
+  } catch (e) {
+    document.getElementById('live-dot').className = 'live-dot err';
+    document.getElementById('status-text').textContent = `Error: ${e.message}`;
+    return;
+  }
+
+  const { returns, lStats, cv } = computeLM(data.map(d => d.close), K, alpha);
+
+  // Bar datetimes for the return series (bar i+1 in data → return[i])
+  const barDt = data.slice(1).map(d => d.datetime);
+
+  const nEvents  = jumpEvents ? jumpEvents.n_events : 0;
+  const evtNote  = jumpEvents
+    ? `${nEvents} jump events loaded`
+    : 'no jump_events JSON — run the Julia script to overlay detections';
+
+  document.getElementById('live-dot').className = 'live-dot ok';
+  document.getElementById('status-text').textContent =
+    `${sym} · ${data.length} bars · K=${K} · α=${alpha} · cv=${cv.toFixed(3)} · ${evtNote}`;
+  document.getElementById('cv-legend').textContent = `cv = ±${cv.toFixed(2)}`;
+
+  // Build a map from datetime-string → jump event for fast lookup
+  const jumpByDt = {};
+  if (jumpEvents) {
+    for (const e of jumpEvents.events) {
+      if (e.lm_datetime) jumpByDt[e.lm_datetime] = e;
+    }
+  }
+
+  zoomMin = null;
+  zoomMax = null;
+  renderCharts(data, barDt, lStats, cv, jumpByDt, alpha);
+}
+
+// ── Chart rendering ───────────────────────────────────────────────────────────
+
+Chart.defaults.color       = '#6b7280';
+Chart.defaults.borderColor = '#2e3350';
+
+// Custom plugin: draws vertical lines at jump bars and horizontal threshold lines
+const overlayPlugin = {
+  id: 'overlay',
+  afterDatasetsDraw(chart) {
+    const { ctx, scales: { x, y } } = chart;
+    const lines = chart.config.options.overlayLines ?? [];
+    for (const line of lines) {
+      ctx.save();
+      if (line.axis === 'x') {
+        const px = x.getPixelForValue(line.value);
+        if (px < x.left || px > x.right) { ctx.restore(); continue; }
+        ctx.beginPath();
+        if (line.dash) ctx.setLineDash(line.dash);
+        ctx.moveTo(px, y.top);
+        ctx.lineTo(px, y.bottom);
+        ctx.strokeStyle = line.color;
+        ctx.lineWidth   = line.width ?? 1;
+        ctx.globalAlpha = line.alpha ?? 1;
+        ctx.stroke();
+      } else {
+        const py = y.getPixelForValue(line.value);
+        if (py < y.top || py > y.bottom) { ctx.restore(); continue; }
+        ctx.beginPath();
+        if (line.dash) ctx.setLineDash(line.dash);
+        ctx.moveTo(x.left,  py);
+        ctx.lineTo(x.right, py);
+        ctx.strokeStyle = line.color;
+        ctx.lineWidth   = line.width ?? 1.5;
+        ctx.globalAlpha = line.alpha ?? 1;
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+  }
+};
+Chart.register(overlayPlugin);
+
+function renderCharts(data, barDt, lStats, cv, jumpByDt, alpha) {
+  if (priceChart) { priceChart.destroy(); priceChart = null; }
+  if (lmChart)    { lmChart.destroy();    lmChart    = null; }
+  if (histChart)  { histChart.destroy();  histChart  = null; }
+
+  // x-axis: bar index into `data` (0 = first bar)
+  const priceData = data.map((d, i) => ({ x: i, y: d.close }));
+
+  // Jump scatter points on price chart, coloured by type
+  const gapPts  = [], intradayPts = [], bnsOnlyPts = [];
+  for (const [dtStr, ev] of Object.entries(jumpByDt)) {
+    // Find bar index in data matching this datetime
+    const target = new Date(dtStr).getTime();
+    const idx    = data.findIndex(d => d.datetime.getTime() === target);
+    if (idx < 0) continue;
+    const pt = { x: idx, y: data[idx].close };
+    if (ev.type === 'overnight gap') gapPts.push(pt);
+    else if (ev.type === 'intraday') intradayPts.push(pt);
+    else bnsOnlyPts.push(pt);
+  }
+
+  // BNS-only events (no LM bar): find price bar by date
+  if (jumpByDt && Object.keys(jumpByDt).length === 0 && /* jump events loaded but no LM hits */ false) {}
+
+  // Vertical lines at jump bars
+  const jumpLines = [];
+  for (const [dtStr, ev] of Object.entries(jumpByDt)) {
+    const target = new Date(dtStr).getTime();
+    const idx    = data.findIndex(d => d.datetime.getTime() === target);
+    if (idx < 0) continue;
+    const color = ev.type === 'overnight gap' ? '#f7a24f'
+                : ev.type === 'intraday'       ? '#f76f6f'
+                : '#f7d94f';
+    jumpLines.push({ axis: 'x', value: idx, color, width: 1, alpha: 0.45 });
+  }
+
+  // x-axis ticks: date label at first bar of each new calendar month
+  const xLabels = {};
+  let lastMonth = -1;
+  for (let i = 0; i < data.length; i++) {
+    const d = data[i].datetime;
+    if (d.getMonth() !== lastMonth) {
+      lastMonth = d.getMonth();
+      xLabels[i] = d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' });
+    }
+  }
+
+  const xAxis = {
+    type: 'linear',
+    grid: { color: '#2e3350' },
+    ticks: {
+      color: '#6b7280',
+      callback: (v) => xLabels[Math.round(v)] ?? '',
+      maxTicksLimit: 40,
+    },
+  };
+
+  // ── Price chart ────────────────────────────────────────────────────────────
+
+  priceChart = new Chart(document.getElementById('price-chart'), {
+    type: 'line',
+    data: {
+      datasets: [
+        {
+          label: 'Close',
+          data: priceData,
+          borderColor: '#4f8ef7', borderWidth: 1.2,
+          pointRadius: 0, tension: 0,
+        },
+        {
+          label: 'Overnight gap', data: gapPts, type: 'scatter',
+          pointBackgroundColor: '#f7a24f', pointRadius: 5, pointHoverRadius: 7,
+        },
+        {
+          label: 'Intraday', data: intradayPts, type: 'scatter',
+          pointBackgroundColor: '#f76f6f', pointRadius: 5, pointHoverRadius: 7,
+        },
+        {
+          label: 'BNS only', data: bnsOnlyPts, type: 'scatter',
+          pointBackgroundColor: '#f7d94f', pointRadius: 5, pointHoverRadius: 7,
+        },
+      ]
+    },
+    options: {
+      animation: false, parsing: false,
+      responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: { ...xAxis, min: zoomMin ?? undefined, max: zoomMax ?? undefined },
+        y: {
+          type: 'linear',
+          grid: { color: '#2e3350' },
+          ticks: { color: '#6b7280' },
+          title: { display: true, text: 'Price (₹)', color: '#6b7280' },
+        },
+      },
+      overlayLines: jumpLines,
+      plugins: { legend: { display: false }, tooltip: {
+        callbacks: {
+          title: ctx => {
+            const idx = ctx[0]?.parsed?.x;
+            return idx != null ? data[idx]?.datetime.toLocaleString('en-IN') : '';
+          },
+          label: ctx => {
+            const idx = ctx.parsed.x;
+            const lbl = ctx.dataset.label;
+            if (lbl === 'Close') return ` ₹${ctx.parsed.y.toFixed(2)}`;
+            // Find jump event for this bar
+            const dt = data[idx]?.datetime;
+            const ev = dt ? jumpByDt[dt.toISOString().replace('.000Z','')] : null;
+            if (ev) return [
+              ` ${ev.type}`,
+              ` return: ${(ev.lm_bar_return*100).toFixed(2)}%`,
+              ` L(i): ${ev.lm_stat?.toFixed(2) ?? '—'}`,
+              ` BNS z: ${ev.bns_z?.toFixed(2)}`,
+            ];
+            return ` ${lbl}`;
+          }
+        }
+      }},
+    }
+  });
+
+  // ── LM stat chart ──────────────────────────────────────────────────────────
+
+  // lStats[i] is for return[i] → displayed at x = i+1 in the data index
+  const lmAll   = lStats.map((v, i) => v != null ? { x: i + 1, y: v }   : null).filter(Boolean);
+  const lmAbove = lStats.map((v, i) => v != null && Math.abs(v) >= cv
+                    ? { x: i + 1, y: v } : null).filter(Boolean);
+
+  const threshLines = [
+    { axis: 'y', value:  cv, color: '#f7d94f', dash: [4, 4] },
+    { axis: 'y', value: -cv, color: '#f7d94f', dash: [4, 4] },
+    { axis: 'y', value:   0, color: '#3a3f5c', width: 1 },
+    ...jumpLines,
+  ];
+
+  lmChart = new Chart(document.getElementById('lm-chart'), {
+    type: 'line',
+    data: {
+      datasets: [
+        {
+          label: 'L(i)',
+          data: lmAll,
+          borderColor: '#a0a8c0', borderWidth: 1,
+          pointRadius: 0, tension: 0,
+        },
+        {
+          label: '|L| > cv',
+          data: lmAbove,
+          type: 'scatter',
+          pointBackgroundColor: '#f76f6f', pointRadius: 4, pointHoverRadius: 6,
+        },
+      ]
+    },
+    options: {
+      animation: false, parsing: false,
+      responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: { ...xAxis, min: zoomMin ?? undefined, max: zoomMax ?? undefined },
+        y: {
+          type: 'linear',
+          grid: { color: '#2e3350' },
+          ticks: { color: '#6b7280' },
+          title: { display: true, text: 'L(i)', color: '#6b7280' },
+        },
+      },
+      overlayLines: threshLines,
+      plugins: { legend: { display: false }, tooltip: {
+        callbacks: {
+          title: ctx => {
+            const idx = ctx[0]?.parsed?.x;
+            return idx != null ? data[idx]?.datetime.toLocaleString('en-IN') : '';
+          },
+          label: ctx => ` L(i) = ${ctx.parsed.y.toFixed(3)}`,
+        }
+      }},
+    }
+  });
+
+  // Attach synchronized zoom to both charts
+  attachZoom(() => priceChart, document.getElementById('price-chart'));
+  attachZoom(() => lmChart,    document.getElementById('lm-chart'));
+
+  renderHistogram(lStats, cv);
+}
+
+// ── L(i) histogram ────────────────────────────────────────────────────────────
+
+function renderHistogram(lStats, cv) {
+  const vals = lStats.filter(v => v !== null);
+  if (!vals.length) return;
+
+  const N_BINS  = 80;
+  const lo      = Math.max(-12, Math.min(...vals) - 0.2);
+  const hi      = Math.min( 12, Math.max(...vals) + 0.2);
+  const binW    = (hi - lo) / N_BINS;
+
+  const counts = new Array(N_BINS).fill(0);
+  for (const v of vals) {
+    const b = Math.min(N_BINS - 1, Math.max(0, Math.floor((v - lo) / binW)));
+    counts[b]++;
+  }
+
+  const labels = counts.map((_, i) => (lo + (i + 0.5) * binW).toFixed(2));
+  const colors = labels.map(l => Math.abs(parseFloat(l)) > cv
+    ? 'rgba(247,111,111,0.75)'
+    : 'rgba(79,142,247,0.55)');
+
+  // Floating-point bin index for the ±cv dashed lines
+  const cvPosIdx = (cv  - lo) / binW;
+  const cvNegIdx = (-cv - lo) / binW;
+
+  document.getElementById('hist-cv-legend').textContent = `cv = ±${cv.toFixed(2)}`;
+
+  histChart = new Chart(document.getElementById('hist-chart'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        data: counts,
+        backgroundColor: colors,
+        borderWidth: 0,
+        barPercentage: 1.0,
+        categoryPercentage: 1.0,
+      }]
+    },
+    options: {
+      animation: false,
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: {
+          grid: { color: '#2e3350' },
+          ticks: {
+            color: '#6b7280',
+            maxTicksLimit: 14,
+            callback: (_, idx) => {
+              const v = parseFloat(labels[idx]);
+              return Number.isInteger(Math.round(v * 2) / 2) && Math.abs(v - Math.round(v)) < binW
+                ? v.toFixed(0) : '';
+            },
+          },
+          title: { display: true, text: 'L(i)', color: '#6b7280' },
+        },
+        y: {
+          grid: { color: '#2e3350' },
+          ticks: { color: '#6b7280' },
+          title: { display: true, text: 'Count', color: '#6b7280' },
+        },
+      },
+      overlayLines: [
+        { axis: 'x', value: cvPosIdx,  color: '#f7d94f', width: 1.5, dash: [4, 4] },
+        { axis: 'x', value: cvNegIdx,  color: '#f7d94f', width: 1.5, dash: [4, 4] },
+        { axis: 'x', value: (0 - lo) / binW, color: '#4a506e', width: 1 },
+      ],
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: ctx => `L(i) ≈ ${ctx[0].label}`,
+            label: ctx => ` count: ${ctx.parsed.y}`,
+          }
+        }
+      },
+    }
+  });
+}
+
+// ── Synchronized zoom ─────────────────────────────────────────────────────────
+
+function applyZoom(min, max) {
+  zoomMin = min;
+  zoomMax = max;
+  for (const chart of [priceChart, lmChart]) {
+    if (!chart) continue;
+    chart.options.scales.x.min = min;
+    chart.options.scales.x.max = max;
+    chart.update('none');
+  }
+}
+
+function resetZoom() {
+  zoomMin = null;
+  zoomMax = null;
+  for (const chart of [priceChart, lmChart]) {
+    if (!chart) continue;
+    delete chart.options.scales.x.min;
+    delete chart.options.scales.x.max;
+    chart.update('none');
+  }
+}
+
+function attachZoom(chartGetter, canvasEl) {
+  let inZoomMode = false, dragStart = null;
+  let docMove = null, docUp = null;
+  const wrap = canvasEl.parentElement;
+
+  const selEl = document.createElement('div');
+  selEl.style.cssText = `position:absolute;display:none;pointer-events:none;
+    background:rgba(79,142,247,.1);border:1px solid rgba(79,142,247,.5);top:0;height:100%;`;
+  wrap.appendChild(selEl);
+
+  const badge = document.createElement('div');
+  badge.style.cssText = `position:absolute;top:5px;right:5px;display:none;pointer-events:none;
+    background:rgba(79,142,247,.15);border:1px solid rgba(79,142,247,.4);border-radius:4px;
+    padding:2px 7px;font-size:10px;font-family:var(--mono);color:rgba(79,142,247,.9);`;
+  badge.textContent = 'drag to zoom · ESC cancel';
+  wrap.appendChild(badge);
+
+  function cpx(clientX) { return clientX - canvasEl.getBoundingClientRect().left; }
+  function clamp(px) {
+    const c = chartGetter();
+    return c ? Math.max(c.scales.x.left, Math.min(c.scales.x.right, px)) : px;
+  }
+  function enter() { inZoomMode = true; canvasEl.style.cursor = 'crosshair'; badge.style.display = ''; }
+  function exit()  {
+    if (docMove) { document.removeEventListener('mousemove', docMove); docMove = null; }
+    if (docUp)   { document.removeEventListener('mouseup',   docUp);   docUp   = null; }
+    inZoomMode = false; dragStart = null;
+    canvasEl.style.cursor = ''; badge.style.display = 'none'; selEl.style.display = 'none';
+  }
+
+  canvasEl.addEventListener('dblclick', () => inZoomMode ? exit() : enter());
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && inZoomMode) exit(); });
+  canvasEl.addEventListener('mousedown', e => {
+    if (!inZoomMode) return;
+    dragStart = clamp(cpx(e.clientX));
+    selEl.style.left = dragStart + 'px'; selEl.style.width = '0'; selEl.style.display = '';
+    docMove = ev => {
+      const cur = clamp(cpx(ev.clientX));
+      selEl.style.left  = Math.min(dragStart, cur) + 'px';
+      selEl.style.width = Math.abs(cur - dragStart) + 'px';
+    };
+    docUp = ev => {
+      const cur = clamp(cpx(ev.clientX));
+      if (Math.abs(cur - dragStart) > 8) {
+        const sc = chartGetter()?.scales?.x;
+        if (sc) applyZoom(
+          sc.getValueForPixel(Math.min(dragStart, cur)),
+          sc.getValueForPixel(Math.max(dragStart, cur))
+        );
+      }
+      exit();
+    };
+    document.addEventListener('mousemove', docMove);
+    document.addEventListener('mouseup',   docUp);
+  });
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+
+loadUniverse();
+updateCommand();
+document.getElementById('lm-k').addEventListener('input', updateCommand);
+document.getElementById('alpha-select').addEventListener('change', updateCommand);
+</script>
+</body>
+</html>

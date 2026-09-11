@@ -18,9 +18,15 @@ const CACHE_FILE = joinpath(REPO_ROOT, "website", "data", "inference_cache.bson"
 const TRAIN_DIR  = joinpath(REPO_ROOT, "website", "data", "training")
 const MODELS_DIR = joinpath(REPO_ROOT, "website", "data", "models")
 
+const ARCH_REGISTRY = Dict{String, SwingArchitecture}(
+    "v1" => DUAL_CNN_V1,
+    "v2" => DUAL_CNN_V2,
+)
+
 function parse_args()
     opts = Dict{String,Any}("epochs"=>150, "lr"=>1e-3, "batch"=>32,
-                             "l2"=>1e-4, "patience"=>15, "resume"=>false)
+                             "l2"=>1e-4, "patience"=>15, "resume"=>false,
+                             "arch"=>"v2")
     i = 1
     while i <= length(ARGS)
         a = ARGS[i]
@@ -30,13 +36,13 @@ Usage:
   julia --project=packages/StockSwingPredictor scripts/train_model.jl [options]
 
 Options:
+  --arch NAME   Architecture to train: v1, v2 (default: v2)
   --epochs N    Training epochs (default: 150)
   --lr FLOAT    Learning rate (default: 1e-3)
   --batch N     Batch size (default: 32)
   --l2 FLOAT    L2 regularisation lambda (default: 1e-4)
   --patience N  Early stopping patience (default: 15)
   --resume      Load existing weights and continue training from that checkpoint.
-                Useful for additional epochs or fine-tuning on new data.
 
 Input:  website/data/training/dataset.bson
         website/data/inference_cache.bson
@@ -45,7 +51,8 @@ Output: website/data/models/{arch.name}/swing_predictor.bson
         website/data/models/{arch.name}/model_card.json
 """)
             exit(0)
-        elseif a == "--epochs"  ; opts["epochs"]   = parse(Int,     ARGS[i+1]); i += 2
+        elseif a == "--arch"    ; opts["arch"]      = ARGS[i+1];                  i += 2
+        elseif a == "--epochs"  ; opts["epochs"]    = parse(Int,     ARGS[i+1]); i += 2
         elseif a == "--lr"      ; opts["lr"]        = parse(Float64, ARGS[i+1]); i += 2
         elseif a == "--batch"   ; opts["batch"]     = parse(Int,     ARGS[i+1]); i += 2
         elseif a == "--l2"      ; opts["l2"]        = parse(Float64, ARGS[i+1]); i += 2
@@ -54,7 +61,24 @@ Output: website/data/models/{arch.name}/swing_predictor.bson
         else i += 1
         end
     end
+    haskey(ARCH_REGISTRY, opts["arch"]) ||
+        error("Unknown --arch '$(opts["arch"])'. Available: $(join(keys(ARCH_REGISTRY), ", "))")
     return opts
+end
+
+"""Read the highest completed epoch number from epoch_log.jsonl (epoch-end records only)."""
+function _last_completed_epoch(log_path::String)::Int
+    isfile(log_path) || return 0
+    max_epoch = 0
+    for line in eachline(log_path)
+        isempty(strip(line)) && continue
+        try
+            rec = JSON3.read(line)
+            isnothing(get(rec, :batch, 1)) || continue   # skip batch records
+            max_epoch = max(max_epoch, Int(rec[:epoch]))
+        catch; end
+    end
+    return max_epoch
 end
 
 function main()
@@ -80,21 +104,22 @@ function main()
 
     # ── Build or resume model ─────────────────────────────────────────────────
 
-    arch = DUAL_CNN_V1   # swap this line to try a different architecture
+    arch = ARCH_REGISTRY[opts["arch"]]
 
     model_dir        = joinpath(MODELS_DIR, arch.name)
     existing_model   = joinpath(model_dir, "swing_predictor.bson")
     existing_card    = joinpath(model_dir, "model_card.json")
+    epoch_log        = joinpath(model_dir, "epoch_log.jsonl")
 
     mkpath(model_dir)   # must exist before first checkpoint write during training
 
+    epoch_offset = 0
     if opts["resume"]
         isfile(existing_model) ||
             error("--resume requested but no checkpoint found at $existing_model")
         model, _, _ = load_model(existing_model)
-        prior_epochs = isfile(existing_card) ?
-            get(JSON3.read(read(existing_card, String)), :training, Dict())["epochs_run"] : "?"
-        @info "Resumed $(arch.name) from checkpoint (prior epochs_run: $prior_epochs)"
+        epoch_offset = _last_completed_epoch(epoch_log)
+        @info "Resumed $(arch.name) — last completed epoch: $epoch_offset"
     else
         model = build_model(arch)
         @info "Fresh model: $(arch.name)"
@@ -106,11 +131,16 @@ function main()
     println()
 
     # ── Train ─────────────────────────────────────────────────────────────────
-
-    epoch_log = joinpath(model_dir, "epoch_log.jsonl")
     @info "Training…"
     @info "Checkpoint → $existing_model  (saved on every val improvement)"
     @info "Epoch log  → $epoch_log"
+    stop_file      = joinpath(model_dir, "STOP")
+    stop_now_file  = joinpath(model_dir, "STOP_NOW")
+    isfile(stop_file)     && rm(stop_file)      # clear stale sentinels before starting
+    isfile(stop_now_file) && rm(stop_now_file)
+    @info "Clean stop (end of epoch, saves): touch $(relpath(stop_file))"
+    @info "Hard stop  (end of batch, no save): touch $(relpath(stop_now_file))"
+
     model, log = train!(
         model, dataset, cache, train_idx, val_idx;
         epochs          = opts["epochs"],
@@ -118,9 +148,17 @@ function main()
         lr              = Float32(opts["lr"]),
         l2_lambda       = Float32(opts["l2"]),
         patience        = opts["patience"],
+        epoch_offset    = epoch_offset,
         checkpoint_path = existing_model,
         epoch_log_path  = epoch_log,
+        stop_file       = stop_file,
     )
+
+    # ── STOP_NOW: skip evaluation and saves, weights already on disk ─────────
+    if get(log, "stop_now", false)
+        @info "STOP_NOW — skipping test evaluation and final saves (checkpoint is current)"
+        return
+    end
 
     # ── Test evaluation ───────────────────────────────────────────────────────
 
@@ -160,8 +198,8 @@ function _save_model_card(path, arch, model, dataset, log, test_metrics, opts)
         "name"         => arch.name,
         "trained_at"   => log["trained_at"],
         "resumed"      => get(opts, "resume", false),
-        "architecture" => Dict(
-            "type"                => "DualCNN",
+        "architecture" => merge(Dict(
+            "type"                => string(typeof(arch)),
             "market_channels"     => arch.market_channels,
             "market_kernel"       => arch.market_kernel,
             "hourly_channels"     => arch.hourly_channels,
@@ -170,7 +208,7 @@ function _save_model_card(path, arch, model, dataset, log, test_metrics, opts)
             "mlp_hidden"          => arch.mlp_hidden,
             "dropout_rate"        => arch.dropout_rate,
             "n_params"            => n_params,
-        ),
+        ), hasproperty(arch, :attn_heads) ? Dict("attn_heads" => arch.attn_heads) : Dict()),
         "inputs" => Dict(
             "market_days"      => N_MARKET_DAYS,
             "market_channels"  => N_MARKET_CHANNELS,
@@ -201,7 +239,12 @@ function _save_model_card(path, arch, model, dataset, log, test_metrics, opts)
             "information_coefficient" => get(test_metrics, "information_coefficient", nothing),
         ),
     )
-    open(path, "w") do io; JSON3.pretty(io, card); end
+    open(path, "w") do io; JSON3.pretty(io, _sanitize_json(card)); end
 end
+
+_sanitize_json(x::AbstractFloat)  = isfinite(x) ? x : nothing
+_sanitize_json(x::AbstractVector) = [_sanitize_json(v) for v in x]
+_sanitize_json(x::Dict)           = Dict(k => _sanitize_json(v) for (k, v) in x)
+_sanitize_json(x)                 = x
 
 main()

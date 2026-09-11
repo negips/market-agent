@@ -149,6 +149,28 @@
       padding: 5px 14px;
       cursor: pointer;
     }
+    .arch-toggle {
+      display: flex;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+    .arch-btn {
+      background: var(--surface2);
+      border: none;
+      border-right: 1px solid var(--border);
+      color: var(--muted);
+      padding: 5px 14px;
+      cursor: pointer;
+      transition: all .15s;
+    }
+    .arch-btn:last-child { border-right: none; }
+    .arch-btn.active {
+      background: rgba(79,142,247,.15);
+      color: var(--accent);
+    }
     .refresh-info { margin-left: auto; font-size: 11px; color: var(--muted); font-family: var(--mono); }
     .scale-btn {
       background: var(--surface2);
@@ -164,6 +186,18 @@
       background: rgba(79,142,247,.15);
       color: var(--accent);
     }
+    .reset-zoom-btn {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--muted);
+      font-size: 11px;
+      font-family: var(--mono);
+      padding: 4px 10px;
+      cursor: pointer;
+      transition: all .15s;
+    }
+    .reset-zoom-btn:hover { color: var(--text); border-color: var(--accent); }
 
     /* ── No-scroll viewport fit ── */
     body { overflow: hidden; }
@@ -173,18 +207,16 @@
 
     /* Chart cards fill remaining vertical space */
     .charts-area {
-      display: flex;
-      flex-direction: column;
+      display: grid;
+      grid-template-columns: 3fr 2fr;
       height: calc(100vh - 340px);  /* viewport minus header + controls + stat cards */
       gap: 10px;
     }
     .chart-card {
       display: flex;
       flex-direction: column;
-      flex: 1;
       min-height: 0;
     }
-    .chart-card.val-card { flex: 0 0 160px; }
     .canvas-wrap {
       position: relative;
       flex: 1;
@@ -206,6 +238,10 @@
 
     <div class="model-selector">
       <label>Model</label>
+      <div class="arch-toggle">
+        <button class="arch-btn active" id="arch-v1" onclick="switchArch('DualCNN_v1')">v1</button>
+        <button class="arch-btn"        id="arch-v2" onclick="switchArch('DualCNN_v2')">v2</button>
+      </div>
       <input type="text" id="model-name" value="DualCNN_v1" placeholder="model folder name">
       <button onclick="load()">Load</button>
       <span class="refresh-info">Auto-refresh in <span id="countdown">30</span>s</span>
@@ -253,20 +289,21 @@
 
     <div class="charts-area">
 
-      <!-- Loss chart -->
+      <!-- Left: overall loss (all epochs) -->
       <div class="chart-card">
         <div class="chart-header">
-          <div class="chart-title">Loss over time</div>
+          <div class="chart-title">Loss vs total batches</div>
           <div style="display:flex;align-items:center;gap:12px">
             <div style="display:flex;border:1px solid var(--border);border-radius:6px;overflow:hidden;font-family:var(--mono);font-size:11px">
               <button class="scale-btn active" id="btn-linear" onclick="setScale('linear')">linear</button>
               <button class="scale-btn" id="btn-log2"   onclick="setScale('log2')">log₂</button>
               <button class="scale-btn" id="btn-log10"  onclick="setScale('log10')">log₁₀</button>
             </div>
+            <button class="reset-zoom-btn" onclick="resetZoom()" title="Reset zoom">⊙ reset zoom</button>
             <div class="chart-legend">
-              <span><span class="legend-dot" style="background:#4f8ef7"></span>Train MSE</span>
-              <span><span class="legend-dot" style="background:#f76f6f"></span>Val MSE</span>
-              <span><span class="legend-dot" style="background:#3dd68c;width:6px;height:6px;border-radius:50%"></span>Improved ★</span>
+              <span><span class="legend-dot" style="background:#4f8ef7"></span>Train</span>
+              <span><span class="legend-dot" style="background:#f76f6f"></span>Val</span>
+              <span><span class="legend-dot" style="background:#3dd68c;width:6px;height:6px;border-radius:50%"></span>★</span>
             </div>
           </div>
         </div>
@@ -275,13 +312,16 @@
         </div>
       </div>
 
-      <!-- Val-only chart (epoch level) -->
-      <div class="chart-card val-card" id="val-chart-card" style="display:none">
+      <!-- Right: latest epoch batch-level progress -->
+      <div class="chart-card">
         <div class="chart-header">
-          <div class="chart-title">Validation loss by epoch</div>
+          <div class="chart-title" id="epoch-chart-title">Latest epoch</div>
+          <div class="chart-legend">
+            <span><span class="legend-dot" style="background:#4f8ef7"></span>Train MSE</span>
+          </div>
         </div>
         <div class="canvas-wrap">
-          <canvas id="val-chart"></canvas>
+          <canvas id="epoch-chart"></canvas>
         </div>
       </div>
 
@@ -293,9 +333,31 @@
 <script src="assets/utils.js"></script>
 <script>
   const LOG_BASE = 'data/models/';
-  let lossChart     = null;
-  let valChart      = null;
-  let cachedRecords = null;
+  const KNOWN_ARCHS = ['DualCNN_v1', 'DualCNN_v2'];
+
+  function switchArch(name) {
+    document.getElementById('model-name').value = name;
+    KNOWN_ARCHS.forEach(a => {
+      const btn = document.getElementById('arch-' + a.replace('DualCNN_', '').toLowerCase());
+      if (btn) btn.classList.toggle('active', a === name);
+    });
+    load();
+  }
+
+  // Keep toggle in sync when the text input is edited manually.
+  document.addEventListener('DOMContentLoaded', () => {
+    document.getElementById('model-name').addEventListener('input', e => {
+      KNOWN_ARCHS.forEach(a => {
+        const btn = document.getElementById('arch-' + a.replace('DualCNN_', '').toLowerCase());
+        if (btn) btn.classList.toggle('active', a === e.target.value.trim());
+      });
+    });
+  });
+
+  let lossChart       = null;
+  let epochChart      = null;
+  let epochChartEpoch = null;   // tracks which epoch epochChart was built for
+  let cachedRecords   = null;
   let countdown     = 30;
   let timer         = null;
   let scaleMode = 'linear';  // 'linear' | 'log2' | 'log10'
@@ -335,8 +397,8 @@
     ['linear','log2','log10'].forEach(m =>
       document.getElementById('btn-' + m).classList.toggle('active', m === mode)
     );
-    if (lossChart) { lossChart.destroy(); lossChart = null; }
-    if (valChart)  { valChart.destroy();  valChart  = null; }
+    if (lossChart)  { lossChart.destroy();  lossChart  = null; }
+    if (epochChart) { epochChart.destroy(); epochChart = null; epochChartEpoch = null; }
     if (cachedRecords) render(cachedRecords);
   }
 
@@ -373,6 +435,108 @@
     return { legend: { display: false }, tooltip: { callbacks: { label: tooltipLabel } } };
   }
 
+  function resetZoom() {
+    if (lossChart) {
+      delete lossChart.options.scales.x.min;
+      delete lossChart.options.scales.x.max;
+      lossChart.update('none');
+    }
+    if (epochChart) {
+      delete epochChart.options.scales.x.min;
+      delete epochChart.options.scales.x.max;
+      epochChart.update('none');
+    }
+  }
+
+  // Double-click chart to enter selection mode, then drag to zoom.
+  // Double-click again or press ESC to cancel.
+  // mousemove/mouseup are tracked on document so the drag works even when
+  // the cursor leaves the canvas, and coordinates are clamped to the plot
+  // area so getValueForPixel never receives a pixel inside the axis margins.
+  function attachZoom(chartGetter, canvasEl) {
+    let inZoomMode     = false;
+    let dragStart      = null;
+    let docMoveHandler = null;
+    let docUpHandler   = null;
+
+    const wrap = canvasEl.parentElement;
+
+    const selEl = document.createElement('div');
+    selEl.style.cssText = `
+      position:absolute; display:none; pointer-events:none;
+      background:rgba(79,142,247,.12); border:1px solid rgba(79,142,247,.55);
+      top:0; height:100%;
+    `;
+    wrap.appendChild(selEl);
+
+    const badge = document.createElement('div');
+    badge.style.cssText = `
+      position:absolute; top:6px; right:6px; display:none; pointer-events:none;
+      background:rgba(79,142,247,.18); border:1px solid rgba(79,142,247,.45);
+      border-radius:4px; padding:2px 8px; font-size:10px;
+      font-family:var(--mono); color:rgba(79,142,247,.9);
+    `;
+    badge.textContent = 'drag to zoom  ·  ESC to cancel';
+    wrap.appendChild(badge);
+
+    function canvasPx(clientX) {
+      return clientX - canvasEl.getBoundingClientRect().left;
+    }
+    function clamp(px) {
+      const chart = chartGetter();
+      if (!chart) return px;
+      return Math.max(chart.scales.x.left, Math.min(chart.scales.x.right, px));
+    }
+
+    function enter() {
+      inZoomMode = true;
+      canvasEl.style.cursor = 'crosshair';
+      badge.style.display = '';
+    }
+    function exit() {
+      if (docMoveHandler) { document.removeEventListener('mousemove', docMoveHandler); docMoveHandler = null; }
+      if (docUpHandler)   { document.removeEventListener('mouseup',   docUpHandler);   docUpHandler   = null; }
+      inZoomMode = false;
+      dragStart  = null;
+      canvasEl.style.cursor = '';
+      badge.style.display   = 'none';
+      selEl.style.display   = 'none';
+    }
+
+    canvasEl.addEventListener('dblclick', () => inZoomMode ? exit() : enter());
+    document.addEventListener('keydown', e => { if (e.key === 'Escape' && inZoomMode) exit(); });
+
+    canvasEl.addEventListener('mousedown', e => {
+      if (!inZoomMode) return;
+      dragStart = clamp(canvasPx(e.clientX));
+      selEl.style.left    = dragStart + 'px';
+      selEl.style.width   = '0';
+      selEl.style.display = '';
+
+      docMoveHandler = ev => {
+        const cur = clamp(canvasPx(ev.clientX));
+        selEl.style.left  = Math.min(dragStart, cur) + 'px';
+        selEl.style.width = Math.abs(cur - dragStart) + 'px';
+      };
+      docUpHandler = ev => {
+        const cur = clamp(canvasPx(ev.clientX));
+        const dx  = Math.abs(cur - dragStart);
+        if (dx > 8) {
+          const chart = chartGetter();
+          if (chart) {
+            const scale = chart.scales.x;
+            chart.options.scales.x.min = scale.getValueForPixel(Math.min(dragStart, cur));
+            chart.options.scales.x.max = scale.getValueForPixel(Math.max(dragStart, cur));
+            chart.update('none');
+          }
+        }
+        exit();
+      };
+      document.addEventListener('mousemove', docMoveHandler);
+      document.addEventListener('mouseup',   docUpHandler);
+    });
+  }
+
   function render(records) {
     const batchRecs = records.filter(r => r.batch != null);
     const epochRecs = records.filter(r => r.batch == null);
@@ -407,8 +571,28 @@
     document.getElementById('stat-elapsed').textContent     = fmtMin(last?.elapsed_secs ?? 0);
     document.getElementById('stat-elapsed-sub').textContent = `${batchRecs.length} batch records`;
 
+    // ── Cumulative batch index ──
+    // For each epoch, find the highest batch number logged (= batches in that epoch).
+    const epochMaxBatch = {};
+    for (const r of batchRecs) {
+      epochMaxBatch[r.epoch] = Math.max(epochMaxBatch[r.epoch] ?? 0, r.batch);
+    }
+    // Build cumulative offset: how many total batches were done before epoch e started.
+    const sortedEpochs = Object.keys(epochMaxBatch).map(Number).sort((a, b) => a - b);
+    const cumOffset = {};
+    let runningBatches = 0;
+    for (const e of sortedEpochs) {
+      cumOffset[e] = runningBatches;
+      runningBatches += epochMaxBatch[e];
+    }
+    function totalBatch(r) {
+      const offset = cumOffset[r.epoch] ?? 0;
+      // epoch-end record (batch=null): place at the end of that epoch
+      return offset + (r.batch ?? epochMaxBatch[r.epoch] ?? 0);
+    }
+
     // ── Loss chart ──
-    const pt = (r, y) => ({ x: parseFloat((r.elapsed_secs / 60).toFixed(2)), y: toPlot(y) });
+    const pt = (r, y) => ({ x: totalBatch(r), y: toPlot(y) });
 
     const datasets = [{
       label: 'Train MSE',
@@ -441,41 +625,51 @@
           animation: false, parsing: false,
           responsive: true, maintainAspectRatio: false,
           scales: {
-            x: { type: 'linear', title: { display: true, text: 'Elapsed (min)', color: '#6b7280' }, grid: { color: '#2e3350' }, ticks: { color: '#6b7280' } },
+            x: { type: 'linear', title: { display: true, text: 'Total batches', color: '#6b7280' }, grid: { color: '#2e3350' }, ticks: { color: '#6b7280' } },
             y: yAxis('MSE'),
           },
-          plugins: tooltipPlugin(),
+          plugins: { ...tooltipPlugin() },
         }
       });
+      attachZoom(() => lossChart, document.getElementById('loss-chart'));
     }
 
-    // ── Val-by-epoch chart ──
-    if (epochRecs.length >= 2) {
-      document.getElementById('val-chart-card').style.display = '';
-      const valDs = [{
-        label: 'Val MSE',
-        data: epochRecs.map(r => ({ x: r.epoch, y: toPlot(r.val_mse) })),
-        borderColor: '#f76f6f', borderWidth: 2, pointRadius: 4,
-        pointBackgroundColor: epochRecs.map(r => r.improved ? '#3dd68c' : '#f76f6f'),
-        tension: 0.2,
-      }];
-      if (valChart) {
-        valChart.data.datasets = valDs;
-        valChart.update();
-      } else {
-        valChart = new Chart(document.getElementById('val-chart'), {
-          type: 'line', data: { datasets: valDs },
-          options: {
-            animation: false, parsing: false,
-            responsive: true, maintainAspectRatio: false,
-            scales: {
-              x: { type: 'linear', title: { display: true, text: 'Epoch', color: '#6b7280' }, grid: { color: '#2e3350' }, ticks: { color: '#6b7280', stepSize: 1 } },
-              y: yAxis('Val MSE'),
-            },
-            plugins: tooltipPlugin(),
-          }
-        });
-      }
+    // ── Latest-epoch chart ──
+    const latestEpoch   = last?.epoch ?? 1;
+    const latestBatches = batchRecs.filter(r => r.epoch === latestEpoch);
+    document.getElementById('epoch-chart-title').textContent =
+      `Epoch ${latestEpoch} — batch progress`;
+
+    // Destroy and recreate when epoch rolls over so the x-axis resets cleanly.
+    if (epochChart && latestEpoch !== epochChartEpoch) {
+      epochChart.destroy();
+      epochChart = null;
+    }
+    epochChartEpoch = latestEpoch;
+
+    const epochDs = [{
+      label: 'Train MSE',
+      data: latestBatches.map(r => ({ x: r.batch, y: toPlot(r.train_mse) })),
+      borderColor: '#4f8ef7', borderWidth: 1.5, pointRadius: 0, tension: 0.3,
+    }];
+
+    if (epochChart) {
+      epochChart.data.datasets = epochDs;
+      epochChart.update();
+    } else {
+      epochChart = new Chart(document.getElementById('epoch-chart'), {
+        type: 'line', data: { datasets: epochDs },
+        options: {
+          animation: false, parsing: false,
+          responsive: true, maintainAspectRatio: false,
+          scales: {
+            x: { type: 'linear', title: { display: true, text: 'Batch', color: '#6b7280' }, grid: { color: '#2e3350' }, ticks: { color: '#6b7280' } },
+            y: yAxis('MSE'),
+          },
+          plugins: { ...tooltipPlugin() },
+        }
+      });
+      attachZoom(() => epochChart, document.getElementById('epoch-chart'));
     }
   }
 

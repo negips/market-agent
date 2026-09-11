@@ -5,7 +5,7 @@ All structs and constants for StockSwingPredictor.
 # ── Architecture constants ────────────────────────────────────────────────────
 
 const N_MARKET_DAYS     = 28   # 4 calendar weeks of trading days
-const N_MARKET_CHANNELS = 2    # channel 1: normalised close, channel 2: daily (H-L)/C vol
+const N_MARKET_CHANNELS = 3    # ch1: normalised close, ch2: daily (H-L)/C vol, ch3: relative volume
 
 # Individual stock fine-grained series: 8 calendar weeks of 60-minute bars
 const N_HOURLY_BARS = 280      # 40 trading days × 7 bars/day
