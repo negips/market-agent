@@ -41,6 +41,20 @@
               </svg>`,
     },
     {
+      href:  'architecture.html',
+      label: 'Architecture',
+      icon:  `<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24">
+                <rect x="2" y="3" width="6" height="5" rx="1"/>
+                <rect x="9" y="3" width="6" height="5" rx="1"/>
+                <rect x="16" y="3" width="6" height="5" rx="1"/>
+                <rect x="5" y="13" width="6" height="5" rx="1"/>
+                <rect x="13" y="13" width="6" height="5" rx="1"/>
+                <path d="M5 8v2.5a1 1 0 001 1h12a1 1 0 001-1V8"/>
+                <line x1="11" y1="11.5" x2="11" y2="13"/>
+                <line x1="16" y1="11.5" x2="16" y2="13"/>
+              </svg>`,
+    },
+    {
       href:  'jumps.html',
       label: 'Jumps',
       icon:  `<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24">
