@@ -626,7 +626,7 @@
           <div class="status-dot done"></div>
           <div style="flex:1">
             <div class="roadmap-name">NSE Screener &amp; Website</div>
-            <div class="roadmap-sub">generate_nse_list.jl · run_confidence_checks.jl · searchable website with watchlist, companies, setup, and training monitor pages</div>
+            <div class="roadmap-sub">generate_nse_list.jl · run_confidence_checks.jl · multi-page website: watchlist, companies, setup, training monitor, prediction UI (predict.html), and jump analysis (jumps.html)</div>
           </div>
           <span class="roadmap-badge done">complete</span>
         </div>
@@ -651,12 +651,20 @@
           <div style="flex:1">
             <div class="roadmap-name">StockSwingPredictor</div>
             <div class="roadmap-sub">
-              <strong style="color:var(--green)">✓ Done:</strong> OHLCV collected (1918 CSVs daily + hourly) · inference_cache.bson built (82 MB) · dataset.bson assembled (81 MB, index pointers only) · DualCNN_v1 architecture + training loop complete · epoch_log.jsonl live logging · per-epoch checkpoint saving · training monitor website page.<br>
-              <strong style="color:var(--yellow)">⟳ Running:</strong> DualCNN_v1 first training run — Epoch 1 in progress (train MSE 0.059 → 0.0027 so far, ~84% through epoch 1). First checkpoint + val MSE expected within ~20 min.<br>
-              <strong style="color:var(--muted)">Next:</strong> evaluate test metrics · iterate on architecture · wire predictions into live session.
+              <strong style="color:var(--green)">✓ Done:</strong> OHLCV collected (1918 CSVs daily + hourly) · inference_cache.bson with 3 channels (close, H-L vol, relative volume) · dataset assembled · DualCNN_v1 (mean-pool) trained — collapsed to near-constant predictions · DualCNN_v2 implemented: cross-attention replaces mean-pool (MultiHeadAttention 128-dim, 2 heads), magnitude-weighted loss (examples with |log-return| &gt; 4% get quadratic upweighting), --arch v1/v2 flag in train_model.jl · training monitor page with v1/v2 arch toggle.<br>
+              <strong style="color:var(--yellow)">⟳ Next:</strong> rebuild inference_cache.bson (3-channel) · train DualCNN_v2 · evaluate test metrics.<br>
+              <strong style="color:var(--muted)">Planned:</strong> wire predictions into live session · integrate BNS/LM jump weights into training.
             </div>
           </div>
           <span class="roadmap-badge partial">in progress</span>
+        </div>
+        <div class="roadmap-item">
+          <div class="status-dot done"></div>
+          <div style="flex:1">
+            <div class="roadmap-name">Jump Detection</div>
+            <div class="roadmap-sub">BNS rolling-window test (W=10 days) identifies days with statistically significant price jumps via realised variance vs bipower variation · Lee-Mykland bar-level attribution pinpoints the exact hourly bar and classifies as overnight gap vs intraday · scripts/identify_jump_events.jl outputs event table + JSON · jumps.html visualises LM time-series, coloured jump markers, and L(i) distribution histogram with ±cv overlay, all computed in-browser from the hourly CSV</div>
+          </div>
+          <span class="roadmap-badge done">complete</span>
         </div>
         <div class="roadmap-item">
           <div class="status-dot partial"></div>
@@ -685,7 +693,7 @@
       </div>
     </div>
 
-    <div class="updated">Checklist state saved in browser · Roadmap as of 2026-09-10 18:00 IST · Last checked: <span id="last-updated">never</span></div>
+    <div class="updated">Checklist state saved in browser · Roadmap as of 2026-09-11 IST · Last checked: <span id="last-updated">never</span></div>
 
   </div><!-- /page-content -->
 </div><!-- /main -->

@@ -537,9 +537,21 @@
     });
   }
 
+  // Apply EMA smoothing to batch records across epoch boundaries.
+  // alpha=0.04 ≈ 25-batch half-life so the curve is smooth but responsive.
+  function applyEMA(records, alpha = 0.04) {
+    let ema = null;
+    return records.map(r => {
+      if (r.batch == null || r.train_mse == null) return r;
+      ema = ema == null ? r.train_mse : (1 - alpha) * ema + alpha * r.train_mse;
+      return Object.assign({}, r, { train_mse: ema });
+    });
+  }
+
   function render(records) {
-    const batchRecs = records.filter(r => r.batch != null);
-    const epochRecs = records.filter(r => r.batch == null);
+    const smoothed   = applyEMA(records);
+    const batchRecs  = records.filter(r => r.batch != null);
+    const epochRecs  = records.filter(r => r.batch == null);
     const last      = records[records.length - 1];
     const lastEpoch = epochRecs[epochRecs.length - 1] ?? null;
     const bestVal   = lastEpoch ? Math.min(...epochRecs.map(r => r.val_mse)) : null;
@@ -596,7 +608,7 @@
 
     const datasets = [{
       label: 'Train MSE',
-      data: records.map(r => pt(r, r.train_mse)),
+      data: smoothed.filter(r => r.batch != null).map(r => pt(r, r.train_mse)),
       borderColor: '#4f8ef7', borderWidth: 1.5, pointRadius: 0, tension: 0.3,
     }];
     if (epochRecs.length) {
@@ -649,7 +661,7 @@
 
     const epochDs = [{
       label: 'Train MSE',
-      data: latestBatches.map(r => ({ x: r.batch, y: toPlot(r.train_mse) })),
+      data: applyEMA(latestBatches).map(r => ({ x: r.batch, y: toPlot(r.train_mse) })),
       borderColor: '#4f8ef7', borderWidth: 1.5, pointRadius: 0, tension: 0.3,
     }];
 

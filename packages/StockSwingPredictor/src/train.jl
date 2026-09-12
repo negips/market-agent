@@ -92,13 +92,18 @@ function train!(model::SwingPredictor,
         abs_epoch   = epoch + epoch_offset
         epoch_start = time()
         Flux.trainmode!(model)
-        epoch_loss = 0f0
-        n_batches  = 0
+        epoch_mse = 0f0
+        n_batches = 0
 
         shuffled = shuffle(train_ids)
         for start in 1:batchsize:length(shuffled)
             batch_idx = shuffled[start : min(start + batchsize - 1, end)]
             market, hourly, llm, yb = assemble_batch(dataset, cache, batch_idx)
+
+            # Capture L2 before the update so l2_penalty matches the weights
+            # used inside withgradient — lets us strip L2 from the logged MSE.
+            l2_penalty = l2_lambda * Float32(
+                sum(sum(abs2, p) for p in Flux.trainables(model) if ndims(p) == 2))
 
             loss_val, grads = Flux.withgradient(model) do m
                 ŷ      = m(market, hourly, llm)
@@ -113,8 +118,9 @@ function train!(model::SwingPredictor,
             end
 
             Flux.update!(opt_state, model, grads[1])
-            epoch_loss += loss_val
-            n_batches  += 1
+            n_batches += 1
+            mse_now    = Float32(loss_val) - l2_penalty
+            epoch_mse += mse_now
 
             if n_batches % PROGRESS_EVERY == 0
                 print("\r  Epoch $abs_epoch | batch $n_batches/$n_batches_ep | loss $(round(loss_val, sigdigits=4))    ")
@@ -122,7 +128,7 @@ function train!(model::SwingPredictor,
                 if !isempty(epoch_log_path)
                     open(epoch_log_path, "a") do io
                         JSON3.write(io, (epoch=abs_epoch, batch=n_batches,
-                                         train_mse=Float32(epoch_loss / n_batches),
+                                         train_mse=mse_now,
                                          val_mse=nothing,
                                          elapsed_secs=round(time() - train_start, digits=1)))
                         println(io)
@@ -141,7 +147,7 @@ function train!(model::SwingPredictor,
         stop_now_fired && break
         print("\r" * " "^72 * "\r")   # clear batch progress line
 
-        train_mse = epoch_loss / n_batches
+        train_mse = epoch_mse / n_batches
 
         Flux.testmode!(model)
         val_mse = _mse_chunked(model, dataset, cache, val_ids)
