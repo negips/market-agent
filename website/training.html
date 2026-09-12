@@ -199,6 +199,29 @@
     }
     .reset-zoom-btn:hover { color: var(--text); border-color: var(--accent); }
 
+    .toggle-label {
+      display: flex; align-items: center; gap: 5px;
+      font-size: 11px; color: var(--muted);
+      cursor: pointer; user-select: none;
+    }
+    .toggle-label input[type=checkbox] { display: none; }
+    .toggle-knob {
+      width: 28px; height: 15px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 99px; position: relative;
+      transition: background .2s;
+    }
+    .toggle-knob::after {
+      content: ''; position: absolute;
+      width: 11px; height: 11px;
+      background: var(--muted); border-radius: 50%;
+      top: 1px; left: 1px;
+      transition: transform .2s, background .2s;
+    }
+    .toggle-label input:checked + .toggle-knob { background: rgba(79,142,247,.25); border-color: var(--accent); }
+    .toggle-label input:checked + .toggle-knob::after { transform: translateX(13px); background: var(--accent); }
+
     /* ── No-scroll viewport fit ── */
     body { overflow: hidden; }
     .main { height: 100vh; overflow: hidden; }
@@ -300,6 +323,12 @@
               <button class="scale-btn" id="btn-log10"  onclick="setScale('log10')">log₁₀</button>
             </div>
             <button class="reset-zoom-btn" onclick="resetZoom()" title="Reset zoom">⊙ reset zoom</button>
+            <label class="toggle-label" title="Exponential moving average smoothing (α=0.04, ~17-batch half-life)">
+              EMA<input type="checkbox" id="toggle-ema" checked onchange="onSmoothingChange()"><span class="toggle-knob"></span>
+            </label>
+            <label class="toggle-label" title="Bézier curve interpolation between data points (tension=0.3)">
+              Spline<input type="checkbox" id="toggle-spline" checked onchange="onSmoothingChange()"><span class="toggle-knob"></span>
+            </label>
             <div class="chart-legend">
               <span><span class="legend-dot" style="background:#4f8ef7"></span>Train</span>
               <span><span class="legend-dot" style="background:#f76f6f"></span>Val</span>
@@ -537,8 +566,18 @@
     });
   }
 
+  function useEMA()    { return document.getElementById('toggle-ema').checked; }
+  function useSpline() { return document.getElementById('toggle-spline').checked; }
+  function tension()   { return useSpline() ? 0.3 : 0; }
+
+  function onSmoothingChange() {
+    if (lossChart)  { lossChart.destroy();  lossChart  = null; }
+    if (epochChart) { epochChart.destroy(); epochChart = null; epochChartEpoch = null; }
+    if (cachedRecords) render(cachedRecords);
+  }
+
   // Apply EMA smoothing to batch records across epoch boundaries.
-  // alpha=0.04 ≈ 25-batch half-life so the curve is smooth but responsive.
+  // alpha=0.04 ≈ 17-batch half-life so the curve is smooth but responsive.
   function applyEMA(records, alpha = 0.04) {
     let ema = null;
     return records.map(r => {
@@ -549,7 +588,7 @@
   }
 
   function render(records) {
-    const smoothed   = applyEMA(records);
+    const smoothed   = useEMA() ? applyEMA(records) : records;
     const batchRecs  = records.filter(r => r.batch != null);
     const epochRecs  = records.filter(r => r.batch == null);
     const last      = records[records.length - 1];
@@ -609,7 +648,7 @@
     const datasets = [{
       label: 'Train MSE',
       data: smoothed.filter(r => r.batch != null).map(r => pt(r, r.train_mse)),
-      borderColor: '#4f8ef7', borderWidth: 1.5, pointRadius: 0, tension: 0.3,
+      borderColor: '#4f8ef7', borderWidth: 1.5, pointRadius: 0, tension: tension(),
     }];
     if (epochRecs.length) {
       datasets.push({
@@ -661,8 +700,8 @@
 
     const epochDs = [{
       label: 'Train MSE',
-      data: applyEMA(latestBatches).map(r => ({ x: r.batch, y: toPlot(r.train_mse) })),
-      borderColor: '#4f8ef7', borderWidth: 1.5, pointRadius: 0, tension: 0.3,
+      data: (useEMA() ? applyEMA(latestBatches) : latestBatches).map(r => ({ x: r.batch, y: toPlot(r.train_mse) })),
+      borderColor: '#4f8ef7', borderWidth: 1.5, pointRadius: 0, tension: tension(),
     }];
 
     if (epochChart) {
