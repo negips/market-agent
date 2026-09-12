@@ -6,154 +6,89 @@
   <title>Architecture — market-agent</title>
   <link rel="stylesheet" href="assets/style.css">
   <style>
-    /* ── Layout ── */
-    .arch-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 20px;
-      margin-bottom: 28px;
+    /* ── Tabs ── */
+    .arch-tabs {
+      display: flex;
+      margin-bottom: 16px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      width: fit-content;
     }
+    .arch-tab {
+      display: flex;
+      flex-direction: column;
+      padding: 10px 22px;
+      background: var(--surface);
+      border: none;
+      border-right: 1px solid var(--border);
+      cursor: pointer;
+      transition: background .15s, color .15s;
+      text-align: left;
+    }
+    .arch-tab:last-child { border-right: none; }
+    .arch-tab:hover { background: var(--surface2); }
+    .arch-tab.active {
+      background: rgba(79,142,247,.1);
+      border-bottom: 2px solid var(--accent);
+    }
+    .tab-name {
+      font-family: var(--mono);
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-dim);
+    }
+    .arch-tab.active .tab-name { color: var(--accent); }
+    .tab-sub { font-size: 10px; color: var(--muted); margin-top: 3px; }
 
-    /* ── Flow diagram card ── */
-    .flow-card {
+    /* ── Diagram card ── */
+    .diagram-card {
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: var(--radius);
-      padding: 20px;
+      padding: 16px;
+      margin-bottom: 18px;
+      overflow: hidden;
     }
-    .flow-card-title {
-      font-size: 13px;
-      font-weight: 700;
-      font-family: var(--mono);
-      color: var(--accent);
-      margin-bottom: 4px;
+    .diagram-card svg {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+
+    /* ── Legend chips ── */
+    .legend-row {
       display: flex;
-      align-items: center;
+      flex-wrap: wrap;
       gap: 10px;
-    }
-    .flow-card-sub {
-      font-size: 11px;
-      color: var(--muted);
       margin-bottom: 18px;
     }
-    .flow-total {
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
       font-size: 11px;
-      font-family: var(--mono);
-      background: rgba(79,142,247,.1);
-      border: 1px solid rgba(79,142,247,.2);
-      color: var(--accent);
-      padding: 2px 8px;
-      border-radius: 4px;
-      margin-left: auto;
-    }
-
-    /* ── Layer blocks ── */
-    .flow {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 0;
-    }
-
-    .layer {
-      width: 100%;
-      border-radius: 6px;
-      padding: 9px 14px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 10px;
-      font-size: 12px;
-      position: relative;
-    }
-    .layer-name {
-      font-family: var(--mono);
-      font-size: 11.5px;
-      font-weight: 600;
-      flex: 1;
-    }
-    .layer-shape {
-      font-family: var(--mono);
-      font-size: 10px;
-      color: var(--muted);
-      white-space: nowrap;
-    }
-    .layer-params {
-      font-family: var(--mono);
-      font-size: 10px;
       color: var(--text-dim);
-      text-align: right;
-      white-space: nowrap;
-      min-width: 58px;
+      font-family: var(--mono);
+    }
+    .legend-swatch {
+      width: 14px; height: 10px;
+      border-radius: 2px;
+      border-width: 1px;
+      border-style: solid;
     }
 
-    /* colour variants */
-    .layer-input   { background: var(--surface2); border: 1px solid var(--border); color: var(--text-dim); }
-    .layer-cnn     { background: rgba(79,142,247,.08); border: 1px solid rgba(79,142,247,.25); color: var(--text); }
-    .layer-pool    { background: rgba(79,142,247,.04); border: 1px solid rgba(79,142,247,.15); color: var(--text-dim); }
-    .layer-attn    { background: rgba(245,200,66,.08); border: 1px solid rgba(245,200,66,.25); color: var(--text); }
-    .layer-concat  { background: rgba(61,214,140,.07); border: 1px solid rgba(61,214,140,.2);  color: var(--text); }
-    .layer-dense   { background: rgba(61,214,140,.05); border: 1px solid rgba(61,214,140,.15); color: var(--text); }
-    .layer-dropout { background: var(--surface2); border: 1px dashed var(--border); color: var(--muted); font-size: 11px; }
-    .layer-output  { background: rgba(247,111,111,.07); border: 1px solid rgba(247,111,111,.25); color: var(--text); }
-
-    /* arrow connector */
-    .arrow {
-      width: 1px;
-      height: 12px;
-      background: var(--border);
-      position: relative;
-      flex-shrink: 0;
-    }
-    .arrow::after {
-      content: '';
-      position: absolute;
-      bottom: -1px;
-      left: 50%;
-      transform: translateX(-50%);
-      border-left: 4px solid transparent;
-      border-right: 4px solid transparent;
-      border-top: 5px solid var(--border);
-    }
-
-    /* section label inside flow */
-    .flow-section {
-      width: 100%;
-      font-size: 10px;
+    /* ── Param table ── */
+    .section-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted);
       text-transform: uppercase;
       letter-spacing: .07em;
-      color: var(--muted);
-      padding: 10px 0 4px;
-      border-top: 1px solid var(--border);
-      margin-top: 6px;
-    }
-    .flow-section:first-child { border-top: none; padding-top: 0; margin-top: 0; }
-
-    /* ── Diff highlight for v2-only layers ── */
-    .v2-badge {
-      font-size: 9px;
-      font-weight: 700;
-      background: rgba(245,200,66,.15);
-      color: var(--yellow);
-      border: 1px solid rgba(245,200,66,.3);
-      border-radius: 4px;
-      padding: 1px 5px;
-      letter-spacing: .04em;
-      flex-shrink: 0;
-    }
-
-    /* ── Parameter table ── */
-    .param-section {
-      margin-bottom: 28px;
-    }
-    .section-title {
-      font-size: 13px;
-      font-weight: 600;
-      color: var(--text);
-      margin-bottom: 12px;
+      margin-bottom: 10px;
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 10px;
     }
     .section-title::after {
       content: '';
@@ -161,7 +96,6 @@
       height: 1px;
       background: var(--border);
     }
-
     table.param-table {
       width: 100%;
       border-collapse: collapse;
@@ -170,11 +104,12 @@
       border-radius: var(--radius);
       overflow: hidden;
       font-size: 12px;
+      margin-bottom: 28px;
     }
     table.param-table th {
       background: var(--surface2);
       border-bottom: 1px solid var(--border);
-      padding: 9px 14px;
+      padding: 8px 14px;
       text-align: left;
       font-size: 10px;
       font-weight: 600;
@@ -182,66 +117,26 @@
       letter-spacing: .05em;
       color: var(--muted);
     }
-    table.param-table th.right { text-align: right; }
+    table.param-table th.r { text-align: right; }
     table.param-table td {
-      padding: 9px 14px;
+      padding: 8px 14px;
       border-bottom: 1px solid var(--border);
       vertical-align: middle;
     }
     table.param-table tr:last-child td { border-bottom: none; }
     table.param-table tr:hover td { background: var(--surface2); }
-    table.param-table td.right { text-align: right; font-family: var(--mono); font-size: 11.5px; }
-    table.param-table td.mono  { font-family: var(--mono); font-size: 11.5px; }
+    table.param-table td.mono { font-family: var(--mono); font-size: 11.5px; }
+    table.param-table td.r    { text-align: right; font-family: var(--mono); font-size: 11.5px; }
     table.param-table tr.total-row td {
       font-weight: 700;
-      background: rgba(79,142,247,.05);
+      background: rgba(79,142,247,.04);
       border-top: 1px solid rgba(79,142,247,.2);
       color: var(--accent);
     }
-    .bar-wrap { display: flex; align-items: center; gap: 8px; }
-    .bar-track {
-      flex: 1;
-      height: 5px;
-      background: var(--surface2);
-      border-radius: 99px;
-      overflow: hidden;
-      min-width: 80px;
-    }
-    .bar-fill {
-      height: 100%;
-      border-radius: 99px;
-    }
-
-    /* ── Input/output key ── */
-    .io-grid {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 10px;
-      margin-bottom: 28px;
-    }
-    .io-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 12px 16px;
-    }
-    .io-label {
-      font-size: 10px;
-      text-transform: uppercase;
-      letter-spacing: .07em;
-      color: var(--muted);
-      margin-bottom: 5px;
-    }
-    .io-shape {
-      font-family: var(--mono);
-      font-size: 12px;
-      color: var(--text);
-      margin-bottom: 3px;
-    }
-    .io-desc {
-      font-size: 11px;
-      color: var(--text-dim);
-    }
+    .bar-cell { display: flex; align-items: center; gap: 8px; min-width: 150px; }
+    .bar-track { flex: 1; height: 5px; background: var(--surface2); border-radius: 99px; overflow: hidden; }
+    .bar-fill  { height: 100%; border-radius: 99px; }
+    .warn-cell { color: var(--red); font-size: 11px; }
   </style>
 </head>
 <body>
@@ -249,444 +144,452 @@
 
 <div class="main">
   <div class="page-header">
-    <div class="page-title">CNN Architecture</div>
-    <div class="page-subtitle">DualCNN_v1 (mean-pool context) vs DualCNN_v2 (cross-attention context)</div>
+    <div class="page-title">CNN Architectures</div>
+    <div class="page-subtitle">Layer-by-layer structure · block width ∝ channel count (log-scale)</div>
   </div>
 
   <div class="page-content">
 
+    <!-- Tabs — one per arch, easily extended -->
+    <div class="arch-tabs" id="arch-tabs"></div>
+
     <!-- Stat cards -->
-    <div class="stat-row">
-      <div class="stat-card">
-        <div class="stat-label">v1 Parameters</div>
-        <div class="stat-value" style="font-size:18px">610,083</div>
-        <div class="stat-sub">mean-pool context</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">v2 Parameters</div>
-        <div class="stat-value" style="font-size:18px;color:var(--accent)">675,619</div>
-        <div class="stat-sub">+65 K from cross-attention</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Training Examples</div>
-        <div class="stat-value" style="font-size:18px">350,305</div>
-        <div class="stat-sub">280 K train · 35 K val · 35 K test</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Examples / Param (v2)</div>
-        <div class="stat-value" style="font-size:18px;color:var(--yellow)">0.41</div>
-        <div class="stat-sub">MLP head is the bottleneck</div>
-      </div>
+    <div class="stat-row" id="stat-row"></div>
+
+    <!-- SVG diagram -->
+    <div class="diagram-card">
+      <svg id="arch-svg" viewBox="0 0 870 658"
+           xmlns="http://www.w3.org/2000/svg"
+           style="font-family:'JetBrains Mono',monospace"></svg>
     </div>
 
-    <!-- Inputs -->
-    <div class="section-title">Inputs (per batch of B examples)</div>
-    <div class="io-grid">
-      <div class="io-card">
-        <div class="io-label">Market context</div>
-        <div class="io-shape">(28, 3, 150, B)</div>
-        <div class="io-desc">28 trading days · 3 channels (close, H-L vol, rel-vol) · 150 companies by market cap. Target stock always at index 0.</div>
-      </div>
-      <div class="io-card">
-        <div class="io-label">Hourly series</div>
-        <div class="io-shape">(280, B)</div>
-        <div class="io-desc">280 × 60-min closes for the target stock, normalised so the first bar = 1.0. Covers the 5 weeks before prediction date.</div>
-      </div>
-      <div class="io-card">
-        <div class="io-label">LLM features</div>
-        <div class="io-shape">(15, B)</div>
-        <div class="io-desc">15 scalar signals extracted by Claude from the latest annual report PDF. Zero-filled when no recent filing is available.</div>
-      </div>
-    </div>
-
-    <!-- Flow diagrams side by side -->
-    <div class="section-title">Layer-by-layer flow</div>
-    <div class="arch-grid">
-
-      <!-- v1 -->
-      <div class="flow-card">
-        <div class="flow-card-title">
-          DualCNN_v1
-          <span class="flow-total">610 K params</span>
-        </div>
-        <div class="flow-card-sub">Mean-pooled market context — all 149 peers contribute equally</div>
-
-        <div class="flow">
-          <div class="flow-section">Market CNN (shared across all 150 companies)</div>
-
-          <div class="layer layer-input">
-            <span class="layer-name">market input</span>
-            <span class="layer-shape">(28, 3, 150·B)</span>
-            <span class="layer-params">—</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-cnn">
-            <span class="layer-name">Conv1D(3, 3→32, relu)</span>
-            <span class="layer-shape">(26, 32, 150·B)</span>
-            <span class="layer-params">320</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-cnn">
-            <span class="layer-name">Conv1D(3, 32→64, relu)</span>
-            <span class="layer-shape">(24, 64, 150·B)</span>
-            <span class="layer-params">6,208</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-cnn">
-            <span class="layer-name">Conv1D(3, 64→128, relu)</span>
-            <span class="layer-shape">(22, 128, 150·B)</span>
-            <span class="layer-params">24,704</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-pool">
-            <span class="layer-name">GlobalMeanPool + flatten</span>
-            <span class="layer-shape">(128, 150·B)</span>
-            <span class="layer-params">—</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-pool" style="font-size:11px;">
-            <span class="layer-name">reshape → split target / context</span>
-            <span class="layer-shape">(128, 150, B)</span>
-            <span class="layer-params">—</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-pool">
-            <span class="layer-name">mean(context, dims=2)</span>
-            <span class="layer-shape">(128, B) + (128, B)</span>
-            <span class="layer-params">—</span>
-          </div>
-
-          <div class="flow-section">Hourly CNN</div>
-
-          <div class="layer layer-input">
-            <span class="layer-name">hourly input</span>
-            <span class="layer-shape">(280, 1, B)</span>
-            <span class="layer-params">—</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-cnn">
-            <span class="layer-name">Conv1D(5, 1→32, relu)</span>
-            <span class="layer-shape">(276, 32, B)</span>
-            <span class="layer-params">192</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-cnn">
-            <span class="layer-name">Conv1D(5, 32→64, relu)</span>
-            <span class="layer-shape">(272, 64, B)</span>
-            <span class="layer-params">10,304</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-cnn">
-            <span class="layer-name">Conv1D(3, 64→128, relu)</span>
-            <span class="layer-shape">(270, 128, B)</span>
-            <span class="layer-params">24,704</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-cnn">
-            <span class="layer-name">Conv1D(3, 128→256, relu)</span>
-            <span class="layer-shape">(268, 256, B)</span>
-            <span class="layer-params">98,560</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-pool">
-            <span class="layer-name">GlobalMeanPool + flatten</span>
-            <span class="layer-shape">(256, B)</span>
-            <span class="layer-params">—</span>
-          </div>
-
-          <div class="flow-section">MLP Head</div>
-
-          <div class="layer layer-concat">
-            <span class="layer-name">cat(target, ctx, hourly, llm)</span>
-            <span class="layer-shape">(527, B)</span>
-            <span class="layer-params">—</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-dense">
-            <span class="layer-name">Dense(527→512, relu)</span>
-            <span class="layer-shape">(512, B)</span>
-            <span class="layer-params">270,336</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-dropout">
-            <span class="layer-name">Dropout(0.30)</span>
-            <span class="layer-shape"></span>
-            <span class="layer-params">—</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-dense">
-            <span class="layer-name">Dense(512→256, relu)</span>
-            <span class="layer-shape">(256, B)</span>
-            <span class="layer-params">131,328</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-dropout">
-            <span class="layer-name">Dropout(0.20)</span>
-            <span class="layer-shape"></span>
-            <span class="layer-params">—</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-dense">
-            <span class="layer-name">Dense(256→128, relu)</span>
-            <span class="layer-shape">(128, B)</span>
-            <span class="layer-params">32,896</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-dropout">
-            <span class="layer-name">Dropout(0.10)</span>
-            <span class="layer-shape"></span>
-            <span class="layer-params">—</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-dense">
-            <span class="layer-name">Dense(128→64, relu)</span>
-            <span class="layer-shape">(64, B)</span>
-            <span class="layer-params">8,256</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-output">
-            <span class="layer-name">Dense(64→35)</span>
-            <span class="layer-shape">(35, B)</span>
-            <span class="layer-params">2,275</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- v2 -->
-      <div class="flow-card">
-        <div class="flow-card-title">
-          DualCNN_v2
-          <span class="flow-total">675 K params</span>
-        </div>
-        <div class="flow-card-sub">Cross-attention context — target queries 149 peers, learns which ones matter</div>
-
-        <div class="flow">
-          <div class="flow-section">Market CNN (shared — identical to v1)</div>
-
-          <div class="layer layer-input">
-            <span class="layer-name">market input</span>
-            <span class="layer-shape">(28, 3, 150·B)</span>
-            <span class="layer-params">—</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-cnn">
-            <span class="layer-name">Conv1D(3, 3→32, relu)</span>
-            <span class="layer-shape">(26, 32, 150·B)</span>
-            <span class="layer-params">320</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-cnn">
-            <span class="layer-name">Conv1D(3, 32→64, relu)</span>
-            <span class="layer-shape">(24, 64, 150·B)</span>
-            <span class="layer-params">6,208</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-cnn">
-            <span class="layer-name">Conv1D(3, 64→128, relu)</span>
-            <span class="layer-shape">(22, 128, 150·B)</span>
-            <span class="layer-params">24,704</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-pool">
-            <span class="layer-name">GlobalMeanPool + flatten</span>
-            <span class="layer-shape">(128, 150·B)</span>
-            <span class="layer-params">—</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-pool" style="font-size:11px;">
-            <span class="layer-name">reshape → split target / context</span>
-            <span class="layer-shape">(128, 150, B)</span>
-            <span class="layer-params">—</span>
-          </div>
-          <div class="arrow"></div>
-
-          <!-- v2-only: cross-attention -->
-          <div class="layer layer-attn">
-            <span class="layer-name">MultiHeadAttention(128, heads=2)</span>
-            <span class="v2-badge">v2</span>
-            <span class="layer-params">65,536</span>
-          </div>
-          <div style="padding: 3px 14px; font-size:10px; color:var(--muted); width:100%;">
-            Q: target (128,1,B) · K,V: context (128,149,B) → attended (128,B)
-          </div>
-          <div class="arrow"></div>
-
-          <div class="flow-section">Hourly CNN (identical to v1)</div>
-
-          <div class="layer layer-input">
-            <span class="layer-name">hourly input</span>
-            <span class="layer-shape">(280, 1, B)</span>
-            <span class="layer-params">—</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-cnn">
-            <span class="layer-name">Conv1D(5, 1→32, relu)</span>
-            <span class="layer-shape">(276, 32, B)</span>
-            <span class="layer-params">192</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-cnn">
-            <span class="layer-name">Conv1D(5, 32→64, relu)</span>
-            <span class="layer-shape">(272, 64, B)</span>
-            <span class="layer-params">10,304</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-cnn">
-            <span class="layer-name">Conv1D(3, 64→128, relu)</span>
-            <span class="layer-shape">(270, 128, B)</span>
-            <span class="layer-params">24,704</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-cnn">
-            <span class="layer-name">Conv1D(3, 128→256, relu)</span>
-            <span class="layer-shape">(268, 256, B)</span>
-            <span class="layer-params">98,560</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-pool">
-            <span class="layer-name">GlobalMeanPool + flatten</span>
-            <span class="layer-shape">(256, B)</span>
-            <span class="layer-params">—</span>
-          </div>
-
-          <div class="flow-section">MLP Head (identical to v1)</div>
-
-          <div class="layer layer-concat">
-            <span class="layer-name">cat(target, attended, hourly, llm)</span>
-            <span class="layer-shape">(527, B)</span>
-            <span class="layer-params">—</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-dense">
-            <span class="layer-name">Dense(527→512, relu)</span>
-            <span class="layer-shape">(512, B)</span>
-            <span class="layer-params">270,336</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-dropout">
-            <span class="layer-name">Dropout(0.30)</span>
-            <span class="layer-shape"></span>
-            <span class="layer-params">—</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-dense">
-            <span class="layer-name">Dense(512→256, relu)</span>
-            <span class="layer-shape">(256, B)</span>
-            <span class="layer-params">131,328</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-dropout">
-            <span class="layer-name">Dropout(0.20)</span>
-            <span class="layer-shape"></span>
-            <span class="layer-params">—</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-dense">
-            <span class="layer-name">Dense(256→128, relu)</span>
-            <span class="layer-shape">(128, B)</span>
-            <span class="layer-params">32,896</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-dropout">
-            <span class="layer-name">Dropout(0.10)</span>
-            <span class="layer-shape"></span>
-            <span class="layer-params">—</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-dense">
-            <span class="layer-name">Dense(128→64, relu)</span>
-            <span class="layer-shape">(64, B)</span>
-            <span class="layer-params">8,256</span>
-          </div>
-          <div class="arrow"></div>
-          <div class="layer layer-output">
-            <span class="layer-name">Dense(64→35)</span>
-            <span class="layer-shape">(35, B)</span>
-            <span class="layer-params">2,275</span>
-          </div>
-        </div>
-      </div>
-    </div>
+    <!-- Legend -->
+    <div class="legend-row" id="legend-row"></div>
 
     <!-- Parameter breakdown table -->
     <div class="section-title">Parameter breakdown</div>
-    <div class="param-section">
-      <table class="param-table">
-        <thead>
-          <tr>
-            <th>Sub-network</th>
-            <th>Layer detail</th>
-            <th class="right">Params</th>
-            <th class="right">% of v2</th>
-            <th style="width:180px">Share</th>
-            <th>Note</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td><span style="font-family:var(--mono);font-size:11px;color:var(--accent)">Market CNN</span></td>
-            <td class="mono">3 × Conv1D, GlobalMeanPool</td>
-            <td class="right">31,232</td>
-            <td class="right">4.6%</td>
-            <td><div class="bar-wrap"><div class="bar-track"><div class="bar-fill" style="width:4.6%;background:var(--accent)"></div></div></div></td>
-            <td style="font-size:11px;color:var(--muted)">Shared: sees 150 × B company-days per batch</td>
-          </tr>
-          <tr>
-            <td><span style="font-family:var(--mono);font-size:11px;color:var(--accent)">Hourly CNN</span></td>
-            <td class="mono">4 × Conv1D, GlobalMeanPool</td>
-            <td class="right">133,760</td>
-            <td class="right">19.8%</td>
-            <td><div class="bar-wrap"><div class="bar-track"><div class="bar-fill" style="width:19.8%;background:var(--accent)"></div></div></div></td>
-            <td style="font-size:11px;color:var(--muted)">~2.1 examples/param — marginal coverage</td>
-          </tr>
-          <tr>
-            <td><span style="font-family:var(--mono);font-size:11px;color:var(--yellow)">Attention</span> <span style="font-size:9px;color:var(--muted)">(v2 only)</span></td>
-            <td class="mono">MultiHeadAttention(128, heads=2)</td>
-            <td class="right">65,536</td>
-            <td class="right">9.7%</td>
-            <td><div class="bar-wrap"><div class="bar-track"><div class="bar-fill" style="width:9.7%;background:var(--yellow)"></div></div></div></td>
-            <td style="font-size:11px;color:var(--muted)">4 × Dense(128→128, no bias). Adds peer selectivity.</td>
-          </tr>
-          <tr>
-            <td><span style="font-family:var(--mono);font-size:11px;color:var(--green)">MLP Head</span></td>
-            <td class="mono">Dense(527→512→256→128→64→35)</td>
-            <td class="right">445,091</td>
-            <td class="right">65.9%</td>
-            <td><div class="bar-wrap"><div class="bar-track"><div class="bar-fill" style="width:65.9%;background:var(--green)"></div></div></div></td>
-            <td style="font-size:11px;color:var(--red)">Bottleneck: 0.63 examples/param at first layer</td>
-          </tr>
-          <tr class="total-row">
-            <td colspan="2"><strong>Total v2</strong></td>
-            <td class="right"><strong>675,619</strong></td>
-            <td class="right">100%</td>
-            <td></td>
-            <td style="font-size:11px;">v1 = 610,083 (no attention block)</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-
-    <!-- Output -->
-    <div class="section-title">Output</div>
-    <div class="io-grid" style="grid-template-columns:1fr 1fr 1fr;">
-      <div class="io-card">
-        <div class="io-label">Predictions</div>
-        <div class="io-shape">(35, B)</div>
-        <div class="io-desc">35 hourly log-return bars: log(P<sub>h</sub> / close<sub>T</sub>) for h = 1…35 covering the next 5 trading days.</div>
-      </div>
-      <div class="io-card">
-        <div class="io-label">Loss (training)</div>
-        <div class="io-shape">weighted MSE + L2</div>
-        <div class="io-desc">Per-example weight = (peak|log-return| / 4%)² when above threshold — quadratic upweighting of large-move examples. L2 on Dense weight matrices only.</div>
-      </div>
-      <div class="io-card">
-        <div class="io-label">Loss (logged)</div>
-        <div class="io-shape">pure MSE only</div>
-        <div class="io-desc">L2 penalty is stripped before logging so train MSE is directly comparable to val MSE (which has no regularization term).</div>
-      </div>
-    </div>
+    <div id="param-table-wrap"></div>
 
   </div>
 </div>
+
+<script>
+// ─── Architecture data ──────────────────────────────────────────────────────
+
+const SHARED_MARKET = [
+  { ch:3,   ck:'input', label:'Market input',       sub:'28 × 3 × 150 × B', p:0 },
+  { ch:32,  ck:'conv',  label:'Conv(3, 3→32, relu)', sub:'out: 26 × 32',     p:320 },
+  { ch:64,  ck:'conv',  label:'Conv(3, 32→64, relu)',sub:'out: 24 × 64',     p:6208 },
+  { ch:128, ck:'conv',  label:'Conv(3, 64→128, relu)',sub:'out: 22 × 128',   p:24704 },
+  { ch:128, ck:'pool',  label:'GlobalMeanPool',      sub:'→ (128, 150, B)',  p:0 },
+];
+
+const SHARED_HOURLY = [
+  { ch:1,   ck:'input', label:'Hourly input',         sub:'280 × 1 × B',    p:0 },
+  { ch:32,  ck:'conv',  label:'Conv(5,  1→32,  relu)', sub:'out: 276 × 32',  p:192 },
+  { ch:64,  ck:'conv',  label:'Conv(5, 32→64,  relu)', sub:'out: 272 × 64',  p:10304 },
+  { ch:128, ck:'conv',  label:'Conv(3, 64→128, relu)', sub:'out: 270 × 128', p:24704 },
+  { ch:256, ck:'conv',  label:'Conv(3,128→256, relu)', sub:'out: 268 × 256', p:98560 },
+  { ch:256, ck:'pool',  label:'GlobalMeanPool',        sub:'→ (256, B)',     p:0 },
+];
+
+const MLP_LAYERS = [
+  { ch:512, ck:'dense',  label:'Dense(527→512, relu)', p:270336 },
+  { ck:'drop', label:'Dropout  p = 0.30' },
+  { ch:256, ck:'dense',  label:'Dense(512→256, relu)', p:131328 },
+  { ck:'drop', label:'Dropout  p = 0.20' },
+  { ch:128, ck:'dense',  label:'Dense(256→128, relu)', p:32896 },
+  { ck:'drop', label:'Dropout  p = 0.10' },
+  { ch:64,  ck:'dense',  label:'Dense(128→64,  relu)', p:8256 },
+  { ch:35,  ck:'output', label:'Dense(64→35)',          p:2275 },
+];
+
+const ARCH_DATA = {
+  v1: {
+    name: 'DualCNN_v1',
+    subtitle: 'Mean-pool · 610K params',
+    desc: 'All 149 peer embeddings are averaged into a single context vector. Simple and fast — but the model cannot learn which peers are relevant for each target.',
+    total: 610083,
+    market_layers: [
+      ...SHARED_MARKET,
+      { ch:128, ck:'pool', label:'Mean-pool context', sub:'149 peers → (128, B)', p:0 },
+    ],
+    hourly_layers: SHARED_HOURLY,
+    breakdown: [
+      { name:'Market CNN', params:31232,  color:'#4f8ef7', note:'Shared: 150 company-days per batch step' },
+      { name:'Hourly CNN', params:133760, color:'#4f8ef7', note:'~2.1 examples / param' },
+      { name:'MLP Head',   params:445091, color:'#3dd68c', note:'Bottleneck — 0.63 ex/param at Dense 527→512', warn:true },
+    ],
+  },
+  v2: {
+    name: 'DualCNN_v2',
+    subtitle: 'Cross-attention · 676K params',
+    desc: 'The target stock\'s embedding queries the 149 peer embeddings via multi-head attention. The model learns which peers are relevant for each prediction — selectivity that mean-pool cannot express.',
+    total: 675619,
+    market_layers: [
+      ...SHARED_MARKET,
+      { ch:128, ck:'attn', label:'CrossAttn(128, h=2)', sub:'Q=target · K=V=peers', p:65536 },
+    ],
+    hourly_layers: SHARED_HOURLY,
+    breakdown: [
+      { name:'Market CNN', params:31232,  color:'#4f8ef7', note:'Shared: 150 company-days per batch step' },
+      { name:'Hourly CNN', params:133760, color:'#4f8ef7', note:'~2.1 examples / param' },
+      { name:'Attention',  params:65536,  color:'#f5c842', note:'4 × Dense(128→128, no bias) — v2 only' },
+      { name:'MLP Head',   params:445091, color:'#3dd68c', note:'Bottleneck — 0.63 ex/param at Dense 527→512', warn:true },
+    ],
+  },
+};
+
+// ─── SVG helpers ────────────────────────────────────────────────────────────
+
+const NS = 'http://www.w3.org/2000/svg';
+function svgEl(tag, attrs, text) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k,v] of Object.entries(attrs)) e.setAttribute(k, v);
+  if (text !== undefined) e.textContent = String(text);
+  return e;
+}
+
+// Block width: log-scaled so channels visually represent relative size.
+// ch=1→28px, ch=32→96px, ch=128→144px, ch=256→162px, ch=527→188px
+function cw(ch) {
+  return Math.round(28 + 160 * Math.log(Math.max(1, ch)) / Math.log(530));
+}
+
+// Color sets per layer type { f:fill, t:top-face, r:right-face, s:stroke }
+const COL = {
+  input:  { f:'#1b2038', t:'#242b4e', r:'#121629', s:'#3e4878' },
+  conv:   { f:'#122455', t:'#1b3476', r:'#0c1938', s:'#4f8ef7' },
+  pool:   { f:'#101e46', t:'#162860', r:'#0b1430', s:'#3566c0' },
+  attn:   { f:'#362c05', t:'#4e3f08', r:'#241d03', s:'#f5c842' },
+  concat: { f:'#0b2e20', t:'#103f2c', r:'#071e14', s:'#3dd68c' },
+  dense:  { f:'#0d2c1c', t:'#123c27', r:'#081d12', s:'#2da870' },
+  output: { f:'#2e1012', t:'#3f1517', r:'#1f090a', s:'#f76f6f' },
+};
+
+function fmtP(p) {
+  if (!p) return '';
+  return p >= 1000 ? (p/1000).toFixed(p>=100000?0:1)+'K' : String(p);
+}
+
+// Draw a 3-D block. Returns { cx (visual face center-x), bot (bottom y of main face) }
+function drawBlock(g, cx, y, ch, h, ck, label, sub, pcount) {
+  const w = cw(ch), d = 8;
+  const x = cx - w / 2;
+  const c = COL[ck] || COL.input;
+
+  // Right face
+  g.appendChild(svgEl('polygon', {
+    points: `${x+w},${y} ${x+w+d},${y-d} ${x+w+d},${y+h-d} ${x+w},${y+h}`,
+    fill: c.r, stroke: c.s, 'stroke-width': '0.5', 'stroke-linejoin': 'round',
+  }));
+  // Top face
+  g.appendChild(svgEl('polygon', {
+    points: `${x},${y} ${x+d},${y-d} ${x+w+d},${y-d} ${x+w},${y}`,
+    fill: c.t, stroke: c.s, 'stroke-width': '0.5', 'stroke-linejoin': 'round',
+  }));
+  // Main face
+  g.appendChild(svgEl('rect', {
+    x, y, width: w, height: h, rx: 2,
+    fill: c.f, stroke: c.s, 'stroke-width': '0.8',
+  }));
+
+  // Labels centered on main face
+  const lx = x + w / 2;
+  const ly = y + h / 2;
+  g.appendChild(svgEl('text', {
+    x: lx, y: ly + (sub ? -4 : 1),
+    fill: '#dde3f2', 'font-size': '9.5', 'text-anchor': 'middle',
+    'dominant-baseline': 'middle',
+  }, label));
+  if (sub) g.appendChild(svgEl('text', {
+    x: lx, y: ly + 8,
+    fill: '#505878', 'font-size': '8', 'text-anchor': 'middle',
+    'dominant-baseline': 'middle',
+  }, sub));
+
+  // Param count to the right
+  if (pcount) {
+    g.appendChild(svgEl('text', {
+      x: x + w + d + 5, y: y + h / 2 + 1,
+      fill: '#424e6c', 'font-size': '8.5', 'text-anchor': 'start',
+      'dominant-baseline': 'middle',
+    }, fmtP(pcount)));
+  }
+
+  return { cx: lx, bot: y + h };
+}
+
+// Thin dashed dropout marker
+function drawDropout(g, cx, y, label) {
+  const w = 120;
+  const x = cx - w / 2;
+  g.appendChild(svgEl('line', {
+    x1: x, y1: y + 4, x2: x + w, y2: y + 4,
+    stroke: '#2e3550', 'stroke-width': '1', 'stroke-dasharray': '5,3',
+  }));
+  g.appendChild(svgEl('text', {
+    x: cx, y: y - 1,
+    fill: '#394060', 'font-size': '8', 'text-anchor': 'middle',
+    'dominant-baseline': 'middle',
+  }, label));
+  return { cx, bot: y + 8 };
+}
+
+// Vertical arrow connector between two y positions
+function drawArrowV(g, x, y1, y2) {
+  const gap = 4;
+  g.appendChild(svgEl('line', {
+    x1: x, y1: y1 + gap, x2: x, y2: y2 - 7,
+    stroke: '#2a314f', 'stroke-width': '1',
+  }));
+  g.appendChild(svgEl('polygon', {
+    points: `${x},${y2-1} ${x-3},${y2-8} ${x+3},${y2-8}`,
+    fill: '#2a314f',
+  }));
+}
+
+// Cubic bezier curve connector (branch → merge point)
+function drawCurve(g, x1, y1, x2, y2, dashed) {
+  const cy = (y1 + y2) / 2;
+  const path = svgEl('path', {
+    d: `M${x1},${y1} C${x1},${cy} ${x2},${cy} ${x2},${y2}`,
+    fill: 'none', stroke: '#2a314f', 'stroke-width': '1',
+  });
+  if (dashed) path.setAttribute('stroke-dasharray', '5,3');
+  g.appendChild(path);
+  // arrowhead at y2
+  g.appendChild(svgEl('polygon', {
+    points: `${x2},${y2+1} ${x2-3},${y2-7} ${x2+3},${y2-7}`,
+    fill: '#2a314f',
+  }));
+}
+
+// Section header label
+function drawHeader(g, x, y, text) {
+  g.appendChild(svgEl('text', {
+    x, y,
+    fill: '#4a5278', 'font-size': '9.5', 'text-anchor': 'middle',
+    'text-transform': 'uppercase', 'letter-spacing': '0.06em',
+  }, text.toUpperCase()));
+}
+
+// ─── Main render ─────────────────────────────────────────────────────────────
+
+const CX_M   = 135;  // market branch center-x
+const CX_H   = 570;  // hourly branch center-x
+const CX_LLM = 750;  // LLM input center-x
+const CX_MLP = 352;  // MLP center-x
+const BLK_H  = 28;   // standard block height
+const ATN_H  = 38;   // attention block height (taller)
+const STEP   = 47;   // vertical step between branch layers
+
+function renderArch(archKey) {
+  const arch = ARCH_DATA[archKey];
+  const svg  = document.getElementById('arch-svg');
+  svg.innerHTML = '';
+
+  const g = svg; // draw directly into svg
+
+  // ── Branch Y positions ────────────────────────────────────────────────────
+  const yStart  = 44;
+  // Both branches have equal length (6 layers each), last layer at:
+  const yLast   = yStart + (arch.market_layers.length - 1) * STEP;
+  const lastIsAttn = arch.market_layers[arch.market_layers.length - 1].ck === 'attn';
+  const lastH_m    = lastIsAttn ? ATN_H : BLK_H;
+  const mBotY      = yLast + lastH_m;
+  const hBotY      = yStart + (arch.hourly_layers.length - 1) * STEP + BLK_H;
+  const lBotY      = yLast + BLK_H;  // LLM input at same y as last branch layer
+
+  const Y_CONCAT   = Math.max(mBotY, hBotY, lBotY) + 54;
+  const Y_MLP      = Y_CONCAT + BLK_H + 20;
+
+  // ── Section headers ───────────────────────────────────────────────────────
+  drawHeader(g, CX_M,   22, 'Market CNN');
+  drawHeader(g, CX_H,   22, 'Hourly CNN');
+  drawHeader(g, CX_LLM, 22, 'LLM');
+  drawHeader(g, CX_MLP, Y_MLP + 130, 'MLP Head');
+
+  // ── Market branch ─────────────────────────────────────────────────────────
+  let prevBot_m = null;
+  arch.market_layers.forEach((L, i) => {
+    const y  = yStart + i * STEP;
+    const lh = L.ck === 'attn' ? ATN_H : BLK_H;
+    if (prevBot_m !== null) drawArrowV(g, CX_M, prevBot_m, y);
+    drawBlock(g, CX_M, y, L.ch, lh, L.ck, L.label, L.sub || null, L.p || 0);
+    prevBot_m = y + lh;
+  });
+
+  // ── Hourly branch ─────────────────────────────────────────────────────────
+  let prevBot_h = null;
+  arch.hourly_layers.forEach((L, i) => {
+    const y = yStart + i * STEP;
+    if (prevBot_h !== null) drawArrowV(g, CX_H, prevBot_h, y);
+    drawBlock(g, CX_H, y, L.ch, BLK_H, L.ck, L.label, L.sub || null, L.p || 0);
+    prevBot_h = y + BLK_H;
+  });
+
+  // ── LLM input (single block, aligned with last branch layer) ──────────────
+  drawBlock(g, CX_LLM, yLast, 15, BLK_H, 'input', 'LLM features', '15 × B', 0);
+
+  // ── Branch-to-concat connectors ───────────────────────────────────────────
+  // Small "cat()" label above concat
+  g.appendChild(svgEl('text', {
+    x: CX_MLP, y: Y_CONCAT - 9,
+    fill: '#2a6644', 'font-size': '9', 'text-anchor': 'middle',
+  }, 'cat(target, ctx, hourly, llm)  →  527'));
+
+  drawCurve(g, CX_M,   mBotY, CX_MLP, Y_CONCAT);
+  drawCurve(g, CX_H,   hBotY, CX_MLP, Y_CONCAT);
+  drawCurve(g, CX_LLM, lBotY, CX_MLP, Y_CONCAT, true /* dashed */);
+
+  // ── Concat block ──────────────────────────────────────────────────────────
+  drawBlock(g, CX_MLP, Y_CONCAT, 527, BLK_H, 'concat', 'Concatenate', '527 = 128+128+256+15', 0);
+
+  // ── MLP layers ────────────────────────────────────────────────────────────
+  // prevBot_mlp: bottom of the last drawn dense block (arrows originate here).
+  // py: top of the next element to be drawn.
+  // Dropout markers sit in the gap between dense blocks without affecting arrows.
+  let py = Y_MLP;
+  let prevBot_mlp = Y_CONCAT + BLK_H;
+
+  MLP_LAYERS.forEach((L) => {
+    if (L.ck === 'drop') {
+      drawDropout(g, CX_MLP, py, L.label);
+      py += 14;
+    } else {
+      drawArrowV(g, CX_MLP, prevBot_mlp, py);
+      drawBlock(g, CX_MLP, py, L.ch, BLK_H, L.ck, L.label, null, L.p || 0);
+      prevBot_mlp = py + BLK_H;
+      py = prevBot_mlp + 8;
+    }
+  });
+
+  // ── Output label ──────────────────────────────────────────────────────────
+  const outputY = py + 10;
+  g.appendChild(svgEl('text', {
+    x: CX_MLP, y: outputY,
+    fill: '#8e3030', 'font-size': '9.5', 'text-anchor': 'middle',
+  }, '↓  predicted log-return trajectory  (35 hourly bars × B)'));
+
+  // ── Total params label ────────────────────────────────────────────────────
+  g.appendChild(svgEl('text', {
+    x: 14, y: 656,
+    fill: '#3a4570', 'font-size': '9', 'text-anchor': 'start',
+  }, `${arch.name} · ${(arch.total/1000).toFixed(1)}K parameters`));
+}
+
+// ─── Stats, table, legend ────────────────────────────────────────────────────
+
+function renderStats(arch) {
+  const ex = 280244;
+  const cards = [
+    { label:'Total parameters', value: (arch.total/1000).toFixed(1)+'K', sub: arch.name, cls:'' },
+    { label:'Training examples', value:'280K', sub:'val: 35K · test: 35K', cls:'' },
+    { label:'Examples / param', value:(ex/arch.total).toFixed(2),
+      sub: ex/arch.total < 1 ? 'MLP head is under-determined' : 'OK', cls: ex/arch.total < 1 ? 'yellow' : 'green' },
+    { label:'Output', value:'35 bars', sub:'5-day hourly log-return trajectory', cls:'' },
+  ];
+  document.getElementById('stat-row').innerHTML = cards.map(c => `
+    <div class="stat-card">
+      <div class="stat-label">${c.label}</div>
+      <div class="stat-value" style="font-size:18px${c.cls ? ';color:var(--'+c.cls+')' : ''}">${c.value}</div>
+      <div class="stat-sub">${c.sub}</div>
+    </div>`).join('');
+}
+
+function renderTable(arch) {
+  const total = arch.total;
+  const rows = arch.breakdown.map(r => {
+    const pct = (r.params / total * 100).toFixed(1);
+    const barColor = r.warn ? '#f76f6f' : r.color;
+    return `<tr>
+      <td class="mono" style="color:${r.color}">${r.name}</td>
+      <td class="r">${r.params.toLocaleString()}</td>
+      <td class="r">${pct}%</td>
+      <td>
+        <div class="bar-cell">
+          <div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${barColor}"></div></div>
+        </div>
+      </td>
+      <td class="${r.warn ? 'warn-cell' : ''}" style="font-size:11px;color:${r.warn ? 'var(--red)' : 'var(--muted)'}">${r.note}</td>
+    </tr>`;
+  }).join('');
+
+  document.getElementById('param-table-wrap').innerHTML = `
+    <table class="param-table">
+      <thead>
+        <tr>
+          <th>Sub-network</th>
+          <th class="r">Parameters</th>
+          <th class="r">% of total</th>
+          <th style="min-width:120px">Share</th>
+          <th>Notes</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+      <tbody>
+        <tr class="total-row">
+          <td><strong>Total</strong></td>
+          <td class="r"><strong>${total.toLocaleString()}</strong></td>
+          <td class="r">100%</td>
+          <td></td>
+          <td style="font-size:11px;color:var(--muted)">dataset: 2021-11-15 → 2026-09-01</td>
+        </tr>
+      </tbody>
+    </table>`;
+}
+
+function renderLegend() {
+  const items = [
+    { label:'Input',      ck:'input'  },
+    { label:'Conv1D',     ck:'conv'   },
+    { label:'Pool / MLP', ck:'pool'   },
+    { label:'Attention',  ck:'attn'   },
+    { label:'Concat',     ck:'concat' },
+    { label:'Dense',      ck:'dense'  },
+    { label:'Output',     ck:'output' },
+  ];
+  document.getElementById('legend-row').innerHTML = items.map(it => {
+    const c = COL[it.ck];
+    return `<div class="legend-item">
+      <div class="legend-swatch" style="background:${c.f};border-color:${c.s}"></div>
+      ${it.label}
+    </div>`;
+  }).join('');
+}
+
+// ─── Tabs ─────────────────────────────────────────────────────────────────────
+
+let currentArch = 'v1';
+
+function switchArch(key) {
+  if (!ARCH_DATA[key]) return;
+  currentArch = key;
+  document.querySelectorAll('.arch-tab').forEach(b =>
+    b.classList.toggle('active', b.dataset.arch === key));
+  const arch = ARCH_DATA[key];
+  renderArch(key);
+  renderStats(arch);
+  renderTable(arch);
+  // Update subtitle
+  document.querySelector('.page-subtitle').textContent = arch.desc;
+}
+
+function buildTabs() {
+  const wrap = document.getElementById('arch-tabs');
+  wrap.innerHTML = Object.entries(ARCH_DATA).map(([k, a]) => `
+    <button class="arch-tab${k === currentArch ? ' active' : ''}"
+            data-arch="${k}" onclick="switchArch('${k}')">
+      <span class="tab-name">${a.name}</span>
+      <span class="tab-sub">${a.subtitle}</span>
+    </button>`).join('');
+}
+
+// ─── Init ─────────────────────────────────────────────────────────────────────
+buildTabs();
+renderLegend();
+switchArch('v1');
+</script>
 </body>
 </html>
