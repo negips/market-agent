@@ -126,9 +126,13 @@ function assemble_single(cache::InferenceCache, sym_idx::Int,
 
     h_start = h_end - N_HOURLY_BARS + 1
     raw_h   = cache.hourly_closes[h_start:h_end, k]
-    ref_h   = max(raw_h[1], 1f-6)
+    # Use first non-NaN bar as normalisation anchor; fall back to 1.0 if all gaps.
+    first_valid = findfirst(!isnan, raw_h)
+    ref_h   = isnothing(first_valid) ? 1f0 : max(raw_h[first_valid], 1f-6)
+    norm_h  = raw_h ./ ref_h
+    norm_h[isnan.(norm_h)] .= 1f0   # fill any remaining gaps with flat (no movement)
     hourly  = Matrix{Float32}(undef, N_HOURLY_BARS, 1)
-    hourly[:, 1] = raw_h ./ ref_h
+    hourly[:, 1] = norm_h
 
     # ── LLM features (neutral — no document provided at inference time) ──────
     llm = Matrix{Float32}(undef, N_LLM_FEATURES, 1)
