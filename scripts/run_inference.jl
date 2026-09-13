@@ -8,11 +8,14 @@ website/predict.html.
 Usage:
   julia --project=packages/StockSwingPredictor scripts/run_inference.jl \\
         --symbol INFY --date 15-01-2024
+  julia --project=packages/StockSwingPredictor scripts/run_inference.jl \\
+        --symbol RELIANCE --date 15-01-2024 --arch v2
 
 Arguments:
   --symbol SYMBOL   NSE ticker (e.g. INFY, RELIANCE, TCS)
-  --date   DATE     Trading date in YYYY-MM-DD format (must be a date in the cache)
-  --model  PATH     Path to model BSON (default: website/data/models/DualCNN_v1/swing_predictor.bson)
+  --date   DATE     Trading date in DD-MM-YYYY or YYYY-MM-DD format
+  --arch   NAME     Architecture to use: v1, v2 (default: v1)
+  --model  PATH     Explicit model BSON path (overrides --arch)
   --output PATH     Output JSON path (default: website/data/prediction_result.json)
 
 Output format: JSON with keys:
@@ -25,6 +28,9 @@ Output format: JSON with keys:
 using StockSwingPredictor, Flux, JSON3, Dates
 
 const REPO_ROOT = joinpath(@__DIR__, "..")
+
+# Maps --arch shorthand → model folder name under website/data/models/
+const ARCH_DIRS = Dict("v1" => "DualCNN_v1", "v2" => "DualCNN_v2")
 
 function _parse_date(s::String)::Date
     # Accept DD-MM-YYYY (preferred) or YYYY-MM-DD (fallback)
@@ -39,8 +45,8 @@ function parse_args()
     opts = Dict{String,Any}(
         "symbol" => nothing,
         "date"   => nothing,
-        "model"  => joinpath(REPO_ROOT, "website", "data", "models",
-                             "DualCNN_v1", "swing_predictor.bson"),
+        "arch"   => "v1",
+        "model"  => nothing,   # resolved below once arch is known
         "output" => joinpath(REPO_ROOT, "website", "data", "prediction_result.json"),
     )
     i = 1
@@ -50,12 +56,13 @@ function parse_args()
             println("""
 Usage:
   julia --project=packages/StockSwingPredictor scripts/run_inference.jl \\
-        --symbol INFY --date 15-01-2024
+        --symbol INFY --date 15-01-2024 [--arch v1|v2]
 
 Options:
   --symbol SYMBOL   NSE ticker symbol (required)
   --date DATE       Trading date DD-MM-YYYY (required, must be in inference cache)
-  --model PATH      Model BSON path (default: website/data/models/DualCNN_v1/swing_predictor.bson)
+  --arch NAME       Architecture to use: v1, v2 (default: v1)
+  --model PATH      Explicit model BSON path — overrides --arch
   --output PATH     Output JSON path (default: website/data/prediction_result.json)
 
 Output: JSON file readable by website/predict.html
@@ -63,6 +70,7 @@ Output: JSON file readable by website/predict.html
             exit(0)
         elseif a == "--symbol"; opts["symbol"] = uppercase(strip(ARGS[i+1])); i += 2
         elseif a == "--date";   opts["date"]   = _parse_date(ARGS[i+1]);      i += 2
+        elseif a == "--arch";   opts["arch"]   = ARGS[i+1];                   i += 2
         elseif a == "--model";  opts["model"]  = ARGS[i+1];                   i += 2
         elseif a == "--output"; opts["output"] = ARGS[i+1];                   i += 2
         else i += 1
@@ -70,6 +78,13 @@ Output: JSON file readable by website/predict.html
     end
     isnothing(opts["symbol"]) && error("--symbol is required")
     isnothing(opts["date"])   && error("--date is required")
+    haskey(ARCH_DIRS, opts["arch"]) ||
+        error("Unknown --arch '$(opts["arch"])'. Available: $(join(keys(ARCH_DIRS), ", "))")
+    # Resolve model path: explicit --model overrides --arch default.
+    if isnothing(opts["model"])
+        opts["model"] = joinpath(REPO_ROOT, "website", "data", "models",
+                                 ARCH_DIRS[opts["arch"]], "swing_predictor.bson")
+    end
     return opts
 end
 
