@@ -233,7 +233,7 @@ function main()
     output_path = opts["output"]
     mkpath(dirname(output_path))
     open(output_path, "w") do io
-        JSON3.pretty(io, result)
+        JSON3.pretty(io, _sanitize_json(result))
     end
 
     day5_pct = round(Float64(pred_lr[min(N_PRED_HOURS, n_pred)]) * 100, digits=2)
@@ -242,5 +242,10 @@ function main()
     @info "  $symbol @ $date  ref=₹$(round(ref_close, digits=2))  day-5 return: $dir $(abs(day5_pct))%"
     @info "  $(length(actual)) actual bars found in cache ($(length(predicted)) predicted)"
 end
+
+_sanitize_json(x::AbstractFloat)  = isfinite(x) ? x : nothing
+_sanitize_json(x::AbstractVector) = [_sanitize_json(v) for v in x]
+_sanitize_json(x::Dict)           = Dict(k => _sanitize_json(v) for (k, v) in x)
+_sanitize_json(x)                 = x
 
 main()
