@@ -110,12 +110,16 @@ function assemble_single(cache::InferenceCache, sym_idx::Int,
     norm_c = raw_c ./ max.(anchor, 1f-6)
     norm_c[isnan.(norm_c)] .= 1f0
 
-    raw_v = cache.vols[t-N_MARKET_DAYS+1:t, market_cols]
+    raw_v  = cache.vols[t-N_MARKET_DAYS+1:t, market_cols]
     raw_v[isnan.(raw_v)] .= 0f0
+
+    raw_rv = cache.rel_vols[t-N_MARKET_DAYS+1:t, market_cols]
+    raw_rv = clamp.(raw_rv, 0f0, 5f0)
 
     market = Array{Float32}(undef, N_MARKET_DAYS, N_MARKET_CHANNELS, N_MARKET_COMPANIES, 1)
     market[:, 1, :, 1] = norm_c
     market[:, 2, :, 1] = raw_v
+    market[:, 3, :, 1] = raw_rv
 
     # ── Hourly series (target stock, N_HOURLY_BARS ending on date t) ────────
     h_end   = searchsortedlast(cache.hourly_datetimes,
