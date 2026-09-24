@@ -103,7 +103,16 @@ Build a symbol → instrument_token lookup dict for EQ stocks (and NSE INDICES).
 # Arguments
 - `instruments`: DataFrame from `load_instruments`
 - `exchange`: `"NSE"` (default) or `"BSE"`
+
+# Notes
+BSE's instrument list classifies bonds and NCDs as `instrument_type = "EQ"`.
+These debt instruments have tradingsymbols of the form `digits→letters→digits`
+(e.g. `001HCCL29`, `360OP31125`) where the trailing digits encode the maturity
+date. This function excludes them; genuine equity symbols never end with digits
+when they also start with digits.
 """
+const _BSE_BOND_RE = r"^\d+[A-Za-z]+\d+"
+
 function build_token_map(instruments::DataFrame; exchange::String="NSE")::Dict{String, Int}
     map = Dict{String, Int}()
     for row in eachrow(instruments)
@@ -112,6 +121,7 @@ function build_token_map(instruments::DataFrame; exchange::String="NSE")::Dict{S
         exch == exchange || continue
         if type == "EQ" || (exchange == "NSE" && type == "INDICES")
             sym = string(row.tradingsymbol)
+            exchange == "BSE" && !isnothing(match(_BSE_BOND_RE, sym)) && continue
             map[sym] = Int(row.instrument_token)
         end
     end
