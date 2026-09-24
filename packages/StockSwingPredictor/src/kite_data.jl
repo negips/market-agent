@@ -105,13 +105,21 @@ Build a symbol → instrument_token lookup dict for EQ stocks (and NSE INDICES).
 - `exchange`: `"NSE"` (default) or `"BSE"`
 
 # Notes
-BSE's instrument list classifies bonds and NCDs as `instrument_type = "EQ"`.
-These debt instruments have tradingsymbols of the form `digits→letters→digits`
-(e.g. `001HCCL29`, `360OP31125`) where the trailing digits encode the maturity
-date. This function excludes them; genuine equity symbols never end with digits
-when they also start with digits.
+BSE's instrument list classifies bonds, NCDs, and government securities as
+`instrument_type = "EQ"`. Three patterns cover all non-equity instruments:
+
+1. `^0` — tradingsymbol starts with zero: government securities (e.g. `07ABB`,
+   `07ADD`) and certain treasury instruments.
+2. `^[\\d.]+[A-Za-z].*\\d\$` — starts with digits/decimal (coupon rate or ISIN
+   prefix), contains letters, ends with digits (maturity year/date): covers
+   NCDs (e.g. `001HCCL29`, `360OP31125`) and decimal-coupon bonds (`8.9JSWSL30`).
+3. `\\s` — contains whitespace: index names and fund codes with spaces
+   (e.g. `12 MFLS2`, `BSE CD`).
+
+Additionally, instruments with `tick_size == 0` are BSE index instruments
+(SENSEX, BANKEX, etc.) that cannot be fetched via the equity historical endpoint.
 """
-const _BSE_BOND_RE = r"^\d+[A-Za-z]+\d+"
+const _BSE_DEBT_RE = r"^0|^[\d.]+[A-Za-z].*\d$|\s"
 
 function build_token_map(instruments::DataFrame; exchange::String="NSE")::Dict{String, Int}
     map = Dict{String, Int}()
@@ -121,7 +129,10 @@ function build_token_map(instruments::DataFrame; exchange::String="NSE")::Dict{S
         exch == exchange || continue
         if type == "EQ" || (exchange == "NSE" && type == "INDICES")
             sym = string(row.tradingsymbol)
-            exchange == "BSE" && !isnothing(match(_BSE_BOND_RE, sym)) && continue
+            if exchange == "BSE"
+                !isnothing(match(_BSE_DEBT_RE, sym)) && continue
+                get(row, :tick_size, 1.0) == 0.0         && continue
+            end
             map[sym] = Int(row.instrument_token)
         end
     end
