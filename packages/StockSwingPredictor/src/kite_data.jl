@@ -106,20 +106,24 @@ Build a symbol → instrument_token lookup dict for EQ stocks (and NSE INDICES).
 
 # Notes
 BSE's instrument list classifies bonds, NCDs, and government securities as
-`instrument_type = "EQ"`. Three patterns cover all non-equity instruments:
+`instrument_type = "EQ"`. Four regex patterns cover the main non-equity classes:
 
-1. `^0` — tradingsymbol starts with zero: government securities (e.g. `07ABB`,
-   `07ADD`) and certain treasury instruments.
-2. `^[\\d.]+[A-Za-z].*\\d\$` — starts with digits/decimal (coupon rate or ISIN
-   prefix), contains letters, ends with digits (maturity year/date): covers
-   NCDs (e.g. `001HCCL29`, `360OP31125`) and decimal-coupon bonds (`8.9JSWSL30`).
-3. `\\s` — contains whitespace: index names and fund codes with spaces
-   (e.g. `12 MFLS2`, `BSE CD`).
+1. `^0` — starts with zero: government securities (`07ABB`, `07ADD`).
+2. `^SGB` — Sovereign Gold Bonds (`SGBOCT26`, `SGBJAN29II`, etc.).
+3. `^[\\d.]+[A-Za-z].*\\d\$` — coupon-rate prefix, has letters, ends with digit:
+   NCDs (`001HCCL29`, `360OP31125`) and decimal-coupon bonds (`8.9JSWSL30`).
+4. `^\\d{3,}[A-Za-z].*\\d` — 3-digit coupon prefix, digit somewhere after first
+   letter: State Development Loans (`813CG2045A`, `723GS39P`, `717MHSDL`).
+   Excludes `360ONE` (no digit after the leading letters).
+5. `\\s` — whitespace in name: BSE index codes (`BSE CD`, `12 MFLS2`).
 
-Additionally, instruments with `tick_size == 0` are BSE index instruments
-(SENSEX, BANKEX, etc.) that cannot be fetched via the equity historical endpoint.
+Additionally:
+- `tick_size == 0` → BSE index instruments (SENSEX, BANKEX, etc.).
+- Empty `name` field → MF fixed-maturity units, closed-end debt schemes, and
+  unregistered instruments listed as EQ but not serveable via the historical API
+  (~2,300 instruments, e.g. `10IGG`, `FFTF16BGR`, `KTKFMP46G`).
 """
-const _BSE_DEBT_RE = r"^0|^[\d.]+[A-Za-z].*\d$|\s"
+const _BSE_DEBT_RE = r"^0|^SGB|^[\d.]+[A-Za-z].*\d$|^\d{3,}[A-Za-z].*\d|\s"
 
 function build_token_map(instruments::DataFrame; exchange::String="NSE")::Dict{String, Int}
     map = Dict{String, Int}()
@@ -132,6 +136,7 @@ function build_token_map(instruments::DataFrame; exchange::String="NSE")::Dict{S
             if exchange == "BSE"
                 !isnothing(match(_BSE_DEBT_RE, sym)) && continue
                 get(row, :tick_size, 1.0) == 0.0         && continue
+                isempty(strip(string(get(row, :name, "")))) && continue
             end
             map[sym] = Int(row.instrument_token)
         end
@@ -165,7 +170,9 @@ function fetch_ohlcv(token::Int, from_date::Date, to_date::Date, session)::DataF
     end
 
     if resp.status != 200
-        @warn "OHLCV HTTP $(resp.status) for token $token"
+        resp.status == 400 ?
+            @debug("OHLCV HTTP 400 for token $token") :
+            @warn "OHLCV HTTP $(resp.status) for token $token"
         return DataFrame()
     end
 
@@ -313,7 +320,9 @@ function fetch_ohlcv_hourly(token::Int, from_date::Date, to_date::Date,
                 end
             end
         else
-            @warn "Hourly HTTP $(resp.status) for token $token ($chunk_start…$chunk_end)"
+            resp.status == 400 ?
+                @debug("Hourly HTTP 400 for token $token ($chunk_start…$chunk_end)") :
+                @warn "Hourly HTTP $(resp.status) for token $token ($chunk_start…$chunk_end)"
         end
 
         chunk_start = chunk_end + Day(1)
@@ -425,7 +434,9 @@ function fetch_ohlcv_5min(token::Int, from_date::Date, to_date::Date,
                 end
             end
         else
-            @warn "5min HTTP $(resp.status) for token $token ($chunk_start…$chunk_end)"
+            resp.status == 400 ?
+                @debug("5min HTTP 400 for token $token ($chunk_start…$chunk_end)") :
+                @warn "5min HTTP $(resp.status) for token $token ($chunk_start…$chunk_end)"
         end
 
         chunk_start = chunk_end + Day(1)
@@ -540,7 +551,9 @@ function fetch_ohlcv_15min(token::Int, from_date::Date, to_date::Date,
                 end
             end
         else
-            @warn "15min HTTP $(resp.status) for token $token ($chunk_start…$chunk_end)"
+            resp.status == 400 ?
+                @debug("15min HTTP 400 for token $token ($chunk_start…$chunk_end)") :
+                @warn "15min HTTP $(resp.status) for token $token ($chunk_start…$chunk_end)"
         end
 
         chunk_start = chunk_end + Day(1)
