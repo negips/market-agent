@@ -10,9 +10,11 @@ functions that make multiple requests add a 400 ms inter-request sleep.
 
 using HTTP, JSON3, CSV, DataFrames, Dates
 
-const KITE_BASE         = "https://api.kite.trade"
-const INSTRUMENTS_CACHE = joinpath(@__DIR__, "..", "..", "..", "website", "data",
-                                   "ohlcv", "_instruments_cache.csv")
+const KITE_BASE             = "https://api.kite.trade"
+const NSE_INSTRUMENTS_CACHE = joinpath(@__DIR__, "..", "..", "..", "website", "data",
+                                       "ohlcv", "_instruments_nse_cache.csv")
+const BSE_INSTRUMENTS_CACHE = joinpath(@__DIR__, "..", "..", "..", "website", "data",
+                                       "ohlcv", "_instruments_bse_cache.csv")
 
 # Known NSE index tradingsymbols → looked up from instruments list at runtime.
 const NSE_INDICES = [
@@ -69,41 +71,46 @@ function _kite_headers(session)
 end
 
 """
-Download the full NSE instrument list from Kite and cache it locally.
+Download the instrument list from Kite for a given exchange and cache it locally.
 Returns a DataFrame with columns: instrument_token, tradingsymbol, name,
 instrument_type, segment, exchange.
 
 # Arguments
 - `session`: named tuple from `load_kite_session`
+- `exchange`: `"NSE"` (default) or `"BSE"`
 - `refresh`: force re-download even if cache exists (default false)
 """
-function load_instruments(session; refresh::Bool=false)::DataFrame
-    if !refresh && isfile(INSTRUMENTS_CACHE)
-        return CSV.read(INSTRUMENTS_CACHE, DataFrame)
+function load_instruments(session; exchange::String="NSE", refresh::Bool=false)::DataFrame
+    cache = exchange == "BSE" ? BSE_INSTRUMENTS_CACHE : NSE_INSTRUMENTS_CACHE
+    if !refresh && isfile(cache)
+        return CSV.read(cache, DataFrame)
     end
 
-    resp = HTTP.get("$KITE_BASE/instruments/NSE";
+    resp = HTTP.get("$KITE_BASE/instruments/$exchange";
                     headers=_kite_headers(session), request_timeout=30)
     resp.status == 200 || error("Instruments endpoint returned HTTP $(resp.status)")
 
-    # Response is a CSV; read it directly from the response body.
     df = CSV.read(IOBuffer(resp.body), DataFrame)
 
-    mkpath(dirname(INSTRUMENTS_CACHE))
-    CSV.write(INSTRUMENTS_CACHE, df)
+    mkpath(dirname(cache))
+    CSV.write(cache, df)
     return df
 end
 
 """
-Build a symbol → instrument_token lookup dict for NSE EQ stocks and INDICES.
+Build a symbol → instrument_token lookup dict for EQ stocks (and NSE INDICES).
+
+# Arguments
+- `instruments`: DataFrame from `load_instruments`
+- `exchange`: `"NSE"` (default) or `"BSE"`
 """
-function build_token_map(instruments::DataFrame)::Dict{String, Int}
+function build_token_map(instruments::DataFrame; exchange::String="NSE")::Dict{String, Int}
     map = Dict{String, Int}()
     for row in eachrow(instruments)
         type = string(get(row, :instrument_type, ""))
         exch = string(get(row, :exchange, ""))
-        exch == "NSE" || continue
-        if type == "EQ" || type == "INDICES"
+        exch == exchange || continue
+        if type == "EQ" || (exchange == "NSE" && type == "INDICES")
             sym = string(row.tradingsymbol)
             map[sym] = Int(row.instrument_token)
         end

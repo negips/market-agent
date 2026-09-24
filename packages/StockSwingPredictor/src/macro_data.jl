@@ -112,14 +112,14 @@ end
 
 """
 Load Kite instruments master for any exchange segment.
-Caches alongside `INSTRUMENTS_CACHE`; refreshes once per calendar day.
+Caches alongside `NSE_INSTRUMENTS_CACHE`; refreshes once per calendar day.
 
 # Arguments
 - `session`: Kite session named tuple
 - `exchange`: "NSE", "CDS", "MCX", etc.
 """
 function load_instruments_for_exchange(session; exchange::String)::DataFrame
-    cache_path = joinpath(dirname(INSTRUMENTS_CACHE),
+    cache_path = joinpath(dirname(NSE_INSTRUMENTS_CACHE),
                           "_instruments_$(exchange)_cache.csv")
     if isfile(cache_path)
         cache_date = Date(Dates.unix2datetime(stat(cache_path).mtime))
