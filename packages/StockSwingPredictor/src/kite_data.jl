@@ -147,6 +147,9 @@ end
 """
 Fetch daily OHLCV candles from Kite for one instrument.
 
+Kite limits daily historical data to 2000 calendar days per request (~8 years).
+This function automatically chunks the date range and concatenates the results.
+
 # Arguments
 - `token`: Kite instrument_token (integer)
 - `from_date`, `to_date`: inclusive date range
@@ -157,47 +160,58 @@ DataFrame with columns: date, open, high, low, close, volume
 Sorted ascending by date. Returns empty DataFrame on failure.
 """
 function fetch_ohlcv(token::Int, from_date::Date, to_date::Date, session)::DataFrame
-    from_s = Dates.format(from_date, "yyyy-mm-dd") * "+09:15:00"
-    to_s   = Dates.format(to_date,   "yyyy-mm-dd") * "+15:30:00"
-    url = "$KITE_BASE/instruments/historical/$token/day?from=$from_s&to=$to_s&continuous=0&oi=0"
+    chunk_days = 1999   # stay under the 2000-day Kite limit
+    all_chunks = DataFrame[]
 
-    resp = try
-        HTTP.get(url; headers=_kite_headers(session), request_timeout=20,
-                 status_exception=false)
-    catch e
-        @warn "OHLCV fetch failed for token $token: $(sprint(showerror, e))"
-        return DataFrame()
+    chunk_start = from_date
+    while chunk_start <= to_date
+        chunk_end = min(chunk_start + Day(chunk_days), to_date)
+        from_s = Dates.format(chunk_start, "yyyy-mm-dd") * "+09:15:00"
+        to_s   = Dates.format(chunk_end,   "yyyy-mm-dd") * "+15:30:00"
+        url = "$KITE_BASE/instruments/historical/$token/day?from=$from_s&to=$to_s&continuous=0&oi=0"
+
+        resp = try
+            HTTP.get(url; headers=_kite_headers(session), request_timeout=20,
+                     status_exception=false)
+        catch e
+            @warn "Daily fetch error for token $token ($chunk_start…$chunk_end): $(sprint(showerror, e))"
+            chunk_start = chunk_end + Day(1)
+            sleep(0.35)
+            continue
+        end
+
+        if resp.status == 200
+            raw = try JSON3.read(resp.body) catch; nothing end
+            if !isnothing(raw)
+                candles_data = get(raw, :data, nothing)
+                candles_arr  = isnothing(candles_data) ? nothing :
+                               get(candles_data, :candles, nothing)
+                if !isnothing(candles_arr) && !isempty(candles_arr)
+                    rows = [(
+                        date   = Date(string(c[1])[1:10]),
+                        open   = Float64(c[2]),
+                        high   = Float64(c[3]),
+                        low    = Float64(c[4]),
+                        close  = Float64(c[5]),
+                        volume = Float64(c[6]),
+                    ) for c in candles_arr]
+                    push!(all_chunks, DataFrame(rows))
+                end
+            end
+        else
+            resp.status == 400 ?
+                @debug("Daily HTTP 400 for token $token ($chunk_start…$chunk_end)") :
+                @warn "Daily HTTP $(resp.status) for token $token ($chunk_start…$chunk_end)"
+        end
+
+        chunk_start = chunk_end + Day(1)
+        sleep(0.35)
     end
 
-    if resp.status != 200
-        resp.status == 400 ?
-            @debug("OHLCV HTTP 400 for token $token") :
-            @warn "OHLCV HTTP $(resp.status) for token $token"
-        return DataFrame()
-    end
-
-    raw = try
-        JSON3.read(resp.body)
-    catch
-        @warn "Could not parse OHLCV response for token $token"
-        return DataFrame()
-    end
-
-    candles = get(raw, :data, nothing)
-    candles === nothing && return DataFrame()
-    candles_arr = get(candles, :candles, nothing)
-    (candles_arr === nothing || isempty(candles_arr)) && return DataFrame()
-
-    rows = [(
-        date   = Date(string(c[1])[1:10]),
-        open   = Float64(c[2]),
-        high   = Float64(c[3]),
-        low    = Float64(c[4]),
-        close  = Float64(c[5]),
-        volume = Float64(c[6]),
-    ) for c in candles_arr]
-
-    return sort!(DataFrame(rows), :date)
+    isempty(all_chunks) && return DataFrame()
+    combined = vcat(all_chunks...)
+    unique!(combined, :date)
+    return sort!(combined, :date)
 end
 
 """
