@@ -230,7 +230,7 @@ function collect_ohlcv(symbols::Vector{String}, token_map::Dict{String,Int},
         df = fetch_ohlcv(token, from_date, to_date, session)
         if isempty(df)
             failed += 1
-            @warn "[$i/$total] $sym — empty response"
+            @debug "[$i/$total] $sym — empty response"
             continue
         end
 
@@ -353,7 +353,7 @@ function collect_ohlcv_hourly(symbols::Vector{String}, token_map::Dict{String,In
         df = fetch_ohlcv_hourly(token, from_date, to_date, session)
         if isempty(df)
             failed += 1
-            @warn "[$i/$total] $sym — empty hourly response"
+            @debug "[$i/$total] $sym — empty hourly response"
             continue
         end
 
@@ -463,7 +463,7 @@ function collect_ohlcv_5min(symbols::Vector{String}, token_map::Dict{String,Int}
         df = fetch_ohlcv_5min(token, from_date, to_date, session)
         if isempty(df)
             failed += 1
-            @warn "[$i/$total] $sym — empty 5min response"
+            @debug "[$i/$total] $sym — empty 5min response"
             continue
         end
 
@@ -578,7 +578,7 @@ function collect_ohlcv_15min(symbols::Vector{String}, token_map::Dict{String,Int
         df = fetch_ohlcv_15min(token, from_date, to_date, session)
         if isempty(df)
             failed += 1
-            @warn "[$i/$total] $sym — empty 15min response"
+            @debug "[$i/$total] $sym — empty 15min response"
             continue
         end
 
