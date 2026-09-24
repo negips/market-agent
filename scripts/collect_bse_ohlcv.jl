@@ -21,7 +21,7 @@ Usage:
   julia --project=packages/StockSwingPredictor scripts/collect_bse_ohlcv.jl --from 2015-01-01
 """
 
-using StockSwingPredictor, CSV, DataFrames, Dates
+using StockSwingPredictor, Dates
 
 const REPO_ROOT  = joinpath(@__DIR__, "..")
 const OHLCV_ROOT = joinpath(REPO_ROOT, "website", "data", "ohlcv")
