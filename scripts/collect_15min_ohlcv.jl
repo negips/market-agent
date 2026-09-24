@@ -4,12 +4,12 @@ Initial collection of 15-minute OHLCV bars for all NSE equities and macro instru
 Kite retains 15-minute bars for 200 days. Run this once to populate the 15-min
 CSVs, then use update_ohlcv.jl daily to keep them current.
 
-Fetches for all symbols that already have a _daily.csv in website/data/ohlcv/
+Fetches for all symbols that already have a _daily.csv in website/data/ohlcv/nse/
 (i.e. the equity universe from collect_ohlcv.jl). Macro instruments are fetched
 separately from MCX/NSE via Kite.
 
 Output:
-  website/data/ohlcv/{SYMBOL}_15min.csv       — equities
+  website/data/ohlcv/nse/{SYMBOL}_15min.csv   — equities
   website/data/ohlcv/macro/{NAME}_15min.csv   — macro instruments
 
 Usage:
@@ -23,7 +23,7 @@ Usage:
 using StockSwingPredictor, CSV, DataFrames, Dates
 
 const REPO_ROOT = joinpath(@__DIR__, "..")
-const OHLCV_DIR = joinpath(REPO_ROOT, "website", "data", "ohlcv")
+const OHLCV_DIR = joinpath(REPO_ROOT, "website", "data", "ohlcv", "nse")
 
 function parse_args()
     args = Dict{String,Any}(

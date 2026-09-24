@@ -1,8 +1,8 @@
 """
 update_ohlcv.jl
 
-Incrementally update all OHLCV CSVs in website/data/ohlcv/ with bars
-added since the last collection run.
+Incrementally update all OHLCV CSVs in website/data/ohlcv/nse/ (and optionally
+ohlcv/bse/) with bars added since the last collection run.
 
 For each existing CSV, reads the last date/datetime in the file and fetches
 only the gap since then. Symbols already current are skipped. Appends new
@@ -13,10 +13,11 @@ data is permanently lost after Kite's 100-day retention window. 15-min bars
 have a 200-day retention window.
 
 Prerequisites:
-  - sidecar/kite_session.json present  (node sidecar/kite_login.js)
-  - website/data/ohlcv/ populated       (run collect_ohlcv.jl first)
-  - website/data/ohlcv/*_5min.csv       (run collect_5min_ohlcv.jl first)
-  - website/data/ohlcv/*_15min.csv      (run collect_15min_ohlcv.jl first)
+  - sidecar/kite_session.json present         (node sidecar/kite_login.js)
+  - website/data/ohlcv/nse/ populated         (run collect_ohlcv.jl first)
+  - website/data/ohlcv/nse/*_5min.csv         (run collect_5min_ohlcv.jl first)
+  - website/data/ohlcv/nse/*_15min.csv        (run collect_15min_ohlcv.jl first)
+  - website/data/ohlcv/bse/ populated         (run collect_bse_ohlcv.jl, needs --include-bse)
 
 Usage:
   julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl
@@ -29,9 +30,11 @@ Usage:
 
 using StockSwingPredictor, CSV, DataFrames, Dates
 
-const REPO_ROOT = joinpath(@__DIR__, "..")
-const OHLCV_DIR     = joinpath(REPO_ROOT, "website", "data", "ohlcv")
-const BSE_OHLCV_DIR = joinpath(OHLCV_DIR, "bse")
+const REPO_ROOT     = joinpath(@__DIR__, "..")
+const OHLCV_ROOT    = joinpath(REPO_ROOT, "website", "data", "ohlcv")
+const NSE_OHLCV_DIR = joinpath(OHLCV_ROOT, "nse")
+const BSE_OHLCV_DIR = joinpath(OHLCV_ROOT, "bse")
+const MACRO_DIR     = joinpath(OHLCV_ROOT, "macro")
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -52,18 +55,18 @@ function _last_value(path::String, col::Symbol, T::Type)
     return maximum(df[!, col])
 end
 
-_last_daily_date(sym::String, dir::String=OHLCV_DIR) =
+_last_daily_date(sym::String, dir::String=NSE_OHLCV_DIR) =
     _last_value(joinpath(dir, "$(sym)_daily.csv"),  :date,     Date)
-_last_hourly_datetime(sym::String, dir::String=OHLCV_DIR) =
+_last_hourly_datetime(sym::String, dir::String=NSE_OHLCV_DIR) =
     _last_value(joinpath(dir, "$(sym)_hourly.csv"), :datetime, DateTime)
-_last_5min_datetime(sym::String, dir::String=OHLCV_DIR) =
+_last_5min_datetime(sym::String, dir::String=NSE_OHLCV_DIR) =
     _last_value(joinpath(dir, "$(sym)_5min.csv"),   :datetime, DateTime)
-_last_15min_datetime(sym::String, dir::String=OHLCV_DIR) =
+_last_15min_datetime(sym::String, dir::String=NSE_OHLCV_DIR) =
     _last_value(joinpath(dir, "$(sym)_15min.csv"),  :datetime, DateTime)
 _last_macro_5min_datetime(name::String) =
-    _last_value(joinpath(OHLCV_DIR, "macro", "$(name)_5min.csv"),  :datetime, DateTime)
+    _last_value(joinpath(MACRO_DIR, "$(name)_5min.csv"),  :datetime, DateTime)
 _last_macro_15min_datetime(name::String) =
-    _last_value(joinpath(OHLCV_DIR, "macro", "$(name)_15min.csv"), :datetime, DateTime)
+    _last_value(joinpath(MACRO_DIR, "$(name)_15min.csv"), :datetime, DateTime)
 
 # Last bar times for "day complete" checks (IST)
 const HOURLY_LAST_BAR      = Time(15,  0, 0)   # last 60-min bar opens at 15:00
@@ -75,7 +78,7 @@ const MCX_FIFTEENMIN_LAST_BAR = Time(23, 15, 0)  # last 15-min bar opens at 23:1
 # ── Core update loops ─────────────────────────────────────────────────────────
 
 function update_daily!(symbols, token_map, session, yest::Date;
-                       dry_run::Bool, out_dir::String=OHLCV_DIR)
+                       dry_run::Bool, out_dir::String=NSE_OHLCV_DIR)
     current = updated = failed = 0
     total   = length(symbols)
 
@@ -131,7 +134,7 @@ function update_daily!(symbols, token_map, session, yest::Date;
 end
 
 function update_hourly!(symbols, token_map, session, yest::Date;
-                        dry_run::Bool, out_dir::String=OHLCV_DIR)
+                        dry_run::Bool, out_dir::String=NSE_OHLCV_DIR)
     current = updated = failed = 0
     total   = length(symbols)
 
@@ -198,7 +201,7 @@ function update_hourly!(symbols, token_map, session, yest::Date;
 end
 
 function update_5min!(symbols, token_map, session, yest::Date;
-                      dry_run::Bool, out_dir::String=OHLCV_DIR)
+                      dry_run::Bool, out_dir::String=NSE_OHLCV_DIR)
     current = updated = failed = 0
     total   = length(symbols)
 
@@ -253,7 +256,7 @@ function update_5min!(symbols, token_map, session, yest::Date;
 end
 
 function update_macro_5min!(session, yest::Date; dry_run::Bool)
-    macro_dir = joinpath(OHLCV_DIR, "macro")
+    macro_dir = MACRO_DIR
     isdir(macro_dir) || return
 
     token_map = dry_run ? Dict{String, Tuple{Int,Bool}}() :
@@ -313,7 +316,7 @@ function update_macro_5min!(session, yest::Date; dry_run::Bool)
 end
 
 function update_15min!(symbols, token_map, session, yest::Date;
-                       dry_run::Bool, out_dir::String=OHLCV_DIR)
+                       dry_run::Bool, out_dir::String=NSE_OHLCV_DIR)
     current = updated = failed = 0
     total   = length(symbols)
 
@@ -368,7 +371,7 @@ function update_15min!(symbols, token_map, session, yest::Date;
 end
 
 function update_macro_15min!(session, yest::Date; dry_run::Bool)
-    macro_dir = joinpath(OHLCV_DIR, "macro")
+    macro_dir = MACRO_DIR
     isdir(macro_dir) || return
 
     token_map = dry_run ? Dict{String, Tuple{Int,Bool}}() :
@@ -443,8 +446,8 @@ Flags:
   --dry-run      Report what would be fetched without making any API calls.
 
 Reads each existing *_daily.csv / *_hourly.csv / *_5min.csv / *_15min.csv in
-website/data/ohlcv/ (and bse/ if --include-bse), finds the last date, and
-fetches only the gap to yesterday. New rows are appended in-place.
+website/data/ohlcv/nse/ (and ohlcv/bse/ if --include-bse), finds the last
+date, and fetches only the gap to yesterday. New rows are appended in-place.
 
 NOTE: 5-min bars have a 100-day retention window; 15-min bars have a
 200-day retention window — run this daily or data will be permanently lost.
@@ -467,17 +470,17 @@ NOTE: 5-min bars have a 100-day retention window; 15-min bars have a
     dry_run && @info "[DRY RUN] No API calls will be made."
 
     # ── Discover existing symbols ─────────────────────────────────────────────
-    isdir(OHLCV_DIR) || error("OHLCV directory not found: $OHLCV_DIR\n" *
-                               "Run collect_ohlcv.jl first.")
+    isdir(NSE_OHLCV_DIR) || error("NSE OHLCV directory not found: $NSE_OHLCV_DIR\n" *
+                                   "Run collect_ohlcv.jl first.")
 
     daily_syms    = [replace(f, "_daily.csv"  => "")
-                     for f in readdir(OHLCV_DIR) if endswith(f, "_daily.csv")]
+                     for f in readdir(NSE_OHLCV_DIR) if endswith(f, "_daily.csv")]
     hourly_syms   = [replace(f, "_hourly.csv" => "")
-                     for f in readdir(OHLCV_DIR) if endswith(f, "_hourly.csv")]
+                     for f in readdir(NSE_OHLCV_DIR) if endswith(f, "_hourly.csv")]
     fivemin_syms  = [replace(f, "_5min.csv"   => "")
-                     for f in readdir(OHLCV_DIR) if endswith(f, "_5min.csv")]
+                     for f in readdir(NSE_OHLCV_DIR) if endswith(f, "_5min.csv")]
     fifteenmin_syms = [replace(f, "_15min.csv" => "")
-                       for f in readdir(OHLCV_DIR) if endswith(f, "_15min.csv")]
+                       for f in readdir(NSE_OHLCV_DIR) if endswith(f, "_15min.csv")]
 
     if !isnothing(sym_filter)
         daily_syms      = filter(==(sym_filter), daily_syms)
@@ -486,7 +489,7 @@ NOTE: 5-min bars have a 100-day retention window; 15-min bars have a
         fifteenmin_syms = filter(==(sym_filter), fifteenmin_syms)
         isempty(daily_syms) && isempty(hourly_syms) &&
         isempty(fivemin_syms) && isempty(fifteenmin_syms) &&
-            error("No existing CSV found for symbol '$sym_filter' in $OHLCV_DIR")
+            error("No existing CSV found for symbol '$sym_filter' in $NSE_OHLCV_DIR")
         @info "Filtering to symbol: $sym_filter"
     end
 

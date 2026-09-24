@@ -31,7 +31,7 @@ Two-stage jump detection on hourly OHLCV data:
 using CSV, DataFrames, Dates, Statistics, Printf, JSON3
 
 const REPO_ROOT = joinpath(@__DIR__, "..")
-const OHLCV_DIR = joinpath(REPO_ROOT, "website", "data", "ohlcv")
+const OHLCV_DIR = joinpath(REPO_ROOT, "website", "data", "ohlcv", "nse")
 
 # ── Shared constants ──────────────────────────────────────────────────────────
 

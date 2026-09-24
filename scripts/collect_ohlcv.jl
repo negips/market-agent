@@ -29,7 +29,7 @@ using StockSwingPredictor, JSON3, Dates, Printf
 
 const REPO_ROOT      = joinpath(@__DIR__, "..")
 const COMPANIES_FILE = joinpath(REPO_ROOT, "website", "data", "nse_companies_latest.json")
-const OHLCV_DIR      = joinpath(REPO_ROOT, "website", "data", "ohlcv")
+const OHLCV_DIR      = joinpath(REPO_ROOT, "website", "data", "ohlcv", "nse")
 
 function main()
     if "--help" in ARGS || "-h" in ARGS

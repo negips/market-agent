@@ -24,7 +24,7 @@ using StockSwingPredictor, JSON3, Dates
 
 const REPO_ROOT      = joinpath(@__DIR__, "..")
 const COMPANIES_FILE = joinpath(REPO_ROOT, "website", "data", "nse_companies_latest.json")
-const OHLCV_DIR      = joinpath(REPO_ROOT, "website", "data", "ohlcv")
+const OHLCV_DIR      = joinpath(REPO_ROOT, "website", "data", "ohlcv", "nse")
 const CACHE_FILE     = joinpath(REPO_ROOT, "website", "data", "inference_cache.bson")
 
 const CONFIDENCE_THRESHOLD = 40
