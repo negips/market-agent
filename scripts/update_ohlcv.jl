@@ -14,9 +14,7 @@ have a 200-day retention window.
 
 Prerequisites:
   - sidecar/kite_session.json present         (node sidecar/kite_login.js)
-  - website/data/ohlcv/nse/ populated         (run collect_ohlcv.jl first)
-  - website/data/ohlcv/nse/*_5min.csv         (run collect_5min_ohlcv.jl first)
-  - website/data/ohlcv/nse/*_15min.csv        (run collect_15min_ohlcv.jl first)
+  - website/data/ohlcv/nse/ populated         (run collect_nse_ohlcv.jl first)
   - website/data/ohlcv/bse/ populated         (run collect_bse_ohlcv.jl, needs --include-bse)
 
 Usage:
@@ -208,7 +206,7 @@ function update_5min!(symbols, token_map, session, yest::Date;
     for (i, sym) in enumerate(symbols)
         last_dt = _last_5min_datetime(sym, out_dir)
         if isnothing(last_dt)
-            @warn "[$i/$total] $sym 5min — no existing CSV, skipping (run collect_5min_ohlcv.jl first)"
+            @warn "[$i/$total] $sym 5min — no existing CSV, skipping (run collect_nse_ohlcv.jl first)"
             failed += 1; continue
         end
 
@@ -267,7 +265,7 @@ function update_macro_5min!(session, yest::Date; dry_run::Bool)
     for inst in KITE_MACRO_INSTRUMENTS
         last_dt = _last_macro_5min_datetime(inst.name)
         if isnothing(last_dt)
-            @warn "  $(inst.name) 5min — no existing CSV, skipping (run collect_5min_ohlcv.jl first)"
+            @warn "  $(inst.name) 5min — no existing CSV, skipping (run collect_nse_ohlcv.jl first)"
             failed += 1; continue
         end
 
@@ -323,7 +321,7 @@ function update_15min!(symbols, token_map, session, yest::Date;
     for (i, sym) in enumerate(symbols)
         last_dt = _last_15min_datetime(sym, out_dir)
         if isnothing(last_dt)
-            @warn "[$i/$total] $sym 15min — no existing CSV, skipping (run collect_15min_ohlcv.jl first)"
+            @warn "[$i/$total] $sym 15min — no existing CSV, skipping (run collect_nse_ohlcv.jl first)"
             failed += 1; continue
         end
 
@@ -382,7 +380,7 @@ function update_macro_15min!(session, yest::Date; dry_run::Bool)
     for inst in KITE_MACRO_INSTRUMENTS
         last_dt = _last_macro_15min_datetime(inst.name)
         if isnothing(last_dt)
-            @warn "  $(inst.name) 15min — no existing CSV, skipping (run collect_15min_ohlcv.jl first)"
+            @warn "  $(inst.name) 15min — no existing CSV, skipping (run collect_nse_ohlcv.jl first)"
             failed += 1; continue
         end
 
@@ -471,7 +469,7 @@ NOTE: 5-min bars have a 100-day retention window; 15-min bars have a
 
     # ── Discover existing symbols ─────────────────────────────────────────────
     isdir(NSE_OHLCV_DIR) || error("NSE OHLCV directory not found: $NSE_OHLCV_DIR\n" *
-                                   "Run collect_ohlcv.jl first.")
+                                   "Run collect_nse_ohlcv.jl first.")
 
     daily_syms    = [replace(f, "_daily.csv"  => "")
                      for f in readdir(NSE_OHLCV_DIR) if endswith(f, "_daily.csv")]

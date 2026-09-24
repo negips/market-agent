@@ -66,7 +66,8 @@ market-agent/
 │   ├── run_confidence_checks.jl          # runs CompanyConfidence on top-N by market cap
 │   ├── enrich_earnings_dates.jl          # projects next earnings date via Tijori history (run every 2 weeks)
 │   ├── generate_earnings_watchlist.jl    # merges NSE calendar + projections → watchlist JSON
-│   ├── collect_ohlcv.jl                  # download daily OHLCV for all companies + indices (Kite)
+│   ├── collect_nse_ohlcv.jl              # download all NSE OHLCV: daily/hourly/5min/15min (Kite)
+│   ├── collect_bse_ohlcv.jl              # download all BSE OHLCV: daily/hourly/5min/15min (Kite)
 │   ├── collect_macro_ohlcv.jl            # download macro instrument OHLCV (Yahoo + Kite CDS/NSE)
 │   ├── update_ohlcv.jl                   # incremental update: append only missing bars since last run
 │   ├── extract_llm_features.jl           # Claude API → 14 scalar signals per company (resumable)
@@ -374,7 +375,7 @@ julia --project=packages/EarningsCalendar scripts/generate_earnings_watchlist.jl
 
 Incrementally updates all existing OHLCV CSVs with bars added since the last run.
 Reads the last date from each CSV and fetches only the gap to yesterday — much
-faster than `collect_ohlcv.jl` for routine maintenance. Appends rows in-place.
+faster than `collect_nse_ohlcv.jl` / `collect_bse_ohlcv.jl` for routine maintenance. Appends rows in-place.
 
 ```bash
 # Run every trading day after kite_login.js (no arguments needed)
@@ -390,7 +391,7 @@ julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --daily-onl
 ### collect_macro_ohlcv.jl
 
 Downloads historical daily OHLCV for macro instruments (global indices, commodities,
-FX, volatility). Run once after `collect_ohlcv.jl`; no incremental update needed as
+FX, volatility). Run once after `collect_nse_ohlcv.jl`; no incremental update needed as
 macro history is stable — re-run yearly or with `--refresh` to extend.
 
 | Instrument   | Source | Ticker  | Description                   |

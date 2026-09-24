@@ -3,7 +3,7 @@ test_kite_fetch.jl
 
 Fetch daily OHLCV for a single symbol and print the result.
 Use this to verify Kite credentials and URL format before running
-the full collect_ohlcv.jl script.
+the full collect_nse_ohlcv.jl script.
 
 Usage:
   julia scripts/test_kite_fetch.jl          # defaults to RELIANCE, 30 days

@@ -12,7 +12,7 @@ Run this after initial OHLCV collection, and again each morning after
 update_ohlcv.jl to incorporate the latest bars.
 
 Prerequisites:
-  - website/data/ohlcv/ populated       (run collect_ohlcv.jl first)
+  - website/data/ohlcv/ populated       (run collect_nse_ohlcv.jl first)
   - website/data/nse_companies_latest.json with confidence scores
 
 Usage:

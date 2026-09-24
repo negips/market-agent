@@ -34,7 +34,7 @@ Label format: `label[h] = log(close_h / ref_close)` for h in 1…pred_hours.
 ## Pipeline
 
 ```
-scripts/collect_ohlcv.jl        # download daily + hourly OHLCV for all companies
+scripts/collect_nse_ohlcv.jl    # download all NSE OHLCV (daily/hourly/5min/15min)
 scripts/update_ohlcv.jl         # daily incremental update (append new bars)
 scripts/build_cache.jl          # build inference_cache.bson from CSVs (run each morning)
 scripts/build_dataset.jl --pred-hours 35   # dataset for v1/v2  → dataset_35.bson
