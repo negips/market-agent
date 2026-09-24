@@ -455,3 +455,118 @@ function load_cached_ohlcv_5min(symbol::String, out_dir::String)::DataFrame
     isfile(path) || return DataFrame()
     return CSV.read(path, DataFrame; types=Dict(:datetime => DateTime))
 end
+
+# ── 15-minute bars ────────────────────────────────────────────────────────────
+
+"""
+Fetch 15-minute OHLCV bars for a single NSE instrument token.
+
+Kite retains 15-minute bars for 200 days. Requests are chunked into 175-day
+windows to stay safely within that limit.
+
+# Arguments
+- `token`: Kite instrument token
+- `from_date`, `to_date`: inclusive date range (within 200-day retention window)
+- `session`: Kite session
+
+# Returns
+DataFrame with columns: datetime, open, high, low, close, volume.
+Sorted ascending by datetime. Returns empty DataFrame on failure.
+"""
+function fetch_ohlcv_15min(token::Int, from_date::Date, to_date::Date,
+                            session)::DataFrame
+    chunk_days = 175
+    all_chunks = DataFrame[]
+
+    chunk_start = from_date
+    while chunk_start <= to_date
+        chunk_end = min(chunk_start + Day(chunk_days), to_date)
+        from_s = Dates.format(chunk_start, "yyyy-mm-dd") * "+09:15:00"
+        to_s   = Dates.format(chunk_end,   "yyyy-mm-dd") * "+15:30:00"
+        url = "$KITE_BASE/instruments/historical/$token/15minute" *
+              "?from=$from_s&to=$to_s&continuous=0&oi=0"
+
+        resp = try
+            HTTP.get(url; headers=_kite_headers(session), request_timeout=30,
+                     status_exception=false)
+        catch e
+            @warn "15min fetch error for token $token ($chunk_start…$chunk_end): $(sprint(showerror, e))"
+            chunk_start = chunk_end + Day(1); sleep(0.35); continue
+        end
+
+        if resp.status == 200
+            raw = try JSON3.read(resp.body) catch; nothing end
+            if !isnothing(raw)
+                cd   = get(raw, :data,    nothing)
+                carr = isnothing(cd) ? nothing : get(cd, :candles, nothing)
+                if !isnothing(carr) && !isempty(carr)
+                    rows = [(
+                        datetime = DateTime(string(c[1])[1:19], "yyyy-mm-ddTHH:MM:SS"),
+                        open     = Float64(c[2]),
+                        high     = Float64(c[3]),
+                        low      = Float64(c[4]),
+                        close    = Float64(c[5]),
+                        volume   = Float64(c[6]),
+                    ) for c in carr]
+                    push!(all_chunks, DataFrame(rows))
+                end
+            end
+        else
+            @warn "15min HTTP $(resp.status) for token $token ($chunk_start…$chunk_end)"
+        end
+
+        chunk_start = chunk_end + Day(1)
+        sleep(0.35)
+    end
+
+    isempty(all_chunks) && return DataFrame()
+    return sort!(vcat(all_chunks...), :datetime)
+end
+
+"""
+Fetch and cache 15-minute OHLCV for a list of symbols.
+Output: `out_dir/{SYMBOL}_15min.csv`.
+"""
+function collect_ohlcv_15min(symbols::Vector{String}, token_map::Dict{String,Int},
+                               session, out_dir::String,
+                               from_date::Date, to_date::Date;
+                               refresh::Bool=false)
+    mkpath(out_dir)
+    ok = skipped = failed = 0
+    total = length(symbols)
+
+    for (i, sym) in enumerate(symbols)
+        path = joinpath(out_dir, "$(sym)_15min.csv")
+        if !refresh && isfile(path)
+            skipped += 1; continue
+        end
+
+        token = get(token_map, sym, nothing)
+        if isnothing(token)
+            @warn "[$i/$total] No token for $sym — skipping 15min"
+            failed += 1; continue
+        end
+
+        df = fetch_ohlcv_15min(token, from_date, to_date, session)
+        if isempty(df)
+            failed += 1
+            @warn "[$i/$total] $sym — empty 15min response"
+            continue
+        end
+
+        CSV.write(path, df)
+        ok += 1
+        @info "[$i/$total] $sym 15min — $(nrow(df)) bars"
+    end
+
+    @info "15min OHLCV done: $ok fetched, $skipped skipped, $failed failed"
+end
+
+"""
+Load cached 15-minute OHLCV for a symbol. Returns empty DataFrame if not found.
+"""
+function load_cached_ohlcv_15min(symbol::String, out_dir::String)::DataFrame
+    path = joinpath(out_dir, "$(symbol)_15min.csv")
+    isfile(path) || return DataFrame()
+    return CSV.read(path, DataFrame; types=Dict(:datetime => DateTime))
+end

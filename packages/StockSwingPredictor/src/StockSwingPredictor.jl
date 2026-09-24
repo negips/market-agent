@@ -82,6 +82,7 @@ export
     fetch_ohlcv, collect_ohlcv, load_cached_ohlcv,
     fetch_ohlcv_hourly, collect_ohlcv_hourly, load_cached_ohlcv_hourly,
     fetch_ohlcv_5min, collect_ohlcv_5min, load_cached_ohlcv_5min,
+    fetch_ohlcv_15min, collect_ohlcv_15min, load_cached_ohlcv_15min,
     sector_index_name, NSE_INDICES,
 
     # macro_data
@@ -90,6 +91,7 @@ export
     load_instruments_for_exchange, build_macro_kite_tokens,
     collect_macro_ohlcv, load_macro_ohlcv,
     fetch_kite_macro_5min, collect_macro_5min, load_macro_5min,
+    fetch_kite_macro_15min, collect_macro_15min, load_macro_15min,
 
     # inference_cache
     InferenceCache, build_inference_cache, load_inference_cache,

@@ -390,6 +390,139 @@ function load_macro_5min(name::String;
     return CSV.read(path, DataFrame; types=Dict(:datetime => DateTime))
 end
 
+# ── 15-minute macro bars ──────────────────────────────────────────────────────
+
+"""
+Fetch 15-minute OHLCV bars for a single macro instrument token.
+
+Kite retains 15-minute bars for 200 days. Requests are chunked into 175-day
+windows. The time window is widened to 09:00–23:59 to cover MCX trading hours
+(MCX trades until 23:30 IST vs NSE 15:30 IST).
+
+# Arguments
+- `token`: Kite instrument token (front-month contract from `build_macro_kite_tokens`)
+- `from_date`, `to_date`: inclusive date range (within 200-day retention window)
+- `session`: Kite session
+"""
+function fetch_kite_macro_15min(token::Int, from_date::Date, to_date::Date,
+                                  session)::DataFrame
+    cont       = 0   # continuous=1 is invalid for intraday intervals on Kite
+    chunk_days = 175
+    all_chunks = DataFrame[]
+
+    chunk_start = from_date
+    while chunk_start <= to_date
+        chunk_end = min(chunk_start + Day(chunk_days), to_date)
+        from_s = Dates.format(chunk_start, "yyyy-mm-dd") * "+09:00:00"
+        to_s   = Dates.format(chunk_end,   "yyyy-mm-dd") * "+23:59:00"
+        url    = "$KITE_BASE/instruments/historical/$token/15minute" *
+                 "?from=$from_s&to=$to_s&continuous=$cont&oi=0"
+
+        resp = try
+            HTTP.get(url; headers=_kite_headers(session), request_timeout=30,
+                     status_exception=false)
+        catch e
+            @warn "Macro 15min fetch failed (token $token, $chunk_start…$chunk_end): $(sprint(showerror, e))"
+            chunk_start = chunk_end + Day(1); sleep(0.35); continue
+        end
+
+        if resp.status == 200
+            raw = try JSON3.read(resp.body) catch; nothing end
+            if !isnothing(raw)
+                cd   = get(raw, :data,    nothing)
+                carr = isnothing(cd) ? nothing : get(cd, :candles, nothing)
+                if !isnothing(carr) && !isempty(carr)
+                    rows = [(
+                        datetime = DateTime(string(c[1])[1:19], "yyyy-mm-ddTHH:MM:SS"),
+                        open     = Float64(c[2]),
+                        high     = Float64(c[3]),
+                        low      = Float64(c[4]),
+                        close    = Float64(c[5]),
+                        volume   = Float64(c[6]),
+                    ) for c in carr]
+                    push!(all_chunks, DataFrame(rows))
+                end
+            end
+        else
+            @warn "Macro 15min HTTP $(resp.status) for token $token ($chunk_start…$chunk_end)"
+        end
+
+        chunk_start = chunk_end + Day(1)
+        sleep(0.35)
+    end
+
+    isempty(all_chunks) && return DataFrame()
+    return sort!(vcat(all_chunks...), :datetime)
+end
+
+"""
+Fetch and cache 15-minute OHLCV for all `KITE_MACRO_INSTRUMENTS`.
+
+Kite retains 15-minute bars for 200 days — call daily to keep current.
+Skips instruments already cached unless `refresh=true`.
+
+# Arguments
+- `session`: Kite session from `load_kite_session`
+- `out_dir`: output directory (default: `website/data/ohlcv/macro`)
+- `from_date`: start date (default: 199 days ago)
+- `to_date`: end date (default: yesterday)
+- `refresh`: re-fetch even if file exists
+"""
+function collect_macro_15min(session;
+                              out_dir::String = MACRO_OHLCV_DIR,
+                              from_date::Date = today() - Day(199),
+                              to_date::Date   = today() - Day(1),
+                              refresh::Bool   = false)
+    mkpath(out_dir)
+    ok = skipped = failed = 0
+
+    token_map = try build_macro_kite_tokens(session) catch e
+        @warn "Token resolution failed: $(sprint(showerror, e))"
+        Dict{String, Tuple{Int, Bool}}()
+    end
+
+    for inst in KITE_MACRO_INSTRUMENTS
+        path = joinpath(out_dir, "$(inst.name)_15min.csv")
+        if !refresh && isfile(path)
+            @info "  $(inst.name) 15min — cached, skipping"
+            skipped += 1; continue
+        end
+
+        entry = get(token_map, inst.name, nothing)
+        if isnothing(entry)
+            @warn "  $(inst.name) — token not found, skipping"
+            failed += 1; continue
+        end
+        token, continuous = entry
+
+        df = fetch_kite_macro_15min(token, from_date, to_date, session)
+        if isempty(df)
+            @warn "  $(inst.name) 15min — no data from Kite"
+            failed += 1; continue
+        end
+        CSV.write(path, df)
+        @info "  $(inst.name) 15min — $(nrow(df)) bars  $(df.datetime[1]) → $(df.datetime[end])"
+        ok += 1
+        sleep(0.35)
+    end
+
+    @info "Macro 15min done: $ok fetched, $skipped skipped, $failed failed"
+end
+
+"""
+Load cached 15-minute macro OHLCV for a named instrument.
+
+# Arguments
+- `name`: instrument name (e.g. "CRUDE_OIL", "INDIA_VIX")
+- `out_dir`: directory to read from (default: `website/data/ohlcv/macro`)
+"""
+function load_macro_15min(name::String;
+                           out_dir::String = MACRO_OHLCV_DIR)::DataFrame
+    path = joinpath(out_dir, "$(name)_15min.csv")
+    isfile(path) || return DataFrame()
+    return CSV.read(path, DataFrame; types=Dict(:datetime => DateTime))
+end
+
 # ── Collection ────────────────────────────────────────────────────────────────
 
 const MACRO_OHLCV_DIR = joinpath(@__DIR__, "..", "..", "..", "website", "data",
