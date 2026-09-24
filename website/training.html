@@ -264,6 +264,7 @@
       <div class="arch-toggle">
         <button class="arch-btn active" id="arch-v1" onclick="switchArch('DualCNN_v1')">v1</button>
         <button class="arch-btn"        id="arch-v2" onclick="switchArch('DualCNN_v2')">v2</button>
+        <button class="arch-btn"        id="arch-v3" onclick="switchArch('DualCNN_v3')">v3</button>
       </div>
       <input type="text" id="model-name" value="DualCNN_v1" placeholder="model folder name">
       <button onclick="load()">Load</button>
@@ -362,7 +363,7 @@
 <script src="assets/utils.js"></script>
 <script>
   const LOG_BASE = 'data/models/';
-  const KNOWN_ARCHS = ['DualCNN_v1', 'DualCNN_v2'];
+  const KNOWN_ARCHS = ['DualCNN_v1', 'DualCNN_v2', 'DualCNN_v3'];
 
   function switchArch(name) {
     document.getElementById('model-name').value = name;
@@ -595,33 +596,6 @@
     const lastEpoch = epochRecs[epochRecs.length - 1] ?? null;
     const bestVal   = lastEpoch ? Math.min(...epochRecs.map(r => r.val_mse)) : null;
 
-    // ── Status ──
-    document.getElementById('live-dot').className = 'live-dot';
-    document.getElementById('status-text').textContent =
-      `${document.getElementById('model-name').value.trim()} · ${records.length} records · last at ${fmtMin(last?.elapsed_secs ?? 0)} elapsed`;
-
-    // ── Epoch progress bar ──
-    const curEpoch     = last?.epoch ?? 1;
-    const curBatch     = last?.batch ?? 0;
-    const totalEpochs  = 150;
-    const totalBatches = 8758;
-    const epochPct = Math.round((curBatch ?? totalBatches) / totalBatches * 100);
-    document.getElementById('epoch-bar').style.width = epochPct + '%';
-    document.getElementById('epoch-progress-label').textContent =
-      `Epoch ${curEpoch} · batch ${curBatch ?? '✓'} / ${totalBatches}  (${epochPct}%)`;
-
-    // ── Stat cards ──
-    document.getElementById('stat-epoch').textContent     = `${curEpoch} / ${totalEpochs}`;
-    document.getElementById('stat-epoch-sub').textContent = `${epochRecs.length} epoch(s) completed`;
-    document.getElementById('stat-train').textContent     = fmtMSE(last?.train_mse);
-    document.getElementById('stat-train-sub').textContent = last?.batch != null ? `batch ${last.batch} / ${totalBatches}` : 'epoch end';
-    document.getElementById('stat-val').textContent       = fmtMSE(bestVal);
-    document.getElementById('stat-val-sub').textContent   = lastEpoch
-      ? `epoch ${lastEpoch.epoch} · improved: ${epochRecs.filter(r => r.improved).length}×`
-      : 'no val yet';
-    document.getElementById('stat-elapsed').textContent     = fmtMin(last?.elapsed_secs ?? 0);
-    document.getElementById('stat-elapsed-sub').textContent = `${batchRecs.length} batch records`;
-
     // ── Cumulative batch index ──
     // For each epoch, find the highest batch number logged (= batches in that epoch).
     const epochMaxBatch = {};
@@ -641,6 +615,41 @@
       // epoch-end record (batch=null): place at the end of that epoch
       return offset + (r.batch ?? epochMaxBatch[r.epoch] ?? 0);
     }
+
+    // totalBatches: read directly from the log (train.jl emits n_batches each record).
+    // Falls back to inferring from the max logged batch (older logs without n_batches).
+    const loggedNBatches = records.find(r => r.n_batches != null)?.n_batches ?? null;
+    const completedEpochs = sortedEpochs.filter(e => epochRecs.some(r => r.epoch === e));
+    const totalBatches = loggedNBatches
+      ?? (completedEpochs.length > 0
+          ? Math.round(completedEpochs.reduce((s, e) => s + epochMaxBatch[e], 0) / completedEpochs.length)
+          : (batchRecs.length > 0 ? Math.max(...batchRecs.map(r => r.batch)) : 8758));
+    const totalEpochs = 150;
+
+    // ── Status ──
+    document.getElementById('live-dot').className = 'live-dot';
+    document.getElementById('status-text').textContent =
+      `${document.getElementById('model-name').value.trim()} · ${records.length} records · last at ${fmtMin(last?.elapsed_secs ?? 0)} elapsed`;
+
+    // ── Epoch progress bar ──
+    const curEpoch = last?.epoch ?? 1;
+    const curBatch = last?.batch ?? 0;
+    const epochPct = Math.round((curBatch ?? totalBatches) / totalBatches * 100);
+    document.getElementById('epoch-bar').style.width = epochPct + '%';
+    document.getElementById('epoch-progress-label').textContent =
+      `Epoch ${curEpoch} · batch ${curBatch ?? '✓'} / ${totalBatches}  (${epochPct}%)`;
+
+    // ── Stat cards ──
+    document.getElementById('stat-epoch').textContent     = `${curEpoch} / ${totalEpochs}`;
+    document.getElementById('stat-epoch-sub').textContent = `${epochRecs.length} epoch(s) completed`;
+    document.getElementById('stat-train').textContent     = fmtMSE(last?.train_mse);
+    document.getElementById('stat-train-sub').textContent = last?.batch != null ? `batch ${last.batch} / ${totalBatches}` : 'epoch end';
+    document.getElementById('stat-val').textContent       = fmtMSE(bestVal);
+    document.getElementById('stat-val-sub').textContent   = lastEpoch
+      ? `epoch ${lastEpoch.epoch} · improved: ${epochRecs.filter(r => r.improved).length}×`
+      : 'no val yet';
+    document.getElementById('stat-elapsed').textContent     = fmtMin(last?.elapsed_secs ?? 0);
+    document.getElementById('stat-elapsed-sub').textContent = `${batchRecs.length} batch records`;
 
     // ── Loss chart ──
     const pt = (r, y) => ({ x: totalBatch(r), y: toPlot(y) });

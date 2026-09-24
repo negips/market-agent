@@ -9,6 +9,7 @@ Usage:
   julia --project=packages/StockSwingPredictor scripts/train_model.jl --lr 5e-4 --batch 64
   julia --project=packages/StockSwingPredictor scripts/train_model.jl --resume
   julia --project=packages/StockSwingPredictor scripts/train_model.jl --resume --epochs 50 --lr 1e-4
+  julia --project=packages/StockSwingPredictor scripts/train_model.jl --overfit 64
 """
 
 using StockSwingPredictor, Flux, JSON3, Dates, Printf, Statistics
@@ -21,12 +22,13 @@ const MODELS_DIR = joinpath(REPO_ROOT, "website", "data", "models")
 const ARCH_REGISTRY = Dict{String, SwingArchitecture}(
     "v1" => DUAL_CNN_V1,
     "v2" => DUAL_CNN_V2,
+    "v3" => DUAL_CNN_V3,
 )
 
 function parse_args()
     opts = Dict{String,Any}("epochs"=>150, "lr"=>1e-3, "batch"=>32,
                              "l2"=>1e-4, "patience"=>15, "resume"=>false,
-                             "arch"=>"v2")
+                             "arch"=>"v2", "overfit"=>0)
     i = 1
     while i <= length(ARGS)
         a = ARGS[i]
@@ -43,8 +45,11 @@ Options:
   --l2 FLOAT    L2 regularisation lambda (default: 1e-4)
   --patience N  Early stopping patience (default: 15)
   --resume      Load existing weights and continue training from that checkpoint.
+  --overfit [N] Diagnostic mode: train and validate on the first N examples only
+                (default 64). L2 and early stopping disabled. Loss should reach
+                near-zero if gradients are flowing correctly. No checkpoint saved.
 
-Input:  website/data/training/dataset.bson
+Input:  website/data/training/dataset_{pred_hours}.bson
         website/data/inference_cache.bson
 Output: website/data/models/{arch.name}/swing_predictor.bson
         website/data/models/{arch.name}/training_log.json
@@ -58,6 +63,12 @@ Output: website/data/models/{arch.name}/swing_predictor.bson
         elseif a == "--l2"      ; opts["l2"]        = parse(Float64, ARGS[i+1]); i += 2
         elseif a == "--patience"; opts["patience"]  = parse(Int,     ARGS[i+1]); i += 2
         elseif a == "--resume"  ; opts["resume"]    = true;                       i += 1
+        elseif a == "--overfit"
+            if i+1 <= length(ARGS) && !startswith(ARGS[i+1], "-")
+                opts["overfit"] = parse(Int, ARGS[i+1]); i += 2
+            else
+                opts["overfit"] = 64; i += 1
+            end
         else i += 1
         end
     end
@@ -84,12 +95,14 @@ end
 function main()
     opts = parse_args()
 
+    arch = ARCH_REGISTRY[opts["arch"]]
+
     @info "Loading inference cache…"
     cache = load_inference_cache(CACHE_FILE)
     @info "  $(length(cache.dates)) dates × $(length(cache.companies)) companies"
 
-    dataset_file = joinpath(TRAIN_DIR, "dataset.bson")
-    isfile(dataset_file) || error("Not found: $dataset_file\nRun: julia scripts/build_dataset.jl")
+    dataset_file = joinpath(TRAIN_DIR, "dataset_$(arch.pred_hours).bson")
+    isfile(dataset_file) || error("Not found: $dataset_file\nRun: julia scripts/build_dataset.jl --pred-hours $(arch.pred_hours)")
 
     @info "Loading dataset…"
     dataset = load_dataset(dataset_file)
@@ -99,12 +112,27 @@ function main()
     @info "Split: $(length(train_idx)) train / $(length(val_idx)) val / $(length(test_idx)) test"
 
     final_h = [ex.label[end] for ex in dataset.examples[train_idx]]
-    @printf("Train label (eod day5): mean=%.4f%%  std=%.4f%%\n",
+    @printf("Train label (eod bar): mean=%.4f%%  std=%.4f%%\n",
             mean(final_h)*100, std(final_h)*100)
 
-    # ── Build or resume model ─────────────────────────────────────────────────
+    # ── Overfit diagnostic mode ───────────────────────────────────────────────
+    if opts["overfit"] > 0
+        n = opts["overfit"]
+        @warn "OVERFIT MODE: training and validating on first $n examples only. No checkpoint saved."
+        tiny = collect(train_idx)[1:min(n, length(train_idx))]
+        model = build_model(arch)
+        @info "Parameters: $(sum(length, Flux.trainables(model)))"
+        _, log = train!(model, dataset, cache, tiny, tiny;
+                        epochs         = opts["epochs"],
+                        batchsize      = min(n, opts["batch"]),
+                        lr             = Float32(opts["lr"]),
+                        l2_lambda      = 0f0,
+                        patience       = opts["epochs"],   # disable early stopping
+                        epoch_log_path = "")
+        return
+    end
 
-    arch = ARCH_REGISTRY[opts["arch"]]
+    # ── Build or resume model ─────────────────────────────────────────────────
 
     model_dir        = joinpath(MODELS_DIR, arch.name)
     existing_model   = joinpath(model_dir, "swing_predictor.bson")
@@ -214,7 +242,6 @@ function _save_model_card(path, arch, model, dataset, log, test_metrics, opts)
             "market_channels"  => N_MARKET_CHANNELS,
             "market_companies" => N_MARKET_COMPANIES,
             "hourly_bars"      => N_HOURLY_BARS,
-            "llm_features"     => N_LLM_FEATURES,
             "pred_hours"       => N_PRED_HOURS,
         ),
         "dataset" => Dict(

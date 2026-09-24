@@ -9,7 +9,7 @@ Neural network architecture registry for StockSwingPredictor.
 2. Implement `build_model(arch::MyCNN)::SwingPredictor{MyCNN}`.
 
 3. Implement the forward pass:
-       function (m::SwingPredictor{MyCNN})(market, hourly, llm) ... end
+       function (m::SwingPredictor{MyCNN})(market, hourly) ... end
 
 4. Add the arch to `_arch_to_dict` / `_arch_from_dict` for save/load support.
 
@@ -19,10 +19,16 @@ Neural network architecture registry for StockSwingPredictor.
 
   DUAL_CNN_V1 — two CNN branches (market context + individual stock hourly).
                 Market context is mean-pooled across all context companies.
+                5-day (35-bar) output, JUMP_THRESHOLD loss weighting.
 
   DUAL_CNN_V2 — same two branches, but replaces mean-pool with cross-attention:
                 the target stock's embedding queries the context company embeddings,
                 so the model learns which peers matter for each prediction.
+                5-day (35-bar) output, JUMP_THRESHOLD loss weighting.
+
+  DUAL_CNN_V3 — identical CNN structure to v2, with two differences:
+                10-day (70-bar) output horizon, and Lee-Mykland M² loss weighting
+                (focuses training on jump events, near-constant labels → weight≈0).
 """
 
 using Flux, BSON
@@ -45,7 +51,7 @@ simultaneously, producing a target embedding and a mean-pooled market context.
 
 Branch 2 (hourly CNN): processes the target stock's 280-bar 60-minute series.
 
-MLP head combines both embeddings with the LLM scalars → N_PRED_HOURS outputs.
+MLP head combines both embeddings → pred_hours outputs.
 """
 Base.@kwdef struct DualCNN <: SwingArchitecture
     name                :: String      = "DualCNN_v1"
@@ -63,6 +69,9 @@ Base.@kwdef struct DualCNN <: SwingArchitecture
 
     mlp_hidden          :: Vector{Int} = [512, 256, 128, 64]
     dropout_rate        :: Float64     = 0.3
+
+    pred_hours          :: Int         = 35    # output neurons (5-day horizon)
+    lm_weighting        :: Bool        = false # JUMP_THRESHOLD quadratic weighting
 end
 
 """The current v1 architecture — mean-pooled market context."""
@@ -96,10 +105,52 @@ Base.@kwdef struct DualCNNv2 <: SwingArchitecture
 
     mlp_hidden          :: Vector{Int} = [512, 256, 128, 64]
     dropout_rate        :: Float64     = 0.3
+
+    pred_hours          :: Int         = 35    # output neurons (5-day horizon)
+    lm_weighting        :: Bool        = false # JUMP_THRESHOLD quadratic weighting
 end
 
 """The current v2 architecture — cross-attention market context."""
 const DUAL_CNN_V2 = DualCNNv2()
+
+# ── DualCNN v3 — cross-attention + 10-day + LM weighting ─────────────────────
+
+"""
+Cross-attention market context with 10-day output and Lee-Mykland jump weighting.
+
+Identical CNN structure to `DualCNNv2`. Differs in two ways:
+
+  - `pred_hours = 70`: 10 trading days × 7 bars/day. The longer horizon gives
+    bipower variation a stable sample for M estimation and better captures
+    swing-trade timescales.
+
+  - `lm_weighting = true`: each training example is weighted by M² where M is
+    the Lee-Mykland jump statistic of the label trajectory. Near-constant labels
+    → M≈0 → weight≈0; examples containing a genuine price jump dominate the loss.
+    BV is estimated globally across the 70 label bars.
+
+Parameter count vs DualCNN_v2: +2 275 (larger output Dense layer).
+"""
+Base.@kwdef struct DualCNNv3 <: SwingArchitecture
+    name                :: String      = "DualCNN_v3"
+
+    market_channels     :: Vector{Int} = [3, 32, 64, 128]
+    market_kernel       :: Int         = 3
+    attn_heads          :: Int         = 2
+
+    hourly_channels     :: Vector{Int} = [1, 32, 64, 128, 256]
+    hourly_kernel_large :: Int         = 5
+    hourly_kernel_small :: Int         = 3
+
+    mlp_hidden          :: Vector{Int} = [512, 256, 128]
+    dropout_rate        :: Float64     = 0.3
+
+    pred_hours          :: Int         = 70    # output neurons (10-day horizon)
+    lm_weighting        :: Bool        = true  # Lee-Mykland M² jump weighting
+end
+
+"""The current v3 architecture — cross-attention, 10-day horizon, LM weighting."""
+const DUAL_CNN_V3 = DualCNNv3()
 
 # ── SwingPredictor container ──────────────────────────────────────────────────
 
@@ -108,7 +159,7 @@ Compiled model container. Parametric on the architecture type so different
 forward-pass implementations can dispatch without runtime branching.
 
 `market_attn` is `nothing` for v1 (mean-pool) and a `MultiHeadAttention` layer
-for v2 (cross-attention). Flux traverses `nothing` fields safely.
+for v2/v3 (cross-attention). Flux traverses `nothing` fields safely.
 """
 struct SwingPredictor{A <: SwingArchitecture}
     arch        :: A
@@ -134,6 +185,19 @@ end
 build_model() = build_model(DUAL_CNN_V1)
 
 function build_model(arch::DualCNNv2)::SwingPredictor{DualCNNv2}
+    embed_dim = arch.market_channels[end]
+    @assert embed_dim % arch.attn_heads == 0 "market_channels[end] ($embed_dim) must be divisible by attn_heads ($(arch.attn_heads))"
+    attn = MultiHeadAttention(embed_dim; nheads=arch.attn_heads, bias=false)
+    SwingPredictor(arch,
+                   _build_market_cnn(arch),
+                   _build_hourly_cnn(arch),
+                   attn,
+                   _build_mlp_head(arch))
+end
+
+# ── DualCNN v3 builder ────────────────────────────────────────────────────────
+
+function build_model(arch::DualCNNv3)::SwingPredictor{DualCNNv3}
     embed_dim = arch.market_channels[end]
     @assert embed_dim % arch.attn_heads == 0 "market_channels[end] ($embed_dim) must be divisible by attn_heads ($(arch.attn_heads))"
     attn = MultiHeadAttention(embed_dim; nheads=arch.attn_heads, bias=false)
@@ -170,9 +234,9 @@ end
 function _build_mlp_head(arch)::Chain
     market_embed = arch.market_channels[end]
     hourly_embed = arch.hourly_channels[end]
-    mlp_in       = 2 * market_embed + hourly_embed + N_LLM_FEATURES
+    mlp_in       = 2 * market_embed + hourly_embed
 
-    sizes  = [mlp_in; arch.mlp_hidden; N_PRED_HOURS]
+    sizes  = [mlp_in; arch.mlp_hidden; arch.pred_hours]
     n_drop = length(arch.mlp_hidden)
 
     layers = []
@@ -194,13 +258,11 @@ Forward pass for DualCNN_v1.
 
 `market` — `(N_MARKET_DAYS, N_MARKET_CHANNELS, N_companies, batch)`
 `hourly` — `(N_HOURLY_BARS, batch)` normalised 60-min closes.
-`llm`    — `(N_LLM_FEATURES, batch)`.
 
-Returns `(N_PRED_HOURS, batch)` predicted log-return trajectories.
+Returns `(pred_hours, batch)` predicted log-return trajectories.
 """
 function (m::SwingPredictor{DualCNN})(market::Array{Float32,4},
-                                      hourly::Matrix{Float32},
-                                      llm::Matrix{Float32})
+                                      hourly::Matrix{Float32})
     _, _, N, B = size(market)
 
     x    = reshape(market, N_MARKET_DAYS, N_MARKET_CHANNELS, N * B)
@@ -213,7 +275,7 @@ function (m::SwingPredictor{DualCNN})(market::Array{Float32,4},
     h          = reshape(hourly, N_HOURLY_BARS, 1, B)
     hourly_emb = m.hourly_cnn(h)                               # (embed, B)
 
-    combined = vcat(target_emb, market_ctx, hourly_emb, llm)
+    combined = vcat(target_emb, market_ctx, hourly_emb)
     return m.mlp_head(combined)
 end
 
@@ -221,20 +283,16 @@ end
 # Same contract as v1; mean-pool replaced by multi-head cross-attention.
 
 function (m::SwingPredictor{DualCNNv2})(market::Array{Float32,4},
-                                         hourly::Matrix{Float32},
-                                         llm::Matrix{Float32})
+                                         hourly::Matrix{Float32})
     _, _, N, B = size(market)
 
     x    = reshape(market, N_MARKET_DAYS, N_MARKET_CHANNELS, N * B)
     embs = m.market_cnn(x)                             # (embed, N*B)
     embs = reshape(embs, size(embs, 1), N, B)          # (embed, N, B)
 
-    # target_q: (embed, 1, B) — query for cross-attention
-    # context:  (embed, N-1, B) — keys and values
     target_q  = embs[:, 1:1, :]
     context   = embs[:, 2:end, :]
 
-    # cross-attention: target queries context peers
     attended, _ = m.market_attn(target_q, context, context)   # (embed, 1, B)
     market_ctx  = dropdims(attended, dims=2)                   # (embed, B)
     target_emb  = dropdims(target_q, dims=2)                   # (embed, B)
@@ -242,19 +300,43 @@ function (m::SwingPredictor{DualCNNv2})(market::Array{Float32,4},
     h          = reshape(hourly, N_HOURLY_BARS, 1, B)
     hourly_emb = m.hourly_cnn(h)
 
-    combined = vcat(target_emb, market_ctx, hourly_emb, llm)
+    combined = vcat(target_emb, market_ctx, hourly_emb)
+    return m.mlp_head(combined)
+end
+
+# ── DualCNN v3 forward pass ───────────────────────────────────────────────────
+# Identical to v2; outputs pred_hours=70 bars instead of 35.
+
+function (m::SwingPredictor{DualCNNv3})(market::Array{Float32,4},
+                                         hourly::Matrix{Float32})
+    _, _, N, B = size(market)
+
+    x    = reshape(market, N_MARKET_DAYS, N_MARKET_CHANNELS, N * B)
+    embs = m.market_cnn(x)
+    embs = reshape(embs, size(embs, 1), N, B)
+
+    target_q  = embs[:, 1:1, :]
+    context   = embs[:, 2:end, :]
+
+    attended, _ = m.market_attn(target_q, context, context)
+    market_ctx  = dropdims(attended, dims=2)
+    target_emb  = dropdims(target_q, dims=2)
+
+    h          = reshape(hourly, N_HOURLY_BARS, 1, B)
+    hourly_emb = m.hourly_cnn(h)
+
+    combined = vcat(target_emb, market_ctx, hourly_emb)
     return m.mlp_head(combined)
 end
 
 # ── Inference helpers ─────────────────────────────────────────────────────────
 
-"""Run inference on a pre-assembled batch. Returns `(N_PRED_HOURS × batch)` matrix."""
+"""Run inference on a pre-assembled batch. Returns `(pred_hours × batch)` matrix."""
 function predict(model::SwingPredictor,
                  market::Array{Float32,4},
-                 hourly::Matrix{Float32},
-                 llm::Matrix{Float32})::Matrix{Float32}
+                 hourly::Matrix{Float32})::Matrix{Float32}
     Flux.testmode!(model)
-    return model(market, hourly, llm)
+    return model(market, hourly)
 end
 
 # ── Persistence ───────────────────────────────────────────────────────────────
@@ -307,6 +389,8 @@ function _arch_to_dict(arch::DualCNN)::Dict{String,Any}
         "hourly_kernel_small" => arch.hourly_kernel_small,
         "mlp_hidden"          => arch.mlp_hidden,
         "dropout_rate"        => arch.dropout_rate,
+        "pred_hours"          => arch.pred_hours,
+        "lm_weighting"        => arch.lm_weighting,
     )
 end
 
@@ -322,6 +406,25 @@ function _arch_to_dict(arch::DualCNNv2)::Dict{String,Any}
         "hourly_kernel_small" => arch.hourly_kernel_small,
         "mlp_hidden"          => arch.mlp_hidden,
         "dropout_rate"        => arch.dropout_rate,
+        "pred_hours"          => arch.pred_hours,
+        "lm_weighting"        => arch.lm_weighting,
+    )
+end
+
+function _arch_to_dict(arch::DualCNNv3)::Dict{String,Any}
+    Dict{String,Any}(
+        "type"                => "DualCNNv3",
+        "name"                => arch.name,
+        "market_channels"     => arch.market_channels,
+        "market_kernel"       => arch.market_kernel,
+        "attn_heads"          => arch.attn_heads,
+        "hourly_channels"     => arch.hourly_channels,
+        "hourly_kernel_large" => arch.hourly_kernel_large,
+        "hourly_kernel_small" => arch.hourly_kernel_small,
+        "mlp_hidden"          => arch.mlp_hidden,
+        "dropout_rate"        => arch.dropout_rate,
+        "pred_hours"          => arch.pred_hours,
+        "lm_weighting"        => arch.lm_weighting,
     )
 end
 
@@ -337,6 +440,8 @@ function _arch_from_dict(d::Dict)::SwingArchitecture
             hourly_kernel_small = Int(d["hourly_kernel_small"]),
             mlp_hidden          = Vector{Int}(d["mlp_hidden"]),
             dropout_rate        = Float64(d["dropout_rate"]),
+            pred_hours          = Int(get(d, "pred_hours", 35)),
+            lm_weighting        = Bool(get(d, "lm_weighting", false)),
         )
     elseif t == "DualCNNv2"
         return DualCNNv2(
@@ -349,6 +454,22 @@ function _arch_from_dict(d::Dict)::SwingArchitecture
             hourly_kernel_small = Int(d["hourly_kernel_small"]),
             mlp_hidden          = Vector{Int}(d["mlp_hidden"]),
             dropout_rate        = Float64(d["dropout_rate"]),
+            pred_hours          = Int(get(d, "pred_hours", 35)),
+            lm_weighting        = Bool(get(d, "lm_weighting", false)),
+        )
+    elseif t == "DualCNNv3"
+        return DualCNNv3(
+            name                = d["name"],
+            market_channels     = Vector{Int}(d["market_channels"]),
+            market_kernel       = Int(d["market_kernel"]),
+            attn_heads          = Int(d["attn_heads"]),
+            hourly_channels     = Vector{Int}(d["hourly_channels"]),
+            hourly_kernel_large = Int(d["hourly_kernel_large"]),
+            hourly_kernel_small = Int(d["hourly_kernel_small"]),
+            mlp_hidden          = Vector{Int}(d["mlp_hidden"]),
+            dropout_rate        = Float64(d["dropout_rate"]),
+            pred_hours          = Int(d["pred_hours"]),
+            lm_weighting        = Bool(d["lm_weighting"]),
         )
     end
     error("Unknown architecture type: $t")

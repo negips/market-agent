@@ -13,6 +13,7 @@ Base.@kwdef struct NewsItem
     url::String
     published_at::DateTime
     bse_code::String = ""   # BSE scripcode when available (BSE source only)
+    nse_symbol::String = "" # NSE tradingsymbol when available (NSE source only)
 end
 
 """

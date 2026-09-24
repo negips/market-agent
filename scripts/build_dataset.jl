@@ -12,7 +12,7 @@ Steps:
   2. For each company, slide a weekly window over the master calendar:
        - Record hourly_end_idx pointer (no hourly data stored per example).
        - Look up LLM scalars (most recent doc before the window date).
-       - Compute 5-day hourly log-return trajectory label.
+       - Compute pred_hours-bar hourly log-return trajectory label.
   3. Sort all examples by date, save to BSON.
 
 Prerequisites:
@@ -21,27 +21,55 @@ Prerequisites:
 
 Usage:
   julia --project=packages/StockSwingPredictor scripts/build_dataset.jl
+  julia --project=packages/StockSwingPredictor scripts/build_dataset.jl --pred-hours 35
+  julia --project=packages/StockSwingPredictor scripts/build_dataset.jl --pred-hours 70
+
+Output: website/data/training/dataset_{pred_hours}.bson
 """
 
 using StockSwingPredictor, JSON3, Dates, Printf
 
-const REPO_ROOT    = joinpath(@__DIR__, "..")
-const CACHE_FILE   = joinpath(REPO_ROOT, "website", "data", "inference_cache.bson")
-const LLM_DIR      = joinpath(REPO_ROOT, "website", "data", "llm_features")
-const OUT_DIR      = joinpath(REPO_ROOT, "website", "data", "training")
-const DATASET_FILE = joinpath(OUT_DIR, "dataset.bson")
+const REPO_ROOT  = joinpath(@__DIR__, "..")
+const CACHE_FILE = joinpath(REPO_ROOT, "website", "data", "inference_cache.bson")
+const LLM_DIR    = joinpath(REPO_ROOT, "website", "data", "llm_features")
+const OUT_DIR    = joinpath(REPO_ROOT, "website", "data", "training")
 
-function main()
-    if "--help" in ARGS || "-h" in ARGS
-        println("""
+function parse_args()
+    pred_hours = N_PRED_HOURS
+    i = 1
+    while i <= length(ARGS)
+        a = ARGS[i]
+        if a in ("--help", "-h")
+            println("""
 Usage:
-  julia --project=packages/StockSwingPredictor scripts/build_dataset.jl
+  julia --project=packages/StockSwingPredictor scripts/build_dataset.jl [options]
+
+Options:
+  --pred-hours N   Label length in hourly bars (default: $N_PRED_HOURS).
+                   Must be a multiple of $N_HOURS_PER_DAY (bars/day).
+                   Use 35 for v1/v2 (5-day), 70 for v3 (10-day).
 
 Input:   website/data/inference_cache.bson
-Output:  website/data/training/dataset.bson  (~30 MB)
+Output:  website/data/training/dataset_{N}.bson
 """)
-        return
+            exit(0)
+        elseif a == "--pred-hours"
+            pred_hours = parse(Int, ARGS[i+1]); i += 2
+        else
+            i += 1
+        end
     end
+    pred_hours % N_HOURS_PER_DAY == 0 ||
+        error("--pred-hours must be a multiple of N_HOURS_PER_DAY ($N_HOURS_PER_DAY), got $pred_hours")
+    return pred_hours
+end
+
+function main()
+    pred_hours   = parse_args()
+    dataset_file = joinpath(OUT_DIR, "dataset_$(pred_hours).bson")
+
+    @info "Label length: $pred_hours bars ($(pred_hours ÷ N_HOURS_PER_DAY) trading days)"
+    @info "Output: $dataset_file"
 
     # ── Load inference cache ──────────────────────────────────────────────────
 
@@ -58,7 +86,8 @@ Output:  website/data/training/dataset.bson  (~30 MB)
 
     for (j, sym) in enumerate(cache.companies)
         llm_cache = _load_llm_cache(sym, LLM_DIR)
-        examples  = generate_company_examples(sym, j, cache, llm_cache)
+        examples  = generate_company_examples(sym, j, cache, llm_cache;
+                                              pred_hours)
         append!(all_examples, examples)
         j % 100 == 0 &&
             @info "[$j/$n_comp] $sym — $(length(examples)) examples (total: $(length(all_examples)))"
@@ -73,8 +102,8 @@ Output:  website/data/training/dataset.bson  (~30 MB)
     @info dataset
 
     mkpath(OUT_DIR)
-    save_dataset(dataset, DATASET_FILE)
-    @info "Done → $DATASET_FILE"
+    save_dataset(dataset, dataset_file)
+    @info "Done → $dataset_file"
 end
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

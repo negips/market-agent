@@ -23,6 +23,8 @@ Output format: JSON with keys:
   predicted[{datetime, log_return, price}],
   actual[{datetime, close}],
   history{dates, closes}
+
+Note: LLM features are not used by DualCNN_v1 / DualCNN_v2.
 """
 
 using StockSwingPredictor, Flux, JSON3, Dates
@@ -89,13 +91,11 @@ Output: JSON file readable by website/predict.html
 end
 
 """
-Assemble market + hourly + llm tensors for a single (sym_idx, date_idx) pair.
+Assemble market + hourly tensors for a single (sym_idx, date_idx) pair.
 Mirrors the logic in `assemble_batch` but for batch size 1.
-LLM features are set to MISSING_LLM (zero / neutral) — use extract_features
-separately if you have a recent conference call document.
 """
 function assemble_single(cache::InferenceCache, sym_idx::Int,
-                          t::Int)::Tuple{Array{Float32,4}, Matrix{Float32}, Matrix{Float32}}
+                          t::Int)::Tuple{Array{Float32,4}, Matrix{Float32}}
     k = sym_idx
 
     # ── Market context (28-day window, N_MARKET_COMPANIES columns) ───────────
@@ -138,11 +138,7 @@ function assemble_single(cache::InferenceCache, sym_idx::Int,
     hourly  = Matrix{Float32}(undef, N_HOURLY_BARS, 1)
     hourly[:, 1] = norm_h
 
-    # ── LLM features (neutral — no document provided at inference time) ──────
-    llm = Matrix{Float32}(undef, N_LLM_FEATURES, 1)
-    llm[:, 1] = llm_to_vec(MISSING_LLM)
-
-    return market, hourly, llm
+    return market, hourly
 end
 
 function main()
@@ -181,10 +177,10 @@ function main()
     model, model_companies, model_meta = load_model(model_path)
 
     @info "Assembling inputs for $symbol on $date…"
-    market, hourly, llm = assemble_single(cache, sym_idx, t)
+    market, hourly = assemble_single(cache, sym_idx, t)
 
     @info "Running inference…"
-    pred_lr = predict(model, market, hourly, llm)[:, 1]   # (N_PRED_HOURS,) log-returns
+    pred_lr = predict(model, market, hourly)[:, 1]   # (N_PRED_HOURS,) log-returns
 
     # ── Predicted timeline ───────────────────────────────────────────────────
     n_future = min(t + N_PRED_DAYS, length(cache.dates)) - t

@@ -1,84 +1,117 @@
 """
 BSE corporate announcements fetcher.
 
-Polls the BSE JSON API for corporate announcements. This is the highest-signal
-source for sharp single-day moves: board meeting outcomes, merger/acquisition
-disclosures, QIPs, buybacks, and surprise results all appear here first.
+Polls the BSE RSS feed for today's corporate announcements. No authentication
+is required. The feed provides a `<scripcode>` (BSE numeric code) alongside
+each filing description, enabling reliable LLM classification with known
+company identity.
 
-The endpoint is BSE's internal API used by bseindia.com; no authentication is
-required but a Referer header is needed to avoid 403 responses.
+Historical data is not available via this endpoint — BSE's JSON APIs require
+authentication. For historical filings on cross-listed companies, use
+`fetch_nse_announcements` which has 20+ years of history.
 """
 
-using HTTP, JSON3, Dates
+using HTTP, Dates
 
-const BSE_ANN_URL = "https://api.bseindia.com/BseIndiaAPI/api/AnnSubCategoryGetData/w"
-const BSE_HEADERS = [
+const BSE_RSS_URL = "https://www.bseindia.com/data/xml/announcements.aspx"
+const BSE_RSS_HEADERS = [
     "Referer"    => "https://www.bseindia.com/",
     "User-Agent" => "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
-    "Accept"     => "application/json, text/plain, */*",
+    "Accept"     => "application/rss+xml, application/xml, text/xml, */*",
 ]
 
+const _BSE_MONTHS = Dict("Jan"=>1,"Feb"=>2,"Mar"=>3,"Apr"=>4,"May"=>5,"Jun"=>6,
+                         "Jul"=>7,"Aug"=>8,"Sep"=>9,"Oct"=>10,"Nov"=>11,"Dec"=>12)
+
 """
-Fetch corporate announcements from BSE for the given date range.
+Fetch today's corporate announcements from the BSE RSS feed.
+
+Note: the BSE RSS endpoint always returns the current day's filings regardless
+of date arguments. The `from_date`/`to_date` parameters are accepted for API
+consistency with `fetch_nse_announcements` but are ignored.
 
 # Arguments
-- `from_date`, `to_date`: inclusive date range (default: today)
+- `from_date`, `to_date`: accepted for interface symmetry; BSE RSS is today-only
 
 # Returns
 `Vector{NewsItem}` — empty on any fetch or parse failure.
 """
 function fetch_bse_announcements(; from_date::Date=today(),
                                    to_date::Date=today())::Vector{NewsItem}
-    from_s = Dates.format(from_date, "dd/mm/yyyy")
-    to_s   = Dates.format(to_date,   "dd/mm/yyyy")
-    url = BSE_ANN_URL *
-          "?pageno=1&category=-1&subcategory=-1&scripcode=" *
-          "&strdate=$from_s&enddate=$to_s&bcategory=-1"
-
     resp = try
-        HTTP.get(url; headers=BSE_HEADERS, request_timeout=15, status_exception=false)
+        HTTP.get(BSE_RSS_URL; headers=BSE_RSS_HEADERS, request_timeout=15,
+                 status_exception=false)
     catch e
-        @warn "BSE announcements fetch failed: $(sprint(showerror, e))"
+        @warn "BSE RSS fetch failed: $(sprint(showerror, e))"
         return NewsItem[]
     end
 
     resp.status != 200 && begin
-        @warn "BSE API returned HTTP $(resp.status)"
+        @warn "BSE RSS returned HTTP $(resp.status)"
         return NewsItem[]
     end
 
-    raw = try JSON3.read(resp.body) catch
-        @warn "BSE response parse failed"
-        return NewsItem[]
-    end
+    return _parse_bse_rss(String(resp.body))
+end
 
-    table = get(raw, :Table, nothing)
-    (isnothing(table) || isempty(table)) && return NewsItem[]
-
+function _parse_bse_rss(xml::String)::Vector{NewsItem}
     items = NewsItem[]
-    for row in table
-        news_id = string(get(row, :NEWSID, ""))
-        isempty(news_id) && continue
+    for m in eachmatch(r"<item[^>]*>(.*?)</item>"s, xml)
+        block     = m[1]
+        title     = _bse_tag(block, "title")       # "Company Name (scripcode)"
+        desc      = _bse_tag(block, "description") # filing description text
+        link      = _bse_tag(block, "link")
+        scripcode = _bse_tag(block, "scripcode")
+        pubdate   = _bse_tag(block, "pubDate")
 
-        dt = _parse_bse_dt(string(get(row, :NEWS_DT, "")))
+        isempty(link) && isempty(scripcode) && continue
+
+        # PDF filename contains a UUID → globally unique per filing
+        guid = isempty(link) ? "BSE:$(scripcode):$pubdate" :
+                               "BSE:" * basename(link)
+
         push!(items, NewsItem(
-            guid         = "BSE:$news_id",
+            guid         = guid,
             source       = "BSE",
-            headline     = string(get(row, :HEADLINE, "")),
-            body         = string(get(row, :SUBCATNAME, "")),
-            url          = string(get(row, :NSURL, "")),
-            published_at = dt,
-            bse_code     = string(get(row, :SCRIP_CD, "")),
+            headline     = _bse_decode(desc),  # event description first for LLM
+            body         = title,              # "Company Name (scripcode)" for symbol resolution
+            url          = link,
+            published_at = _parse_bse_rss_dt(pubdate),
+            bse_code     = scripcode,
         ))
     end
     return items
 end
 
-function _parse_bse_dt(s::String)::DateTime
+function _bse_tag(xml::String, name::String)::String
+    m = match(Regex("<$name[^>]*><!\\[CDATA\\[(.*?)\\]\\]></$name>", "s"), xml)
+    !isnothing(m) && return strip(m[1])
+    m = match(Regex("<$name[^>]*>(.*?)</$name>", "s"), xml)
+    !isnothing(m) && return strip(m[1])
+    return ""
+end
+
+function _bse_decode(s::String)::String
+    s = replace(s, "&amp;"  => "&")
+    s = replace(s, "&lt;"   => "<")
+    s = replace(s, "&gt;"   => ">")
+    s = replace(s, "&apos;" => "'")
+    s = replace(s, "&#39;"  => "'")
+    s = replace(s, "&nbsp;" => " ")
+    return strip(s)
+end
+
+function _parse_bse_rss_dt(s::String)::DateTime
     isempty(s) && return now(UTC)
+    # BSE RSS date format: "23-Sep-2026 22:31:38" (IST, no TZ offset)
+    m = match(r"(\d{1,2})-([A-Za-z]{3})-(\d{4})\s+(\d{2}):(\d{2}):(\d{2})", s)
+    isnothing(m) && return now(UTC)
     try
-        # BSE format: "2026-09-09T10:30:00" (IST, no offset marker)
-        return DateTime(s[1:min(19, length(s))], "yyyy-mm-ddTHH:MM:SS")
+        day   = parse(Int, m[1])
+        month = get(_BSE_MONTHS, m[2], 1)
+        year  = parse(Int, m[3])
+        h, mn, sc = parse(Int, m[4]), parse(Int, m[5]), parse(Int, m[6])
+        return DateTime(year, month, day, h, mn, sc)
     catch
         return now(UTC)
     end

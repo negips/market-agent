@@ -1,9 +1,10 @@
 """
 Training loop with early stopping and L2 regularisation.
 
-Loss: MSE over the full N_PRED_HOURS trajectory (all 35 hourly bars).
-Direction accuracy and IC are reported on the final bar (end-of-day-5 close),
-which is the actionable prediction.
+Loss: weighted MSE over `arch.pred_hours` bars (35 for v1/v2, 70 for v3).
+Weighting scheme is per-architecture: JUMP_THRESHOLD quadratic for v1/v2,
+Lee-Mykland M² for v3 (see `_batch_weights`).
+Direction accuracy and IC are reported on the final bar of each arch's horizon.
 
 ## Memory design
 
@@ -27,9 +28,32 @@ const DEFAULT_PATIENCE  = 15
 const VAL_CHUNKSIZE     = 256   # max examples assembled at once during val/test
 const PROGRESS_EVERY    = 50    # print batch progress every N batches
 
-# Examples whose peak |log-return| exceeds this get quadratically higher loss weight.
-# Below the threshold all examples share weight 1. Above: w = (peak/threshold)^2.
-const JUMP_THRESHOLD = 0.04f0   # 4%
+# Used by v1/v2 (lm_weighting=false): examples above 4% peak return get
+# quadratically higher weight; below the threshold all examples share weight 1.
+const JUMP_THRESHOLD = 0.04f0
+
+"""
+Per-example loss weights for one mini-batch, dispatched on architecture type.
+
+`lm_weighting=false` (v1, v2): quadratic above JUMP_THRESHOLD, flat below.
+`lm_weighting=true`  (v3):     Lee-Mykland M² — bipower-variation-normalised
+max bar return. Near-constant labels → weight≈0; jump events dominate.
+Both variants normalise so mean batch weight ≈ 1.
+"""
+function _batch_weights(yb::Matrix{Float32}, arch::SwingArchitecture)::Matrix{Float32}
+    if arch.lm_weighting
+        bar_rets = vcat(yb[1:1, :], diff(yb, dims=1))
+        bv = (π/2f0) .* mean(
+                 abs.(bar_rets[1:end-1, :]) .* abs.(bar_rets[2:end, :]), dims=1)
+        bv   = max.(bv, 1f-10)
+        M_lm = maximum(abs.(bar_rets), dims=1) ./ sqrt.(bv)
+        w    = M_lm .^ 2
+    else
+        y_peak = maximum(abs.(yb), dims=1)
+        w      = max.(1f0, y_peak ./ JUMP_THRESHOLD) .^ 2
+    end
+    return w ./ mean(w)
+end
 
 """
 Train `model` on `dataset`. Returns `(model, training_log)`.
@@ -98,22 +122,20 @@ function train!(model::SwingPredictor,
         shuffled = shuffle(train_ids)
         for start in 1:batchsize:length(shuffled)
             batch_idx = shuffled[start : min(start + batchsize - 1, end)]
-            market, hourly, llm, yb = assemble_batch(dataset, cache, batch_idx)
+            market, hourly, yb = assemble_batch(dataset, cache, batch_idx)
 
             # Capture L2 before the update so l2_penalty matches the weights
             # used inside withgradient — lets us strip L2 from the logged MSE.
             l2_penalty = l2_lambda * Float32(
                 sum(sum(abs2, p) for p in Flux.trainables(model) if ndims(p) == 2))
 
+            yb_arch = yb[1:model.arch.pred_hours, :]
+            w       = _batch_weights(yb_arch, model.arch)
+
             loss_val, grads = Flux.withgradient(model) do m
-                ŷ      = m(market, hourly, llm)
-                # Per-example weight: quadratic above JUMP_THRESHOLD, flat below.
-                # Normalised so the mean weight in each batch ≈ 1.
-                y_peak = maximum(abs.(yb), dims=1)          # (1, B)
-                w      = max.(1f0, y_peak ./ JUMP_THRESHOLD) .^ 2
-                w      = w ./ mean(w)
-                mse    = mean(w .* (ŷ .- yb) .^ 2)
-                l2     = sum(sum(abs2, p) for p in Flux.trainables(m) if ndims(p) == 2)
+                ŷ   = m(market, hourly)
+                mse = mean(w .* (ŷ .- yb_arch) .^ 2)
+                l2  = sum(sum(abs2, p) for p in Flux.trainables(m) if ndims(p) == 2)
                 mse + l2_lambda * l2
             end
 
@@ -130,6 +152,7 @@ function train!(model::SwingPredictor,
                         JSON3.write(io, (epoch=abs_epoch, batch=n_batches,
                                          train_mse=mse_now,
                                          val_mse=nothing,
+                                         n_batches=n_batches_ep,
                                          elapsed_secs=round(time() - train_start, digits=1)))
                         println(io)
                     end
@@ -186,6 +209,7 @@ function train!(model::SwingPredictor,
                 JSON3.write(io, (epoch=abs_epoch, batch=nothing,
                                  train_mse=train_mse, val_mse=val_mse,
                                  best_val_mse=best_val_loss, improved=improved,
+                                 n_batches=n_batches_ep,
                                  elapsed_secs=round(time() - train_start, digits=1)))
                 println(io)
             end
@@ -213,7 +237,7 @@ end
 """
 Evaluate a trained model on a set of example indices.
 
-Inference is chunked to bound memory. Final-bar (eod day-5) predictions
+Inference is chunked to bound memory. Final-bar (eod day-10) predictions
 are collected across chunks before computing ranking-based metrics (IC).
 """
 function evaluate(model::SwingPredictor, dataset::Dataset, cache::InferenceCache,
@@ -229,15 +253,16 @@ function evaluate(model::SwingPredictor, dataset::Dataset, cache::InferenceCache
 
     for start in 1:VAL_CHUNKSIZE:length(test_ids)
         chunk = test_ids[start : min(start + VAL_CHUNKSIZE - 1, end)]
-        market, hourly, llm, y = assemble_batch(dataset, cache, chunk)
-        ŷ = model(market, hourly, llm)
+        market, hourly, y = assemble_batch(dataset, cache, chunk)
+        y_arch = y[1:model.arch.pred_hours, :]
+        ŷ = model(market, hourly)
 
-        sum_mse   += Float32(mean((ŷ .- y).^2))
-        sum_mae   += Float32(mean(abs.(ŷ .- y)))
+        sum_mse   += Float32(mean((ŷ .- y_arch).^2))
+        sum_mae   += Float32(mean(abs.(ŷ .- y_arch)))
         n_batches += 1
 
         append!(ŷ_finals, ŷ[end, :])
-        append!(y_finals, y[end, :])
+        append!(y_finals, y_arch[end, :])
     end
 
     mse     = sum_mse / n_batches
@@ -272,10 +297,11 @@ function _mse_chunked(model, dataset, cache, ids)::Float32
     total = 0f0
     n     = 0
     for start in 1:VAL_CHUNKSIZE:length(ids)
-        chunk = ids[start : min(start + VAL_CHUNKSIZE - 1, end)]
-        market, hourly, llm, y = assemble_batch(dataset, cache, chunk)
-        ŷ = model(market, hourly, llm)
-        total += Float32(mean((ŷ .- y).^2))
+        chunk  = ids[start : min(start + VAL_CHUNKSIZE - 1, end)]
+        market, hourly, y = assemble_batch(dataset, cache, chunk)
+        ŷ      = model(market, hourly)
+        y_arch = y[1:model.arch.pred_hours, :]
+        total += Float32(mean((ŷ .- y_arch).^2))
         n     += 1
     end
     return total / n

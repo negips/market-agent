@@ -39,7 +39,8 @@ market-agent/
 │   │   └── src/
 │   │       ├── NewsMonitor.jl      # module entry + exports
 │   │       ├── types.jl            # NewsItem, NewsSignal, PollerConfig
-│   │       ├── bse.jl              # BSE corporate announcements API
+│   │       ├── nse.jl              # NSE corporate announcements API (20+ yr history)
+│   │       ├── bse.jl              # BSE corporate announcements RSS (today only)
 │   │       ├── rss.jl              # RSS feed fetcher + XML parser
 │   │       ├── llm_classify.jl     # Claude API → NewsSignal (symbol, sentiment, severity)
 │   │       └── poller.jl           # concurrent polling loop + JSONL writer
@@ -49,6 +50,7 @@ market-agent/
 │           ├── StockSwingPredictor.jl  # module entry + exports
 │           ├── types.jl               # all structs (LLMFeatures, TrainingExample, Dataset, …)
 │           ├── kite_data.jl           # instrument lookup, daily + hourly OHLCV fetch + cache
+│           ├── macro_data.jl          # macro instrument OHLCV: Yahoo Finance + Kite CDS/NSE
 │           ├── inference_cache.jl     # InferenceCache: aligned price matrices for O(1) batch slicing
 │           ├── broker.jl              # Kite portfolio/funds: get_holdings, get_positions, get_margins, get_orders
 │           ├── fundamentals.jl        # quarterly P&L feature extraction via TijoriData (not active)
@@ -65,12 +67,13 @@ market-agent/
 │   ├── enrich_earnings_dates.jl          # projects next earnings date via Tijori history (run every 2 weeks)
 │   ├── generate_earnings_watchlist.jl    # merges NSE calendar + projections → watchlist JSON
 │   ├── collect_ohlcv.jl                  # download daily OHLCV for all companies + indices (Kite)
+│   ├── collect_macro_ohlcv.jl            # download macro instrument OHLCV (Yahoo + Kite CDS/NSE)
 │   ├── update_ohlcv.jl                   # incremental update: append only missing bars since last run
 │   ├── extract_llm_features.jl           # Claude API → 14 scalar signals per company (resumable)
 │   ├── monitor_news.jl                   # real-time BSE + RSS news monitor daemon
 │   ├── build_cache.jl                    # build inference_cache.bson from all OHLCV CSVs (run each morning)
-│   ├── build_dataset.jl                  # sliding-window dataset assembly + normalisation
-│   └── train_model.jl                    # train StockSwingPredictor MLP, save BSON
+│   ├── build_dataset.jl                  # sliding-window dataset assembly; --pred-hours 35|70
+│   └── train_model.jl                    # train SwingPredictor (v1/v2/v3); auto-selects dataset
 │
 │   ├── data/                           # generated artifacts (gitignored)
 │   │   ├── nse_companies_latest.json   # latest snapshot (read by companies.html)
@@ -196,7 +199,8 @@ npm install                              # installs express
 using NewsMonitor
 
 # Run manually from the REPL
-items = fetch_bse_announcements()                    # today's BSE corporate announcements
+items = fetch_nse_announcements()                    # today's NSE corporate announcements
+items = fetch_bse_announcements()                    # today's BSE corporate announcements (RSS, today only)
 items = fetch_rss("https://economictimes.indiatimes.com/markets/rss.cms", "ET")
 
 sig = classify_item(items[1]; api_key=ENV["ANTHROPIC_API_KEY"])
@@ -219,6 +223,31 @@ julia scripts/monitor_news.jl --bse-only    # skip RSS, BSE announcements only
 ```
 
 Output: `website/data/news_signals.jsonl` — one JSON line per classified item.
+
+### Build the historical announcements database
+
+```bash
+# Fetch all NSE corporate announcements from 2010 to yesterday (~830 API calls, ~15 min)
+julia --project=packages/NewsMonitor scripts/fetch_nse_history.jl
+
+# Custom range or delay
+julia --project=packages/NewsMonitor scripts/fetch_nse_history.jl --from 2015-01-01 --delay 0.5
+
+# Resumable — re-run after interruption to continue from last completed week
+julia --project=packages/NewsMonitor scripts/fetch_nse_history.jl
+```
+
+Output: `website/data/nse_announcements.db` (SQLite)
+Schema: `announcements(guid, symbol, an_dt, desc, attchmnt_text, attchmnt_file, has_xbrl, raw_json)`
+Query example:
+```julia
+using SQLite
+db = SQLite.DB("website/data/nse_announcements.db")
+rows = collect(DBInterface.execute(db,
+    "SELECT symbol, an_dt, desc, attchmnt_text FROM announcements
+     WHERE symbol = ? AND an_dt >= ? ORDER BY an_dt",
+    ["TCS", "2024-01-01 00:00:00"]))
+```
 
 ### One-time setup
 
@@ -357,6 +386,88 @@ julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --dry-run
 # Update only daily bars (skip the slower hourly pass)
 julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --daily-only
 ```
+
+### collect_macro_ohlcv.jl
+
+Downloads historical daily OHLCV for macro instruments (global indices, commodities,
+FX, volatility). Run once after `collect_ohlcv.jl`; no incremental update needed as
+macro history is stable — re-run yearly or with `--refresh` to extend.
+
+| Instrument   | Source | Ticker  | Description                   |
+|---|---|---|---|
+| SP500        | Yahoo  | ^GSPC   | S&P 500                       |
+| US_VIX       | Yahoo  | ^VIX    | CBOE Volatility Index         |
+| CRUDE_OIL    | Yahoo  | CL=F    | WTI crude oil futures         |
+| GOLD         | Yahoo  | GC=F    | Gold futures                  |
+| SILVER       | Yahoo  | SI=F    | Silver futures                |
+| NATURAL_GAS  | Yahoo  | NG=F    | Henry Hub natural gas         |
+| COPPER       | Yahoo  | HG=F    | Copper futures                |
+| INDIA_VIX    | Kite   | NSE idx | India VIX (local fear gauge)  |
+| USD_INR      | Kite   | CDS FUT | USD/INR continuous futures    |
+
+```bash
+# One-time historical fetch (2010–yesterday)
+julia --project=packages/StockSwingPredictor scripts/collect_macro_ohlcv.jl
+
+# Custom date range
+julia --project=packages/StockSwingPredictor scripts/collect_macro_ohlcv.jl --from 2015-01-01
+
+# Force re-fetch all (e.g. to extend history after updating --from)
+julia --project=packages/StockSwingPredictor scripts/collect_macro_ohlcv.jl --refresh
+```
+
+Output: `website/data/ohlcv/macro/{NAME}_daily.csv` — same schema as equity OHLCV.
+
+### build_dataset.jl
+
+Assembles the `Dataset` from the inference cache. Slides a weekly window over
+every company's history, records index pointers and labels. No OHLCV CSVs are
+read here — all price data comes from the pre-built cache.
+
+Output file is named `dataset_{pred_hours}.bson` so multiple label lengths can
+coexist. `train_model.jl` automatically selects the right file based on the arch.
+
+```bash
+# Build 35-bar labels for v1 / v2 (5-day horizon)
+julia --project=packages/StockSwingPredictor scripts/build_dataset.jl --pred-hours 35
+
+# Build 70-bar labels for v3 (10-day horizon, default)
+julia --project=packages/StockSwingPredictor scripts/build_dataset.jl --pred-hours 70
+julia --project=packages/StockSwingPredictor scripts/build_dataset.jl  # same as above
+```
+
+Output: `website/data/training/dataset_{pred_hours}.bson` (~30 MB per file)
+
+### train_model.jl
+
+Trains a `SwingPredictor` on the assembled dataset. Automatically loads
+`dataset_{arch.pred_hours}.bson` (e.g. `dataset_70.bson` for `--arch v3`).
+Saves checkpoint on every validation improvement; supports clean stop via sentinel files.
+
+```bash
+# Train v3 (10-day, LM weighting) — requires dataset_70.bson
+julia --project=packages/StockSwingPredictor scripts/train_model.jl --arch v3
+
+# Common flags
+julia --project=packages/StockSwingPredictor scripts/train_model.jl \
+      --arch v3 --epochs 200 --lr 1e-4 --batch 128 --l2 1e-5
+
+# Resume from checkpoint
+julia --project=packages/StockSwingPredictor scripts/train_model.jl --arch v3 --resume
+
+# Overfit diagnostic: train on N examples only — confirms gradients flow (default N=64)
+julia --project=packages/StockSwingPredictor scripts/train_model.jl --arch v3 --overfit
+julia --project=packages/StockSwingPredictor scripts/train_model.jl --arch v3 --overfit 128
+```
+
+Outputs (under `website/data/models/{arch.name}/`):
+- `swing_predictor.bson` — best weights
+- `training_log.json` — full train/val MSE history
+- `model_card.json` — hyperparams, dataset stats, test metrics
+- `epoch_log.jsonl` — per-epoch and per-batch loss (streamed during training)
+
+To stop training cleanly: `touch website/data/models/DualCNN_v3/STOP` (saves checkpoint).
+Hard stop without save: `touch website/data/models/DualCNN_v3/STOP_NOW`.
 
 ### Website
 

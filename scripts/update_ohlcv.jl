@@ -4,18 +4,22 @@ update_ohlcv.jl
 Incrementally update all OHLCV CSVs in website/data/ohlcv/ with bars
 added since the last collection run.
 
-For each existing CSV, reads the last date in the file and fetches only
-the gap from (last date + 1 day) to yesterday. Symbols already current
-are skipped in a single column-read check. Appends new rows in-place —
-no full-file rewrite needed.
+For each existing CSV, reads the last date/datetime in the file and fetches
+only the gap since then. Symbols already current are skipped. Appends new
+rows in-place — no full-file rewrite needed.
+
+Run daily after kite_login.js. For 5-min bars, missing a day means that
+data is permanently lost after Kite's 100-day retention window.
 
 Prerequisites:
   - sidecar/kite_session.json present  (node sidecar/kite_login.js)
   - website/data/ohlcv/ populated       (run collect_ohlcv.jl first)
+  - website/data/ohlcv/*_5min.csv       (run collect_5min_ohlcv.jl first)
 
 Usage:
   julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl
   julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --daily-only
+  julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --skip-5min
   julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --dry-run
   julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --symbol RELIANCE
 """
@@ -44,14 +48,19 @@ function _last_value(path::String, col::Symbol, T::Type)
     return maximum(df[!, col])
 end
 
-_last_daily_date(sym::String)     = _last_value(joinpath(OHLCV_DIR, "$(sym)_daily.csv"),
-                                               :date, Date)
-_last_hourly_datetime(sym::String) = _last_value(joinpath(OHLCV_DIR, "$(sym)_hourly.csv"),
-                                                  :datetime, DateTime)
+_last_daily_date(sym::String)      = _last_value(joinpath(OHLCV_DIR, "$(sym)_daily.csv"),
+                                                :date, Date)
+_last_hourly_datetime(sym::String)  = _last_value(joinpath(OHLCV_DIR, "$(sym)_hourly.csv"),
+                                                   :datetime, DateTime)
+_last_5min_datetime(sym::String)    = _last_value(joinpath(OHLCV_DIR, "$(sym)_5min.csv"),
+                                                   :datetime, DateTime)
+_last_macro_5min_datetime(name::String) = _last_value(
+    joinpath(OHLCV_DIR, "macro", "$(name)_5min.csv"), :datetime, DateTime)
 
-# Last 60-min bar on NSE starts at 15:00 IST — if the file's last bar is at or
-# after this time, the day is complete and we don't need to re-fetch it.
-const HOURLY_LAST_BAR = Time(15, 0, 0)
+# Last bar times for "day complete" checks (IST)
+const HOURLY_LAST_BAR  = Time(15,  0, 0)   # last 60-min bar opens at 15:00
+const FIVEMIN_LAST_BAR = Time(15, 25, 0)   # last 5-min bar opens at 15:25 (NSE)
+const MCX_FIVEMIN_LAST_BAR = Time(23, 25, 0) # last 5-min bar opens at 23:25 (MCX)
 
 # ── Core update loops ─────────────────────────────────────────────────────────
 
@@ -176,6 +185,120 @@ function update_hourly!(symbols, token_map, session, yest::Date; dry_run::Bool)
     end
 end
 
+function update_5min!(symbols, token_map, session, yest::Date; dry_run::Bool)
+    current = updated = failed = 0
+    total   = length(symbols)
+
+    for (i, sym) in enumerate(symbols)
+        last_dt = _last_5min_datetime(sym)
+        if isnothing(last_dt)
+            @warn "[$i/$total] $sym 5min — no existing CSV, skipping (run collect_5min_ohlcv.jl first)"
+            failed += 1; continue
+        end
+
+        last_date = Date(last_dt)
+        last_time = Time(last_dt)
+
+        if last_date > yest || (last_date == yest && last_time >= FIVEMIN_LAST_BAR)
+            current += 1; continue
+        end
+
+        from   = last_date
+        gap    = (yest - from).value + 1
+        n_chks = ceil(Int, gap / 90)
+
+        if dry_run
+            partial = last_time < FIVEMIN_LAST_BAR ? " (partial last day at $last_time)" : ""
+            @info "[$i/$total] $sym 5min: would fetch $from → $yest ($gap days, ~$n_chks call$(n_chks==1 ? "" : "s"))$partial"
+            updated += 1; continue
+        end
+
+        token = get(token_map, sym, nothing)
+        if isnothing(token)
+            @warn "[$i/$total] $sym — no instrument token"; failed += 1; continue
+        end
+
+        new_df = fetch_ohlcv_5min(token, from, yest, session)
+        filter!(row -> row.datetime > last_dt, new_df)
+
+        if isempty(new_df)
+            @warn "[$i/$total] $sym 5min — no new bars after $last_dt"
+            failed += 1; continue
+        end
+
+        path = joinpath(OHLCV_DIR, "$(sym)_5min.csv")
+        CSV.write(path, new_df; append=true)
+        updated += 1
+        @info "[$i/$total] $sym 5min +$(nrow(new_df)) bars ($(new_df.datetime[1]) → $(new_df.datetime[end]))"
+    end
+
+    if dry_run
+        @info "5min: $updated would be updated, $current already current"
+    else
+        @info "5min: $updated updated, $current already current, $failed failed"
+    end
+end
+
+function update_macro_5min!(session, yest::Date; dry_run::Bool)
+    macro_dir = joinpath(OHLCV_DIR, "macro")
+    isdir(macro_dir) || return
+
+    token_map = dry_run ? Dict{String, Tuple{Int,Bool}}() :
+                          build_macro_kite_tokens(session)
+
+    current = updated = failed = 0
+
+    for inst in KITE_MACRO_INSTRUMENTS
+        last_dt = _last_macro_5min_datetime(inst.name)
+        if isnothing(last_dt)
+            @warn "  $(inst.name) 5min — no existing CSV, skipping (run collect_5min_ohlcv.jl first)"
+            failed += 1; continue
+        end
+
+        last_date = Date(last_dt)
+        last_time = Time(last_dt)
+        # Use MCX threshold for MCX instruments, NSE threshold for INDIA_VIX
+        last_bar = inst.exchange == "NSE" ? FIVEMIN_LAST_BAR : MCX_FIVEMIN_LAST_BAR
+
+        if last_date > yest || (last_date == yest && last_time >= last_bar)
+            current += 1; continue
+        end
+
+        from = last_date
+        gap  = (yest - from).value + 1
+
+        if dry_run
+            @info "  $(inst.name) 5min: would fetch $from → $yest ($gap days)"
+            updated += 1; continue
+        end
+
+        entry = get(token_map, inst.name, nothing)
+        if isnothing(entry)
+            @warn "  $(inst.name) — token not found"; failed += 1; continue
+        end
+        token, continuous = entry
+
+        new_df = fetch_kite_macro_5min(token, from, yest, session)
+        filter!(row -> row.datetime > last_dt, new_df)
+
+        if isempty(new_df)
+            @warn "  $(inst.name) 5min — no new bars after $last_dt"
+            failed += 1; continue
+        end
+
+        path = joinpath(macro_dir, "$(inst.name)_5min.csv")
+        CSV.write(path, new_df; append=true)
+        updated += 1
+        @info "  $(inst.name) 5min +$(nrow(new_df)) bars ($(new_df.datetime[1]) → $(new_df.datetime[end]))"
+    end
+
+    if dry_run
+        @info "Macro 5min: $updated would be updated, $current already current"
+    else
+        @info "Macro 5min: $updated updated, $current already current, $failed failed"
+    end
+end
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 function main()
@@ -186,17 +309,22 @@ Usage:
 
 Flags:
   --symbol SYM  Update only this one NSE symbol (e.g. --symbol RELIANCE).
-  --daily-only  Update only daily bars; skip hourly.
+  --daily-only  Update only daily bars; skip hourly and 5-min.
+  --skip-5min   Skip the 5-minute pass (daily + hourly only).
   --dry-run     Report what would be fetched without making any API calls.
 
-Reads each existing *_daily.csv / *_hourly.csv in website/data/ohlcv/,
-finds the last date, and fetches only the gap to yesterday. New rows are
-appended in-place (no full-file rewrite).
+Reads each existing *_daily.csv / *_hourly.csv / *_5min.csv in
+website/data/ohlcv/, finds the last date, and fetches only the gap to
+yesterday. New rows are appended in-place (no full-file rewrite).
+
+NOTE: 5-min bars have a 100-day retention window — run this daily or
+data will be permanently lost.
 """)
         return
     end
 
     daily_only = "--daily-only" in ARGS
+    skip_5min  = "--skip-5min"  in ARGS || "--daily-only" in ARGS
     dry_run    = "--dry-run"    in ARGS
 
     # Optional single-symbol filter (--symbol INFY)
@@ -215,16 +343,19 @@ appended in-place (no full-file rewrite).
                    for f in readdir(OHLCV_DIR) if endswith(f, "_daily.csv")]
     hourly_syms = [replace(f, "_hourly.csv" => "")
                    for f in readdir(OHLCV_DIR) if endswith(f, "_hourly.csv")]
+    fivemin_syms = [replace(f, "_5min.csv"  => "")
+                    for f in readdir(OHLCV_DIR) if endswith(f, "_5min.csv")]
 
     if !isnothing(sym_filter)
-        daily_syms  = filter(==(sym_filter), daily_syms)
-        hourly_syms = filter(==(sym_filter), hourly_syms)
-        isempty(daily_syms) && isempty(hourly_syms) &&
+        daily_syms   = filter(==(sym_filter), daily_syms)
+        hourly_syms  = filter(==(sym_filter), hourly_syms)
+        fivemin_syms = filter(==(sym_filter), fivemin_syms)
+        isempty(daily_syms) && isempty(hourly_syms) && isempty(fivemin_syms) &&
             error("No existing CSV found for symbol '$sym_filter' in $OHLCV_DIR")
         @info "Filtering to symbol: $sym_filter"
     end
 
-    @info "Found $(length(daily_syms)) daily CSVs, $(length(hourly_syms)) hourly CSVs"
+    @info "Found $(length(daily_syms)) daily, $(length(hourly_syms)) hourly, $(length(fivemin_syms)) 5-min CSVs"
     @info "Updating to: $yest"
 
     # ── Load session + instruments (skipped in dry-run) ───────────────────────
@@ -246,10 +377,21 @@ appended in-place (no full-file rewrite).
 
     # ── Update hourly ─────────────────────────────────────────────────────────
     if daily_only
-        @info "Skipping hourly update (--daily-only)."
+        @info "Skipping hourly and 5-min updates (--daily-only)."
     else
         @info "── Hourly bars ──"
         update_hourly!(hourly_syms, token_map, session, yest; dry_run)
+
+        # ── Update 5-min equity ───────────────────────────────────────────────
+        if skip_5min
+            @info "Skipping 5-min update (--skip-5min)."
+        else
+            @info "── 5-min bars (equity) ──"
+            update_5min!(fivemin_syms, token_map, session, yest; dry_run)
+
+            @info "── 5-min bars (macro) ──"
+            update_macro_5min!(session, yest; dry_run)
+        end
     end
 end
 

@@ -10,10 +10,10 @@ const N_MARKET_CHANNELS = 3    # ch1: normalised close, ch2: daily (H-L)/C vol, 
 # Individual stock fine-grained series: 8 calendar weeks of 60-minute bars
 const N_HOURLY_BARS = 280      # 40 trading days × 7 bars/day
 
-# Prediction horizon: 5 trading days at 60-minute resolution
+# Prediction horizon: 10 trading days at 60-minute resolution
 const N_HOURS_PER_DAY = 7      # NSE: 9:15–15:30, 7 hourly bars (last bar partial)
-const N_PRED_DAYS     = 5
-const N_PRED_HOURS    = N_HOURS_PER_DAY * N_PRED_DAYS   # 35 output neurons
+const N_PRED_DAYS     = 10
+const N_PRED_HOURS    = N_HOURS_PER_DAY * N_PRED_DAYS   # 70 output neurons
 
 const N_LLM_FEATURES = 15
 

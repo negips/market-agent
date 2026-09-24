@@ -1,0 +1,422 @@
+\documentclass[11pt, a4paper]{article}
+
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{mathtools}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, shapes.geometric}
+
+\geometry{margin=2.5cm}
+\hypersetup{colorlinks=true, linkcolor=blue, citecolor=blue, urlcolor=blue}
+
+\newtheorem{remark}{Remark}
+\newtheorem{definition}{Definition}
+
+\title{\textbf{Market Dynamics as a Learned Stochastic Landscape} \\
+       \large A Principled Framework for Portfolio Optimisation on NSE/BSE}
+\author{market-agent project}
+\date{September 2026}
+
+% ──────────────────────────────────────────────────────────────────────────────
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+% ──────────────────────────────────────────────────────────────────────────────
+\section{Problem Framing}
+
+We treat the equity market as a \textbf{time-dependent dynamic landscape}: a
+high-dimensional stochastic system whose state at any moment is a composite of
+price history, news events, macroeconomic indicators, financial filings, and
+other observable signals.  Our portfolio is a \emph{low-dimensional
+cross-section} of this landscape — a projection onto a small number of assets —
+and we seek to find the projection that maximises the growth of invested capital
+over time.
+
+Crucially, we do not have a first-principles equation of motion for the market.
+The dynamics must be \emph{learnt from data}.
+
+This framing leads naturally to \textbf{stochastic optimal control on a
+partially observed, data-driven dynamical system}.
+
+% ──────────────────────────────────────────────────────────────────────────────
+\section{Mathematical Formulation}
+
+\subsection{Market State}
+
+Let $\mathbf{m}_t \in \mathbb{R}^D$ be the market state at discrete time step $t$
+(one trading day).  It is a composite vector:
+\[
+  \mathbf{m}_t = \bigl[\underbrace{\mathbf{p}_t}_{\text{prices}},\;
+                        \underbrace{\mathbf{n}_t}_{\text{news embeddings}},\;
+                        \underbrace{\mathbf{f}_t}_{\text{macro / fundamentals}},\;
+                        \underbrace{\mathbf{s}_t}_{\text{sentiment}}\bigr]
+\]
+
+The true dynamics are unknown but assumed to be a first-order Markov process
+(after sufficient history is included in the state):
+\begin{equation}\label{eq:dynamics}
+  \mathbf{m}_{t+1} = F_\theta(\mathbf{m}_t) + \boldsymbol{\epsilon}_t,
+  \qquad \boldsymbol{\epsilon}_t \sim \mathcal{N}(\mathbf{0},\, \Sigma_\epsilon)
+\end{equation}
+where $F_\theta$ is a neural network to be learnt from historical data.
+
+\subsection{Portfolio as a Cross-Sectional Projection}
+
+Let $\mathbf{S}_t \in \mathbb{R}^N$ be the vector of prices for $N$ stocks.
+A portfolio is a weight vector $\mathbf{w}_t \in \mathbb{R}^N$ with
+$\sum_i w_{i,t} = 1$, $w_{i,t} \geq 0$ (long-only).  Portfolio value evolves as:
+\[
+  V_{t+1} = V_t \cdot \bigl(1 + \mathbf{w}_t^\top \mathbf{r}_{t+1}\bigr),
+\]
+where $\mathbf{r}_{t+1} \in \mathbb{R}^N$ is the vector of simple returns:
+$r_{i,t+1} = (S_{i,t+1} - S_{i,t})/S_{i,t}$.
+
+The portfolio is a \emph{linear projection} of the market onto a simplex; the
+``low-dimensional cross-section'' constraint means $N \ll D$ and we cap
+concentration $w_i \leq w_{\max}$.
+
+\subsection{Objective: Growth-Optimal (Kelly) Criterion}
+
+We maximise \emph{expected log-growth} over a horizon $T$:
+\begin{equation}\label{eq:kelly}
+  \max_{\{\mathbf{w}_t\}_{t=1}^T}\;
+  \mathbb{E}\!\left[\sum_{t=1}^{T} \log\!\left(1 + \mathbf{w}_t^\top
+  \mathbf{r}_{t+1}\right)\right]
+\end{equation}
+subject to $\mathbf{w}_t \in \Delta^{N-1}$ and market constraints.
+
+\begin{remark}[Why Kelly, not Sharpe]
+The Sharpe ratio is not a Markovian reward — it depends on the full history of
+returns.  Log-growth is additive and time-separable, making it a proper reward
+signal for sequential decision-making.  Kelly-optimal portfolios also provably
+maximise long-run wealth almost surely.
+\end{remark}
+
+\subsection{The Key Insight: Distribution, not Point Prediction}
+
+Maximising \eqref{eq:kelly} does \emph{not} require predicting individual
+returns $r_{i,t+1}$ precisely.  It requires estimating the conditional
+distribution:
+\[
+  p\!\left(\mathbf{r}_{t+1} \mid \mathbf{m}_t\right)
+\]
+well enough to compute the optimal weights $\mathbf{w}_t^*$.  Under a
+conditional Gaussian approximation with mean $\hat{\boldsymbol{\mu}}_t$ and
+covariance $\hat{\Sigma}_t$, the Kelly objective reduces to a
+\textbf{mean-variance quadratic programme}:
+\begin{equation}\label{eq:qp}
+  \mathbf{w}_t^* = \arg\max_{\mathbf{w} \in \Delta}\;
+    \hat{\boldsymbol{\mu}}_t^\top \mathbf{w}
+    - \lambda\, \mathbf{w}^\top \hat{\Sigma}_t\, \mathbf{w}
+    - \kappa\, \|\mathbf{w} - \mathbf{w}_{t-1}\|_1
+\end{equation}
+where:
+\begin{itemize}[noitemsep]
+  \item $\lambda > 0$ — risk-aversion parameter,
+  \item $\kappa > 0$ — turnover penalty encoding transaction costs
+        ($\approx 0.5\%$ roundtrip on NSE including brokerage, STT, stamp, GST),
+  \item $\|\mathbf{w} - \mathbf{w}_{t-1}\|_1$ — $\ell_1$ turnover; convex,
+        differentiable almost everywhere.
+\end{itemize}
+
+This QP is solvable in closed form for small $N$, or via projected gradient
+descent.  Crucially, the QP is \textbf{differentiable with respect to its
+inputs} $(\hat{\boldsymbol{\mu}}_t, \hat{\Sigma}_t)$, so gradients flow back
+into the encoder.
+
+% ──────────────────────────────────────────────────────────────────────────────
+\section{Architecture}
+
+The system has three coupled, jointly trainable components.
+
+\subsection{Multi-Modal Market Encoder}
+
+Encodes the heterogeneous market state $\mathbf{m}_t$ into a compact latent
+representation $\mathbf{z}_t \in \mathbb{R}^{128}$:
+
+\begin{align*}
+  \mathbf{e}_\text{price}  &= \text{MarketCNN}(\text{OHLCV}_{t-28:t},\,
+                                                \text{vol}_{t-28:t}) \in \mathbb{R}^{64} \\
+  \mathbf{e}_\text{news}   &= \text{NewsEncoder}(\text{LLM embeddings}_{t-5:t}) \in \mathbb{R}^{32} \\
+  \mathbf{e}_\text{macro}  &= \text{MLP}(\text{rates, VIX-equiv, sector indices}) \in \mathbb{R}^{16} \\
+  \mathbf{e}_\text{port}   &= \text{MLP}(\mathbf{w}_{t-1},\,
+                                          \text{P\&L},\, \text{days held}) \in \mathbb{R}^{16} \\[4pt]
+  \mathbf{z}_t &= \text{CrossAttention}\!\left(
+    [\mathbf{e}_\text{price};\,\mathbf{e}_\text{news};\,
+     \mathbf{e}_\text{macro};\,\mathbf{e}_\text{port}]
+  \right) \in \mathbb{R}^{128}
+\end{align*}
+
+The cross-attention fusion allows each modality to attend selectively to the
+others — e.g.\ price patterns are weighted more heavily when no recent news
+exists.
+
+\subsection{World Model (Latent Dynamics)}
+
+A \textbf{Recurrent State Space Model} (RSSM) operating in the latent space:
+\begin{equation}\label{eq:rssm}
+  \hat{\mathbf{z}}_{t+1} = \underbrace{d_\phi(\mathbf{h}_t)}_{\text{deterministic backbone}}
+  + \underbrace{\sigma_\phi(\mathbf{h}_t) \cdot \boldsymbol{\eta}}_{\text{stochastic residual}},
+  \qquad \boldsymbol{\eta} \sim \mathcal{N}(\mathbf{0}, I)
+\end{equation}
+where $\mathbf{h}_t = \text{GRU}(\mathbf{z}_t, \mathbf{h}_{t-1})$ is a
+deterministic hidden state.
+
+The stochastic residual $\sigma_\phi(\mathbf{h}_t)$ encodes epistemic
+uncertainty: large in volatile or news-heavy regimes, small in trending ones.
+The world model enables \textbf{multi-step latent rollouts} without re-querying
+real data — key for planning and for backpropagating through time.
+
+\subsection{Conditional Return Estimator}
+
+Two lightweight heads on $\mathbf{z}_t$:
+\begin{align}
+  \hat{\boldsymbol{\mu}}_t  &= \mu_\psi(\mathbf{z}_t) \in \mathbb{R}^N
+    \quad\text{(expected 1-week returns)} \\
+  \hat{L}_t                 &= L_\psi(\mathbf{z}_t) \in \mathbb{R}^{N \times K}
+    \quad\text{(Cholesky factor, } K \ll N \text{)} \\
+  \hat{\Sigma}_t            &= \hat{L}_t \hat{L}_t^\top + \text{diag}(\hat{\mathbf{d}}_t)
+    \quad\text{(low-rank + diagonal covariance)}
+\end{align}
+
+The low-rank structure ($K \approx 10$--$20$ latent factors) keeps the
+covariance estimate tractable and imposes a factor model structure that mirrors
+how markets actually move (a few common factors driving most co-movement).
+
+\subsection{Differentiable Portfolio Optimiser}
+
+The QP in \eqref{eq:qp} is solved at each time step.  It takes
+$(\hat{\boldsymbol{\mu}}_t, \hat{\Sigma}_t, \mathbf{w}_{t-1})$ as inputs and
+returns the optimal weights $\mathbf{w}_t^*$.  NSE-specific hard constraints are
+layered on:
+
+\begin{itemize}[noitemsep]
+  \item \textbf{Simplex}: $\mathbf{w} \geq \mathbf{0}$, $\mathbf{1}^\top\mathbf{w} = 1$
+  \item \textbf{Concentration cap}: $w_i \leq 0.15$
+  \item \textbf{T+1 settlement}: $w_i$ cannot decrease on the day after purchase
+        (stocks bought at $t$ are locked until $t+1$)
+  \item \textbf{Circuit filters}: zero out weights for stocks on upper/lower circuit
+\end{itemize}
+
+% ──────────────────────────────────────────────────────────────────────────────
+\section{End-to-End Training}
+
+The full stack is differentiable:
+\[
+  \underbrace{\mathbf{m}_t}_{\text{observations}}
+  \;\xrightarrow{\text{Encoder}}\;
+  \mathbf{z}_t
+  \;\xrightarrow{\text{Return heads}}\;
+  (\hat{\boldsymbol{\mu}}_t, \hat{\Sigma}_t)
+  \;\xrightarrow{\text{QP}}\;
+  \mathbf{w}_t^*
+  \;\xrightarrow{\text{market}}\;
+  \underbrace{\log(1 + \mathbf{w}_t^{*\top}\mathbf{r}_{t+1})}_{\text{reward}}
+\]
+
+Gradients of the portfolio return flow back through the QP (via the KKT
+conditions of the active constraints) and into the encoder and return heads.
+
+\subsection{Composite Training Loss}
+
+\begin{equation}\label{eq:loss}
+  \mathcal{L} = \underbrace{-\sum_t \log(1 + \mathbf{w}_t^{*\top}\mathbf{r}_{t+1})}_{\mathcal{L}_\text{Kelly}}
+  + \underbrace{\alpha \sum_t \|\hat{\mathbf{z}}_{t+1} - \mathbf{z}_{t+1}\|^2}_{\mathcal{L}_\text{world model}}
+  + \underbrace{\beta \sum_t \|\hat{\boldsymbol{\mu}}_t - \mathbf{r}_{t+1}\|^2}_{\mathcal{L}_\text{return}}
+  + \underbrace{\gamma \,\Omega(\mathbf{w}_t^*)}_{\mathcal{L}_\text{reg}}
+\end{equation}
+
+\begin{itemize}[noitemsep]
+  \item $\mathcal{L}_\text{Kelly}$ — primary objective: maximise log-growth
+  \item $\mathcal{L}_\text{world model}$ — next-state prediction; anchors the
+        latent representation to observable market dynamics
+  \item $\mathcal{L}_\text{return}$ — return calibration; ensures
+        $\hat{\boldsymbol{\mu}}_t$ is informative even when
+        $\mathcal{L}_\text{Kelly}$ gradients are noisy
+  \item $\mathcal{L}_\text{reg}$ — concentration and drawdown regularisation
+\end{itemize}
+
+\subsection{Training Phases}
+
+\begin{algorithm}[H]
+\caption{Staged Training Protocol}
+\begin{algorithmic}[1]
+\State \textbf{Phase 1 — World Model Pretraining} (self-supervised)
+\State \quad Mask $20\%$ of $\mathbf{m}_t$ at random; train Encoder + RSSM to reconstruct.
+\State \quad Train RSSM on sequences: given $\mathbf{z}_1, ..., \mathbf{z}_T$, predict $\mathbf{z}_{T+1}$.
+\State \quad Loss: $\mathcal{L}_\text{world model}$ only. Freeze after convergence.
+\Statex
+\State \textbf{Phase 2 — Return Distribution Calibration}
+\State \quad Fix Encoder + RSSM. Train return heads $(\mu_\psi, L_\psi)$.
+\State \quad Loss: Gaussian log-likelihood of observed $\mathbf{r}_{t+1}$.
+\State \quad Validate: IC (Spearman corr between $\hat{\mu}_{i,t}$ and $r_{i,t+1}$) $> 0.03$.
+\Statex
+\State \textbf{Phase 3 — End-to-End Portfolio Training}
+\State \quad Unfreeze all components. Optimise \eqref{eq:loss} with the full composite loss.
+\State \quad Use latent rollouts (via RSSM) for multi-step policy improvement.
+\Statex
+\State \textbf{Phase 4 — Online Adaptation}
+\State \quad Deploy with small learning rate $\eta_\text{online} \ll \eta_\text{train}$.
+\State \quad Regime detection: if $\log p(\mathbf{z}_t \mid \mathbf{z}_{t-1}) \ll \bar{\ell}$,
+       reduce all $w_i$ until re-calibration.
+\end{algorithmic}
+\end{algorithm}
+
+% ──────────────────────────────────────────────────────────────────────────────
+\section{Why This Avoids the Zero-Predictor Failure}
+
+The previous CNN was trained with an MSE loss on individual log-returns:
+\[
+  \mathcal{L}_\text{CNN} = \sum_{i,t} (\hat{r}_{i,t} - r_{i,t})^2
+\]
+
+The global minimum of this loss is $\hat{r}_{i,t} = 0\;\forall\, i,t$ because
+returns are approximately zero-mean.  The model learnt nothing.
+
+Under the Kelly objective \eqref{eq:kelly}, the loss at the \emph{equal-weight
+portfolio} baseline (the analogue of ``predict zero'') is:
+\[
+  \mathcal{L}_\text{Kelly}\big|_{\mathbf{w} = \tfrac{1}{N}\mathbf{1}}
+  = -\sum_t \log\!\left(1 + \tfrac{1}{N}\sum_i r_{i,t+1}\right)
+  \approx -\text{(market return)}
+\]
+
+Any model that learns to overweight the top-quartile stocks versus
+the bottom quartile obtains a strictly better objective value, because
+cross-sectional variance of returns is large ($\approx 2$--$4\%$ weekly
+standard deviation between the best and worst deciles on NSE).
+\textbf{The cross-sectional signal exists even when aggregate direction
+is unpredictable} — market returns cancel in the relative comparison.
+
+\begin{remark}[Information Coefficient as diagnostic]
+During Phase 2, before committing to end-to-end training, validate signal
+quality via the \emph{Information Coefficient} (IC):
+\[
+  \text{IC}_t = \text{Spearman}\!\left(\hat{\mu}_{i,t},\; r_{i,t+1}\right)
+\]
+A time-average IC $> 0.03$ is tradeable, $> 0.05$ is usable, $> 0.10$ is
+excellent.  If IC is near zero after Phase 2, the encoder has not learnt
+any cross-sectional signal — stop before Phase 3 and investigate features.
+\end{remark}
+
+% ──────────────────────────────────────────────────────────────────────────────
+\section{The Koopman Perspective}
+
+The encoder implicitly learns a \textbf{Koopman embedding}: a lifted feature
+space in which the nonlinear market dynamics become approximately linear.
+
+\begin{definition}[Koopman operator]
+For a dynamical system $\mathbf{m}_{t+1} = F(\mathbf{m}_t)$, the Koopman
+operator $\mathcal{K}$ acts on observables $g: \mathcal{M} \to \mathbb{R}$ as:
+\[
+  (\mathcal{K} g)(\mathbf{m}) = g(F(\mathbf{m}))
+\]
+$\mathcal{K}$ is linear and infinite-dimensional, but can be approximated by a
+finite-dimensional matrix in a learnt basis.
+\end{definition}
+
+Classical factor models (Fama-French, etc.) are first-order linear Koopman
+approximations in a PCA basis.  Our encoder learns \emph{nonlinear, data-driven
+Koopman eigenfunctions} — the directions in which market dynamics are most
+predictable — and the RSSM transition operates linearly in this latent space.
+
+This also explains why the low-rank covariance structure is natural: in the
+Koopman basis, $K$ dominant eigenmodes drive most of the cross-sectional
+co-movement, with idiosyncratic residuals treated as diagonal noise.
+
+% ──────────────────────────────────────────────────────────────────────────────
+\section{NSE-Specific Constraints and Market Microstructure}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{Constraint} & \textbf{Mechanism} & \textbf{Modelling} \\
+\midrule
+T+1 settlement      & Bought stock locked 1 day      & Hard QP constraint \\
+Circuit limits      & $\pm10$/$20\%$ price bands      & Zero out $w_i$ pre-QP \\
+Concentration cap   & Single position $\leq 15\%$     & QP box constraint \\
+Transaction costs   & $\approx 0.5\%$ roundtrip       & $\ell_1$ turnover penalty \\
+Illiquidity         & Cost $\propto \Delta w_i / \text{ADV}_i$ & Weighted turnover penalty \\
+No shorting         & Long-only                       & $w_i \geq 0$ simplex \\
+\bottomrule
+\end{tabular}
+\caption{NSE market constraints and their implementation in the optimiser.}
+\end{table}
+
+The illiquidity-adjusted turnover penalty replaces the uniform $\kappa$ in
+\eqref{eq:qp}:
+\[
+  \mathcal{L}_\text{turnover} = \sum_i \kappa_i |w_{i,t} - w_{i,t-1}|,
+  \qquad \kappa_i \propto \frac{1}{\text{ADV}_i}
+\]
+where $\text{ADV}_i$ is the 20-day average daily traded value of stock $i$.
+This automatically discourages large moves in illiquid names.
+
+% ──────────────────────────────────────────────────────────────────────────────
+\section{Data Sources and Feature Mapping}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{p{4cm} p{4.5cm} p{4cm}}
+\toprule
+\textbf{Source} & \textbf{Signal extracted} & \textbf{Existing module} \\
+\midrule
+OHLCV (daily + hourly) & Price momentum, volatility, volume patterns & InferenceCache \\
+BSE corporate filings & Results surprise, board decisions, shareholding & NewsMonitor (bse.jl) \\
+Earnings call transcripts & Guidance revisions, management tone & TijoriData (fetch\_document) \\
+Financial news RSS & Sector catalysts, analyst upgrades & NewsMonitor (rss.jl) \\
+ICRA/CRISIL ratings & Credit events, downgrade/upgrade & (to build) \\
+RBI policy releases & Rate-sensitive sector impact & (to build) \\
+SIAM/AMFI monthly data & Auto/fund-flow sector signals & (to build) \\
+\bottomrule
+\end{tabular}
+\caption{Information sources feeding the multi-modal encoder.}
+\end{table}
+
+LLM-extracted signals (via \texttt{llm\_extract.jl} and \texttt{NewsMonitor})
+produce scalar features per company per event:
+\[
+  \mathbf{n}_t = \left[\text{sentiment}, \text{severity},
+                       \text{revenue\_surprise}, \text{guidance\_direction},
+                       \text{days\_since\_last\_event}, ...\right] \in \mathbb{R}^{15}
+\]
+These become part of the encoder's news modality $\mathbf{e}_\text{news}$.
+
+% ──────────────────────────────────────────────────────────────────────────────
+\section{Build Order}
+
+The system decomposes into four increasingly complex milestones:
+
+\begin{enumerate}
+  \item \textbf{Cross-sectional return estimator + Markowitz QP} \\
+    Input: OHLCV only ($\mathbf{e}_\text{price}$).  No world model yet.
+    Estimate $(\hat{\boldsymbol{\mu}}_t, \hat{\Sigma}_t)$ and solve the QP.
+    Validate via IC. This is the minimum viable portfolio model.
+
+  \item \textbf{Add the world model (RSSM)} \\
+    Pretrain on price sequences.  Enables multi-step latent rollouts
+    and sharper gradient signal during Phase 3.
+
+  \item \textbf{Add multi-modal features} \\
+    Incorporate LLM news embeddings, macro indicators.
+    Measure IC lift from each modality independently.
+
+  \item \textbf{End-to-end portfolio training} \\
+    Full composite loss \eqref{eq:loss}.  Differentiable QP layer.
+    Online adaptation with regime detection.
+\end{enumerate}
+
+Each milestone produces a \emph{runnable system} with measurable IC and
+backtested returns — no dead ends where months of work yield nothing evaluable.
+
+% ──────────────────────────────────────────────────────────────────────────────
+\end{document}

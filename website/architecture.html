@@ -158,7 +158,7 @@
 
     <!-- SVG diagram -->
     <div class="diagram-card">
-      <svg id="arch-svg" viewBox="0 0 870 658"
+      <svg id="arch-svg" viewBox="0 0 760 658"
            xmlns="http://www.w3.org/2000/svg"
            style="font-family:'JetBrains Mono',monospace"></svg>
     </div>
@@ -193,8 +193,9 @@ const SHARED_HOURLY = [
   { ch:256, ck:'pool',  label:'GlobalMeanPool',        sub:'→ (256, B)',     p:0 },
 ];
 
-const MLP_LAYERS = [
-  { ch:512, ck:'dense',  label:'Dense(527→512, relu)', p:270336 },
+// v1 / v2: mlp_hidden=[512,256,128,64] → dropout tapers 0.30 → 0.20 → 0.10 → skip
+const MLP_LAYERS_35 = [
+  { ch:512, ck:'dense',  label:'Dense(512→512, relu)', p:262656 },
   { ck:'drop', label:'Dropout  p = 0.30' },
   { ch:256, ck:'dense',  label:'Dense(512→256, relu)', p:131328 },
   { ck:'drop', label:'Dropout  p = 0.20' },
@@ -204,12 +205,25 @@ const MLP_LAYERS = [
   { ch:35,  ck:'output', label:'Dense(64→35)',          p:2275 },
 ];
 
+// v3: mlp_hidden=[512,256,128] → dropout tapers 0.30 → 0.15 → skip; no 128→64 layer
+const MLP_LAYERS_70 = [
+  { ch:512, ck:'dense',  label:'Dense(512→512, relu)', p:262656 },
+  { ck:'drop', label:'Dropout  p = 0.30' },
+  { ch:256, ck:'dense',  label:'Dense(512→256, relu)', p:131328 },
+  { ck:'drop', label:'Dropout  p = 0.15' },
+  { ch:128, ck:'dense',  label:'Dense(256→128, relu)', p:32896 },
+  { ch:70,  ck:'output', label:'Dense(128→70)',         p:9030 },
+];
+
 const ARCH_DATA = {
   v1: {
     name: 'DualCNN_v1',
-    subtitle: 'Mean-pool · 610K params',
+    subtitle: 'Mean-pool · 602K params',
     desc: 'All 149 peer embeddings are averaged into a single context vector. Simple and fast — but the model cannot learn which peers are relevant for each target.',
-    total: 610083,
+    total: 602403,
+    output_value: '35 bars', output_sub: '5-day hourly log-return trajectory',
+    output_label: '↓  predicted log-return trajectory  (35 hourly bars × B)',
+    mlp_layers: MLP_LAYERS_35,
     market_layers: [
       ...SHARED_MARKET,
       { ch:128, ck:'pool', label:'Mean-pool context', sub:'149 peers → (128, B)', p:0 },
@@ -218,14 +232,17 @@ const ARCH_DATA = {
     breakdown: [
       { name:'Market CNN', params:31232,  color:'#4f8ef7', note:'Shared: 150 company-days per batch step' },
       { name:'Hourly CNN', params:133760, color:'#4f8ef7', note:'~2.1 examples / param' },
-      { name:'MLP Head',   params:445091, color:'#3dd68c', note:'Bottleneck — 0.63 ex/param at Dense 527→512', warn:true },
+      { name:'MLP Head',   params:437411, color:'#3dd68c', note:'Bottleneck — 0.66 ex/param at Dense 512→512', warn:true },
     ],
   },
   v2: {
     name: 'DualCNN_v2',
-    subtitle: 'Cross-attention · 676K params',
+    subtitle: 'Cross-attention · 668K params',
     desc: 'The target stock\'s embedding queries the 149 peer embeddings via multi-head attention. The model learns which peers are relevant for each prediction — selectivity that mean-pool cannot express.',
-    total: 675619,
+    total: 667939,
+    output_value: '35 bars', output_sub: '5-day hourly log-return trajectory',
+    output_label: '↓  predicted log-return trajectory  (35 hourly bars × B)',
+    mlp_layers: MLP_LAYERS_35,
     market_layers: [
       ...SHARED_MARKET,
       { ch:128, ck:'attn', label:'CrossAttn(128, h=2)', sub:'Q=target · K=V=peers', p:65536 },
@@ -235,7 +252,27 @@ const ARCH_DATA = {
       { name:'Market CNN', params:31232,  color:'#4f8ef7', note:'Shared: 150 company-days per batch step' },
       { name:'Hourly CNN', params:133760, color:'#4f8ef7', note:'~2.1 examples / param' },
       { name:'Attention',  params:65536,  color:'#f5c842', note:'4 × Dense(128→128, no bias) — v2 only' },
-      { name:'MLP Head',   params:445091, color:'#3dd68c', note:'Bottleneck — 0.63 ex/param at Dense 527→512', warn:true },
+      { name:'MLP Head',   params:437411, color:'#3dd68c', note:'Bottleneck — 0.66 ex/param at Dense 512→512', warn:true },
+    ],
+  },
+  v3: {
+    name: 'DualCNN_v3',
+    subtitle: 'Cross-attn + LM · 666K params',
+    desc: 'Cross-attention CNN with three changes vs v2: (1) 10-day (70-bar) output horizon — longer window gives bipower variation a stable sample for M; (2) Lee-Mykland M² loss weighting — near-constant label trajectories get near-zero weight, jump events dominate; (3) MLP goes 256→128→70, skipping the 128→64 bottleneck.',
+    total: 666438,
+    output_value: '70 bars', output_sub: '10-day hourly log-return trajectory',
+    output_label: '↓  predicted log-return trajectory  (70 hourly bars × B)',
+    mlp_layers: MLP_LAYERS_70,
+    market_layers: [
+      ...SHARED_MARKET,
+      { ch:128, ck:'attn', label:'CrossAttn(128, h=2)', sub:'Q=target · K=V=peers', p:65536 },
+    ],
+    hourly_layers: SHARED_HOURLY,
+    breakdown: [
+      { name:'Market CNN', params:31232,  color:'#4f8ef7', note:'Shared: 150 company-days per batch step' },
+      { name:'Hourly CNN', params:133760, color:'#4f8ef7', note:'~2.1 examples / param' },
+      { name:'Attention',  params:65536,  color:'#f5c842', note:'4 × Dense(128→128, no bias)' },
+      { name:'MLP Head',   params:435910, color:'#3dd68c', note:'Dense(128→70) — skips 128→64 layer vs v2', warn:true },
     ],
   },
 };
@@ -251,20 +288,20 @@ function svgEl(tag, attrs, text) {
 }
 
 // Block width: log-scaled so channels visually represent relative size.
-// ch=1→28px, ch=32→96px, ch=128→144px, ch=256→162px, ch=527→188px
+// ch=1→28px, ch=32→96px, ch=128→144px, ch=256→162px, ch=512→185px
 function cw(ch) {
   return Math.round(28 + 160 * Math.log(Math.max(1, ch)) / Math.log(530));
 }
 
-// Color sets per layer type { f:fill, t:top-face, r:right-face, s:stroke }
+// Color sets per layer type { f:fill, s:stroke }
 const COL = {
-  input:  { f:'#1b2038', t:'#242b4e', r:'#121629', s:'#3e4878' },
-  conv:   { f:'#122455', t:'#1b3476', r:'#0c1938', s:'#4f8ef7' },
-  pool:   { f:'#101e46', t:'#162860', r:'#0b1430', s:'#3566c0' },
-  attn:   { f:'#362c05', t:'#4e3f08', r:'#241d03', s:'#f5c842' },
-  concat: { f:'#0b2e20', t:'#103f2c', r:'#071e14', s:'#3dd68c' },
-  dense:  { f:'#0d2c1c', t:'#123c27', r:'#081d12', s:'#2da870' },
-  output: { f:'#2e1012', t:'#3f1517', r:'#1f090a', s:'#f76f6f' },
+  input:  { f:'#1b2038', s:'#3e4878' },
+  conv:   { f:'#122455', s:'#4f8ef7' },
+  pool:   { f:'#101e46', s:'#3566c0' },
+  attn:   { f:'#362c05', s:'#f5c842' },
+  concat: { f:'#0b2e20', s:'#3dd68c' },
+  dense:  { f:'#0d2c1c', s:'#2da870' },
+  output: { f:'#2e1012', s:'#f76f6f' },
 };
 
 function fmtP(p) {
@@ -272,29 +309,17 @@ function fmtP(p) {
   return p >= 1000 ? (p/1000).toFixed(p>=100000?0:1)+'K' : String(p);
 }
 
-// Draw a 3-D block. Returns { cx (visual face center-x), bot (bottom y of main face) }
+// Draw a flat rectangular block. Returns { cx, bot }
 function drawBlock(g, cx, y, ch, h, ck, label, sub, pcount) {
-  const w = cw(ch), d = 8;
+  const w = cw(ch);
   const x = cx - w / 2;
   const c = COL[ck] || COL.input;
 
-  // Right face
-  g.appendChild(svgEl('polygon', {
-    points: `${x+w},${y} ${x+w+d},${y-d} ${x+w+d},${y+h-d} ${x+w},${y+h}`,
-    fill: c.r, stroke: c.s, 'stroke-width': '0.5', 'stroke-linejoin': 'round',
-  }));
-  // Top face
-  g.appendChild(svgEl('polygon', {
-    points: `${x},${y} ${x+d},${y-d} ${x+w+d},${y-d} ${x+w},${y}`,
-    fill: c.t, stroke: c.s, 'stroke-width': '0.5', 'stroke-linejoin': 'round',
-  }));
-  // Main face
   g.appendChild(svgEl('rect', {
-    x, y, width: w, height: h, rx: 2,
-    fill: c.f, stroke: c.s, 'stroke-width': '0.8',
+    x, y, width: w, height: h, rx: 3,
+    fill: c.f, stroke: c.s, 'stroke-width': '1',
   }));
 
-  // Labels centered on main face
   const lx = x + w / 2;
   const ly = y + h / 2;
   g.appendChild(svgEl('text', {
@@ -308,10 +333,9 @@ function drawBlock(g, cx, y, ch, h, ck, label, sub, pcount) {
     'dominant-baseline': 'middle',
   }, sub));
 
-  // Param count to the right
   if (pcount) {
     g.appendChild(svgEl('text', {
-      x: x + w + d + 5, y: y + h / 2 + 1,
+      x: x + w + 6, y: ly + 1,
       fill: '#424e6c', 'font-size': '8.5', 'text-anchor': 'start',
       'dominant-baseline': 'middle',
     }, fmtP(pcount)));
@@ -376,10 +400,9 @@ function drawHeader(g, x, y, text) {
 
 // ─── Main render ─────────────────────────────────────────────────────────────
 
-const CX_M   = 135;  // market branch center-x
-const CX_H   = 570;  // hourly branch center-x
-const CX_LLM = 750;  // LLM input center-x
-const CX_MLP = 352;  // MLP center-x
+const CX_M   = 140;  // market branch center-x
+const CX_H   = 560;  // hourly branch center-x
+const CX_MLP = 350;  // MLP center-x
 const BLK_H  = 28;   // standard block height
 const ATN_H  = 38;   // attention block height (taller)
 const STEP   = 47;   // vertical step between branch layers
@@ -399,15 +422,13 @@ function renderArch(archKey) {
   const lastH_m    = lastIsAttn ? ATN_H : BLK_H;
   const mBotY      = yLast + lastH_m;
   const hBotY      = yStart + (arch.hourly_layers.length - 1) * STEP + BLK_H;
-  const lBotY      = yLast + BLK_H;  // LLM input at same y as last branch layer
 
-  const Y_CONCAT   = Math.max(mBotY, hBotY, lBotY) + 54;
+  const Y_CONCAT   = Math.max(mBotY, hBotY) + 54;
   const Y_MLP      = Y_CONCAT + BLK_H + 20;
 
   // ── Section headers ───────────────────────────────────────────────────────
   drawHeader(g, CX_M,   22, 'Market CNN');
   drawHeader(g, CX_H,   22, 'Hourly CNN');
-  drawHeader(g, CX_LLM, 22, 'LLM');
   drawHeader(g, CX_MLP, Y_MLP + 130, 'MLP Head');
 
   // ── Market branch ─────────────────────────────────────────────────────────
@@ -429,22 +450,17 @@ function renderArch(archKey) {
     prevBot_h = y + BLK_H;
   });
 
-  // ── LLM input (single block, aligned with last branch layer) ──────────────
-  drawBlock(g, CX_LLM, yLast, 15, BLK_H, 'input', 'LLM features', '15 × B', 0);
-
   // ── Branch-to-concat connectors ───────────────────────────────────────────
-  // Small "cat()" label above concat
   g.appendChild(svgEl('text', {
     x: CX_MLP, y: Y_CONCAT - 9,
     fill: '#2a6644', 'font-size': '9', 'text-anchor': 'middle',
-  }, 'cat(target, ctx, hourly, llm)  →  527'));
+  }, 'cat(target, ctx, hourly)  →  512'));
 
-  drawCurve(g, CX_M,   mBotY, CX_MLP, Y_CONCAT);
-  drawCurve(g, CX_H,   hBotY, CX_MLP, Y_CONCAT);
-  drawCurve(g, CX_LLM, lBotY, CX_MLP, Y_CONCAT, true /* dashed */);
+  drawCurve(g, CX_M, mBotY, CX_MLP, Y_CONCAT);
+  drawCurve(g, CX_H, hBotY, CX_MLP, Y_CONCAT);
 
   // ── Concat block ──────────────────────────────────────────────────────────
-  drawBlock(g, CX_MLP, Y_CONCAT, 527, BLK_H, 'concat', 'Concatenate', '527 = 128+128+256+15', 0);
+  drawBlock(g, CX_MLP, Y_CONCAT, 512, BLK_H, 'concat', 'Concatenate', '512 = 128+128+256', 0);
 
   // ── MLP layers ────────────────────────────────────────────────────────────
   // prevBot_mlp: bottom of the last drawn dense block (arrows originate here).
@@ -453,7 +469,7 @@ function renderArch(archKey) {
   let py = Y_MLP;
   let prevBot_mlp = Y_CONCAT + BLK_H;
 
-  MLP_LAYERS.forEach((L) => {
+  arch.mlp_layers.forEach((L) => {
     if (L.ck === 'drop') {
       drawDropout(g, CX_MLP, py, L.label);
       py += 14;
@@ -470,7 +486,7 @@ function renderArch(archKey) {
   g.appendChild(svgEl('text', {
     x: CX_MLP, y: outputY,
     fill: '#8e3030', 'font-size': '9.5', 'text-anchor': 'middle',
-  }, '↓  predicted log-return trajectory  (35 hourly bars × B)'));
+  }, arch.output_label));
 
   // ── Total params label ────────────────────────────────────────────────────
   g.appendChild(svgEl('text', {
@@ -488,7 +504,7 @@ function renderStats(arch) {
     { label:'Training examples', value:'280K', sub:'val: 35K · test: 35K', cls:'' },
     { label:'Examples / param', value:(ex/arch.total).toFixed(2),
       sub: ex/arch.total < 1 ? 'MLP head is under-determined' : 'OK', cls: ex/arch.total < 1 ? 'yellow' : 'green' },
-    { label:'Output', value:'35 bars', sub:'5-day hourly log-return trajectory', cls:'' },
+    { label:'Output', value: arch.output_value, sub: arch.output_sub, cls:'' },
   ];
   document.getElementById('stat-row').innerHTML = cards.map(c => `
     <div class="stat-card">

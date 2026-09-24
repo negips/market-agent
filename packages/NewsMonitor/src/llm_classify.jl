@@ -124,7 +124,9 @@ function classify_item(item::NewsItem; api_key::String)::Union{NewsSignal, Nothi
         url           = item.url,
         published_at  = item.published_at,
         classified_at = now(UTC),
-        symbol        = string(get(inp, :nse_symbol, "")),
+        symbol        = let llm_sym = string(get(inp, :nse_symbol, ""))
+                            isempty(llm_sym) ? item.nse_symbol : llm_sym
+                        end,
         event_type    = string(get(inp, :event_type, "other")),
         sentiment     = Float32(clamp(Float64(get(inp, :sentiment, 0.0)), -1.0, 1.0)),
         severity      = Float32(clamp(Float64(get(inp, :severity,  0.0)),  0.0, 1.0)),

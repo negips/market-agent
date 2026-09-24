@@ -72,6 +72,19 @@ function run_poller(config::PollerConfig)
         end
     end
 
+    # ── NSE poller ────────────────────────────────────────────────────────────
+    @async while true
+        try
+            if !config.market_hours_only || is_market_hours()
+                items = fetch_nse_announcements()
+                dedup_and_send(items)
+            end
+        catch e
+            @warn "NSE poller error: $(sprint(showerror, e))"
+        end
+        sleep(config.bse_interval)
+    end
+
     # ── BSE poller ────────────────────────────────────────────────────────────
     @async while true
         try
@@ -100,7 +113,7 @@ function run_poller(config::PollerConfig)
         end
     end
 
-    @info "News monitor started — BSE every $(config.bse_interval)s, " *
+    @info "News monitor started — NSE+BSE every $(config.bse_interval)s, " *
           "RSS every $(config.rss_interval)s"
     config.market_hours_only && @info "Polling restricted to 09:00–16:30 IST"
 

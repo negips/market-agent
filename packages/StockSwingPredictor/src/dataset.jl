@@ -25,8 +25,11 @@ at batch time and normalised to start at 1.0. Nothing is pre-stored per example.
 
 ## Label
 
-5-trading-day hourly log-return trajectory after date T:
-  label[h] = log(hourly_close[h] / daily_close[T])  for h in 1 … N_PRED_HOURS
+N_PRED_HOURS-bar hourly log-return trajectory after date T:
+  label[h] = log(hourly_close[h] / daily_close[T])  for h in 1 … pred_hours
+
+`pred_hours` is passed at build time (default N_PRED_HOURS = 70). v1/v2 use 35,
+v3 uses 70; the training loop slices to `arch.pred_hours` at batch time.
 """
 
 using DataFrames, Dates, Statistics, JSON3, Printf, BSON
@@ -34,27 +37,29 @@ using DataFrames, Dates, Statistics, JSON3, Printf, BSON
 # ── Label computation ─────────────────────────────────────────────────────────
 
 """
-Compute the N_PRED_HOURS-length hourly log-return trajectory for company
+Compute a `pred_hours`-length hourly log-return trajectory for company
 `sym_idx` following master-calendar date at index `t`.
 
-Returns `nothing` when N_PRED_DAYS trading days don't exist after `t`,
+Returns `nothing` when not enough trading days exist after `t`,
 or when no hourly bars fall on those days for this company.
 """
 function label_5d_hourly(cache::InferenceCache, sym_idx::Int,
-                          t::Int)::Union{Vector{Float32}, Nothing}
-    t + N_PRED_DAYS > length(cache.dates) && return nothing
+                          t::Int;
+                          pred_hours::Int = N_PRED_HOURS)::Union{Vector{Float32}, Nothing}
+    n_pred_days = pred_hours ÷ N_HOURS_PER_DAY
+    t + n_pred_days > length(cache.dates) && return nothing
 
     ref_close = cache.closes[t, sym_idx]
     (isnan(ref_close) || ref_close <= 0f0) && return nothing
 
     label_start = cache.dates[t + 1]
-    label_end   = cache.dates[t + N_PRED_DAYS]
+    label_end   = cache.dates[t + n_pred_days]
 
     h_lo = searchsortedfirst(cache.hourly_datetimes, DateTime(label_start))
     h_hi = searchsortedlast( cache.hourly_datetimes, DateTime(label_end, Time(23, 59, 59)))
     h_lo > h_hi && return nothing
 
-    target_dates = Set(cache.dates[t+1 : t+N_PRED_DAYS])
+    target_dates = Set(cache.dates[t+1 : t+n_pred_days])
     h_closes = Float32[]
     for h in h_lo:h_hi
         Date(cache.hourly_datetimes[h]) in target_dates || continue
@@ -66,11 +71,11 @@ function label_5d_hourly(cache::InferenceCache, sym_idx::Int,
     isempty(h_closes) && return nothing
 
     n_bars = length(h_closes)
-    traj   = Vector{Float32}(undef, N_PRED_HOURS)
-    for i in 1:min(n_bars, N_PRED_HOURS)
+    traj   = Vector{Float32}(undef, pred_hours)
+    for i in 1:min(n_bars, pred_hours)
         traj[i] = Float32(log(max(h_closes[i], 1f-6) / ref_close))
     end
-    n_bars < N_PRED_HOURS && (traj[n_bars+1:end] .= traj[n_bars])
+    n_bars < pred_hours && (traj[n_bars+1:end] .= traj[n_bars])
     return traj
 end
 
@@ -84,23 +89,25 @@ Skips windows where:
   - The company has no daily close on the training date (NaN after forward-fill).
   - Fewer than N_HOURLY_BARS hourly bars exist up to the training date, or
     the first bar of the window is NaN (company not yet listed that far back).
-  - The 5-day label window extends beyond available data.
+  - The label window extends beyond available data.
 """
 function generate_company_examples(
     symbol::String,
     sym_idx::Int,
     cache::InferenceCache,
     llm_cache::Dict{Date, LLMFeatures};
-    step::Int = 5,
+    step::Int      = 5,
+    pred_hours::Int = N_PRED_HOURS,
 )::Vector{TrainingExample}
 
-    examples  = TrainingExample[]
-    n_dates   = length(cache.dates)
+    examples    = TrainingExample[]
+    n_dates     = length(cache.dates)
+    n_pred_days = pred_hours ÷ N_HOURS_PER_DAY
 
     for t in 1:n_dates
         t % step != 0     && continue
         t < N_MARKET_DAYS + 1 && continue
-        t + N_PRED_DAYS > n_dates && continue
+        t + n_pred_days > n_dates && continue
 
         isnan(cache.closes[t, sym_idx]) && continue
 
@@ -117,7 +124,7 @@ function generate_company_examples(
         llm_feat = latest_before(llm_cache, date, MISSING_LLM)
         llm_vec  = llm_to_vec(llm_feat)
 
-        label = label_5d_hourly(cache, sym_idx, t)
+        label = label_5d_hourly(cache, sym_idx, t; pred_hours)
         isnothing(label) && continue
 
         push!(examples, TrainingExample(date, symbol, t, sym_idx, h_end, llm_vec, label))
@@ -144,10 +151,9 @@ end
 """
 Assemble a mini-batch from `dataset` and `cache` given a vector of example indices.
 
-Returns `(market, hourly, llm, y)` where:
+Returns `(market, hourly, y)` where:
   market — `(N_MARKET_DAYS, N_MARKET_CHANNELS, N_companies, B)` Float32
   hourly — `(N_HOURLY_BARS, B)` Float32
-  llm    — `(N_LLM_FEATURES, B)` Float32
   y      — `(N_PRED_HOURS, B)` Float32
 
 The target stock is placed at column 1 of dim 3 in `market`.
@@ -160,7 +166,6 @@ function assemble_batch(dataset::Dataset, cache::InferenceCache,
 
     market = Array{Float32}(undef, N_MARKET_DAYS, N_MARKET_CHANNELS, N_MARKET_COMPANIES, B)
     hourly = Matrix{Float32}(undef, N_HOURLY_BARS,  B)
-    llm    = Matrix{Float32}(undef, N_LLM_FEATURES, B)
     y      = Matrix{Float32}(undef, N_PRED_HOURS,   B)
 
     for (b, idx) in enumerate(indices)
@@ -201,11 +206,10 @@ function assemble_batch(dataset::Dataset, cache::InferenceCache,
         ref_h   = max(raw_h[1], 1f-6)
         hourly[:, b] = raw_h ./ ref_h
 
-        llm[:, b] = ex.llm
-        y[:, b]   = ex.label
+        y[:, b] = ex.label
     end
 
-    return market, hourly, llm, y
+    return market, hourly, y
 end
 
 # ── Persistence ───────────────────────────────────────────────────────────────
