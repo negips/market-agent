@@ -114,7 +114,7 @@ function update_daily!(symbols, token_map, session, yest::Date;
         new_df = fetch_ohlcv(token, from, yest, session)
         if isempty(new_df)
             # Normal for a holiday gap with no trading days in the range.
-            @warn "[$i/$total] $sym daily — no new bars in $from…$yest (holiday gap?)"
+            @debug "[$i/$total] $sym daily — no new bars in $from…$yest (holiday gap?)"
             failed += 1
             sleep(0.35)
             continue
@@ -183,7 +183,7 @@ function update_hourly!(symbols, token_map, session, yest::Date;
         filter!(row -> row.datetime > last_dt, new_df)
 
         if isempty(new_df)
-            @warn "[$i/$total] $sym hourly — no new bars after $last_dt"
+            @debug "[$i/$total] $sym hourly — no new bars after $last_dt"
             failed += 1
             continue
         end
@@ -239,7 +239,7 @@ function update_5min!(symbols, token_map, session, yest::Date;
         filter!(row -> row.datetime > last_dt, new_df)
 
         if isempty(new_df)
-            @warn "[$i/$total] $sym 5min — no new bars after $last_dt"
+            @debug "[$i/$total] $sym 5min — no new bars after $last_dt"
             failed += 1; continue
         end
 
@@ -299,7 +299,7 @@ function update_macro_5min!(session, yest::Date; dry_run::Bool)
         filter!(row -> row.datetime > last_dt, new_df)
 
         if isempty(new_df)
-            @warn "  $(inst.name) 5min — no new bars after $last_dt"
+            @debug "  $(inst.name) 5min — no new bars after $last_dt"
             failed += 1; continue
         end
 
@@ -354,7 +354,7 @@ function update_15min!(symbols, token_map, session, yest::Date;
         filter!(row -> row.datetime > last_dt, new_df)
 
         if isempty(new_df)
-            @warn "[$i/$total] $sym 15min — no new bars after $last_dt"
+            @debug "[$i/$total] $sym 15min — no new bars after $last_dt"
             failed += 1; continue
         end
 
@@ -413,7 +413,7 @@ function update_macro_15min!(session, yest::Date; dry_run::Bool)
         filter!(row -> row.datetime > last_dt, new_df)
 
         if isempty(new_df)
-            @warn "  $(inst.name) 15min — no new bars after $last_dt"
+            @debug "  $(inst.name) 15min — no new bars after $last_dt"
             failed += 1; continue
         end
 
