@@ -261,8 +261,8 @@ Forward pass for DualCNN_v1.
 
 Returns `(pred_hours, batch)` predicted log-return trajectories.
 """
-function (m::SwingPredictor{DualCNN})(market::Array{Float32,4},
-                                      hourly::Matrix{Float32})
+function (m::SwingPredictor{DualCNN})(market::AbstractArray{Float32,4},
+                                      hourly::AbstractMatrix{Float32})
     _, _, N, B = size(market)
 
     x    = reshape(market, N_MARKET_DAYS, N_MARKET_CHANNELS, N * B)
@@ -282,8 +282,8 @@ end
 # ── DualCNN v2 forward pass ───────────────────────────────────────────────────
 # Same contract as v1; mean-pool replaced by multi-head cross-attention.
 
-function (m::SwingPredictor{DualCNNv2})(market::Array{Float32,4},
-                                         hourly::Matrix{Float32})
+function (m::SwingPredictor{DualCNNv2})(market::AbstractArray{Float32,4},
+                                         hourly::AbstractMatrix{Float32})
     _, _, N, B = size(market)
 
     x    = reshape(market, N_MARKET_DAYS, N_MARKET_CHANNELS, N * B)
@@ -307,8 +307,8 @@ end
 # ── DualCNN v3 forward pass ───────────────────────────────────────────────────
 # Identical to v2; outputs pred_hours=70 bars instead of 35.
 
-function (m::SwingPredictor{DualCNNv3})(market::Array{Float32,4},
-                                         hourly::Matrix{Float32})
+function (m::SwingPredictor{DualCNNv3})(market::AbstractArray{Float32,4},
+                                         hourly::AbstractMatrix{Float32})
     _, _, N, B = size(market)
 
     x    = reshape(market, N_MARKET_DAYS, N_MARKET_CHANNELS, N * B)
@@ -333,18 +333,23 @@ end
 
 """Run inference on a pre-assembled batch. Returns `(pred_hours × batch)` matrix."""
 function predict(model::SwingPredictor,
-                 market::Array{Float32,4},
-                 hourly::Matrix{Float32})::Matrix{Float32}
+                 market::AbstractArray{Float32,4},
+                 hourly::AbstractMatrix{Float32})
     Flux.testmode!(model)
     return model(market, hourly)
 end
 
 # ── Persistence ───────────────────────────────────────────────────────────────
 
-"""Save model weights, architecture config, universe, and meta to BSON."""
+"""
+Save model weights, architecture config, universe, and meta to BSON.
+
+Always saves CPU-resident weights regardless of what device `model` currently
+lives on, so checkpoints stay portable to machines without a GPU.
+"""
 function save_model(model::SwingPredictor, companies::Vector{String},
                     path::String; meta::Dict=Dict())
-    state     = Flux.state(model)
+    state     = Flux.state(cpu(model))
     arch_dict = _arch_to_dict(model.arch)
     BSON.@save path state arch_dict companies meta
     @info "Model saved → $path  [arch: $(model.arch.name)]"

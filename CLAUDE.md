@@ -453,6 +453,9 @@ julia --project=packages/StockSwingPredictor scripts/train_model.jl --arch v3
 julia --project=packages/StockSwingPredictor scripts/train_model.jl \
       --arch v3 --epochs 200 --lr 1e-4 --batch 128 --l2 1e-5
 
+# GPU training (falls back to cpu with a warning if CUDA.functional() is false)
+julia --project=packages/StockSwingPredictor scripts/train_model.jl --arch v3 --device gpu
+
 # Resume from checkpoint
 julia --project=packages/StockSwingPredictor scripts/train_model.jl --arch v3 --resume
 

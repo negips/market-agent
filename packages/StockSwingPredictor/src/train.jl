@@ -33,6 +33,19 @@ const PROGRESS_EVERY    = 50    # print batch progress every N batches
 const JUMP_THRESHOLD = 0.04f0
 
 """
+Resolve a `:cpu`/`:gpu` symbol to Flux's `cpu`/`gpu` transfer function.
+
+`:gpu` with no functional GPU backend falls through to Flux's own behaviour
+(a one-time warning, then silently runs on CPU) rather than erroring — training
+should still complete on a machine where CUDA turned out not to be usable.
+"""
+function _to_device(device::Symbol)
+    device === :cpu && return cpu
+    device === :gpu && return gpu
+    error("Unknown device :$device — expected :cpu or :gpu")
+end
+
+"""
 Per-example loss weights for one mini-batch, dispatched on architecture type.
 
 `lm_weighting=false` (v1, v2): quadratic above JUMP_THRESHOLD, flat below.
@@ -40,7 +53,7 @@ Per-example loss weights for one mini-batch, dispatched on architecture type.
 max bar return. Near-constant labels → weight≈0; jump events dominate.
 Both variants normalise so mean batch weight ≈ 1.
 """
-function _batch_weights(yb::Matrix{Float32}, arch::SwingArchitecture)::Matrix{Float32}
+function _batch_weights(yb::AbstractMatrix{Float32}, arch::SwingArchitecture)
     if arch.lm_weighting
         bar_rets = vcat(yb[1:1, :], diff(yb, dims=1))
         bv = (π/2f0) .* mean(
@@ -67,6 +80,10 @@ Validation loss is computed in chunks of `VAL_CHUNKSIZE` to bound peak memory.
 - `train_idx`, `val_idx`: index ranges into `dataset.examples`
 - `epochs`, `batchsize`, `lr`, `l2_lambda`, `patience`: hyperparameters
 - `log_every`: print progress every N epochs
+- `device`: `:cpu` (default) or `:gpu` — moves the model and every assembled
+  batch to that device. Checkpoints (`best_state` and anything written via
+  `save_model`) are always brought back to CPU first, so a GPU-trained model
+  can still be loaded and served on a CPU-only machine.
 """
 function train!(model::SwingPredictor,
                 dataset::Dataset,
@@ -81,12 +98,16 @@ function train!(model::SwingPredictor,
                 log_every::Int     = 10,
                 checkpoint_path::String = "",
                 epoch_log_path::String  = "",
-                stop_file::String       = "")
+                stop_file::String       = "",
+                device::Symbol          = :cpu)
+
+    to_dev = _to_device(device)
+    model  = to_dev(model)
 
     opt_state = Flux.setup(Flux.Adam(lr), model)
 
     best_val_loss  = Inf32
-    best_state     = Flux.state(model)
+    best_state     = Flux.state(cpu(model))
     no_improve     = 0
     stop_now_fired = false
 
@@ -122,7 +143,7 @@ function train!(model::SwingPredictor,
         shuffled = shuffle(train_ids)
         for start in 1:batchsize:length(shuffled)
             batch_idx = shuffled[start : min(start + batchsize - 1, end)]
-            market, hourly, yb = assemble_batch(dataset, cache, batch_idx)
+            market, hourly, yb = to_dev.(assemble_batch(dataset, cache, batch_idx))
 
             # Capture L2 before the update so l2_penalty matches the weights
             # used inside withgradient — lets us strip L2 from the logged MSE.
@@ -173,7 +194,7 @@ function train!(model::SwingPredictor,
         train_mse = epoch_mse / n_batches
 
         Flux.testmode!(model)
-        val_mse = _mse_chunked(model, dataset, cache, val_ids)
+        val_mse = _mse_chunked(model, dataset, cache, val_ids; device=device)
 
         push!(log["train_mse"], train_mse)
         push!(log["val_mse"],   val_mse)
@@ -181,7 +202,7 @@ function train!(model::SwingPredictor,
         improved = val_mse < best_val_loss
         if improved
             best_val_loss       = val_mse
-            best_state          = Flux.state(model)
+            best_state          = Flux.state(cpu(model))
             no_improve          = 0
             log["best_val_mse"] = best_val_loss
             log["best_epoch"]   = abs_epoch
@@ -241,7 +262,9 @@ Inference is chunked to bound memory. Final-bar (eod day-10) predictions
 are collected across chunks before computing ranking-based metrics (IC).
 """
 function evaluate(model::SwingPredictor, dataset::Dataset, cache::InferenceCache,
-                  test_idx)::Dict
+                  test_idx; device::Symbol=:cpu)::Dict
+    to_dev = _to_device(device)
+    model  = to_dev(model)
     Flux.testmode!(model)
     test_ids = collect(test_idx)
 
@@ -253,7 +276,7 @@ function evaluate(model::SwingPredictor, dataset::Dataset, cache::InferenceCache
 
     for start in 1:VAL_CHUNKSIZE:length(test_ids)
         chunk = test_ids[start : min(start + VAL_CHUNKSIZE - 1, end)]
-        market, hourly, y = assemble_batch(dataset, cache, chunk)
+        market, hourly, y = to_dev.(assemble_batch(dataset, cache, chunk))
         y_arch = y[1:model.arch.pred_hours, :]
         ŷ = model(market, hourly)
 
@@ -261,8 +284,10 @@ function evaluate(model::SwingPredictor, dataset::Dataset, cache::InferenceCache
         sum_mae   += Float32(mean(abs.(ŷ .- y_arch)))
         n_batches += 1
 
-        append!(ŷ_finals, ŷ[end, :])
-        append!(y_finals, y_arch[end, :])
+        # Host transfer required — append! into a plain Vector needs scalar
+        # iteration, which CUDA.jl disallows directly on a CuArray.
+        append!(ŷ_finals, cpu(ŷ[end, :]))
+        append!(y_finals, cpu(y_arch[end, :]))
     end
 
     mse     = sum_mse / n_batches
@@ -293,12 +318,13 @@ _sanitize_json(x)                 = x
 Compute mean MSE across `ids` in chunks of `VAL_CHUNKSIZE`.
 No gradient tracking — used for validation loss each epoch.
 """
-function _mse_chunked(model, dataset, cache, ids)::Float32
-    total = 0f0
-    n     = 0
+function _mse_chunked(model, dataset, cache, ids; device::Symbol=:cpu)::Float32
+    to_dev = _to_device(device)
+    total  = 0f0
+    n      = 0
     for start in 1:VAL_CHUNKSIZE:length(ids)
         chunk  = ids[start : min(start + VAL_CHUNKSIZE - 1, end)]
-        market, hourly, y = assemble_batch(dataset, cache, chunk)
+        market, hourly, y = to_dev.(assemble_batch(dataset, cache, chunk))
         ŷ      = model(market, hourly)
         y_arch = y[1:model.arch.pred_hours, :]
         total += Float32(mean((ŷ .- y_arch).^2))

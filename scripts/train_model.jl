@@ -10,9 +10,10 @@ Usage:
   julia --project=packages/StockSwingPredictor scripts/train_model.jl --resume
   julia --project=packages/StockSwingPredictor scripts/train_model.jl --resume --epochs 50 --lr 1e-4
   julia --project=packages/StockSwingPredictor scripts/train_model.jl --overfit 64
+  julia --project=packages/StockSwingPredictor scripts/train_model.jl --device gpu
 """
 
-using StockSwingPredictor, Flux, JSON3, Dates, Printf, Statistics
+using StockSwingPredictor, Flux, CUDA, JSON3, Dates, Printf, Statistics
 
 const REPO_ROOT  = joinpath(@__DIR__, "..")
 const CACHE_FILE = joinpath(REPO_ROOT, "website", "data", "inference_cache.bson")
@@ -28,7 +29,7 @@ const ARCH_REGISTRY = Dict{String, SwingArchitecture}(
 function parse_args()
     opts = Dict{String,Any}("epochs"=>150, "lr"=>1e-3, "batch"=>32,
                              "l2"=>1e-4, "patience"=>15, "resume"=>false,
-                             "arch"=>"v2", "overfit"=>0)
+                             "arch"=>"v2", "overfit"=>0, "device"=>"cpu")
     i = 1
     while i <= length(ARGS)
         a = ARGS[i]
@@ -44,6 +45,8 @@ Options:
   --batch N     Batch size (default: 32)
   --l2 FLOAT    L2 regularisation lambda (default: 1e-4)
   --patience N  Early stopping patience (default: 15)
+  --device NAME cpu or gpu (default: cpu). gpu requires CUDA.functional() —
+                falls back to cpu with a warning if no GPU is usable.
   --resume      Load existing weights and continue training from that checkpoint.
   --overfit [N] Diagnostic mode: train and validate on the first N examples only
                 (default 64). L2 and early stopping disabled. Loss should reach
@@ -62,6 +65,7 @@ Output: website/data/models/{arch.name}/swing_predictor.bson
         elseif a == "--batch"   ; opts["batch"]     = parse(Int,     ARGS[i+1]); i += 2
         elseif a == "--l2"      ; opts["l2"]        = parse(Float64, ARGS[i+1]); i += 2
         elseif a == "--patience"; opts["patience"]  = parse(Int,     ARGS[i+1]); i += 2
+        elseif a == "--device"  ; opts["device"]    = ARGS[i+1];                  i += 2
         elseif a == "--resume"  ; opts["resume"]    = true;                       i += 1
         elseif a == "--overfit"
             if i+1 <= length(ARGS) && !startswith(ARGS[i+1], "-")
@@ -74,7 +78,21 @@ Output: website/data/models/{arch.name}/swing_predictor.bson
     end
     haskey(ARCH_REGISTRY, opts["arch"]) ||
         error("Unknown --arch '$(opts["arch"])'. Available: $(join(keys(ARCH_REGISTRY), ", "))")
+    opts["device"] in ("cpu", "gpu") ||
+        error("Unknown --device '$(opts["device"])'. Expected: cpu, gpu")
     return opts
+end
+
+"""Resolve `--device` to a `:cpu`/`:gpu` symbol, falling back to `:cpu` if gpu was
+requested but no functional CUDA backend is available."""
+function _resolve_device(requested::String)::Symbol
+    requested == "cpu" && return :cpu
+    if !CUDA.functional()
+        @warn "--device gpu requested but CUDA.functional() is false — falling back to cpu"
+        return :cpu
+    end
+    @info "Training on GPU: $(CUDA.name(CUDA.device()))"
+    return :gpu
 end
 
 """Read the highest completed epoch number from epoch_log.jsonl (epoch-end records only)."""
@@ -95,7 +113,8 @@ end
 function main()
     opts = parse_args()
 
-    arch = ARCH_REGISTRY[opts["arch"]]
+    arch   = ARCH_REGISTRY[opts["arch"]]
+    device = _resolve_device(opts["device"])
 
     @info "Loading inference cache…"
     cache = load_inference_cache(CACHE_FILE)
@@ -128,7 +147,8 @@ function main()
                         lr             = Float32(opts["lr"]),
                         l2_lambda      = 0f0,
                         patience       = opts["epochs"],   # disable early stopping
-                        epoch_log_path = "")
+                        epoch_log_path = "",
+                        device         = device)
         return
     end
 
@@ -180,6 +200,7 @@ function main()
         checkpoint_path = existing_model,
         epoch_log_path  = epoch_log,
         stop_file       = stop_file,
+        device          = device,
     )
 
     # ── STOP_NOW: skip evaluation and saves, weights already on disk ─────────
@@ -192,7 +213,7 @@ function main()
 
     println()
     @info "Test set evaluation:"
-    test_metrics = evaluate(model, dataset, cache, test_idx)
+    test_metrics = evaluate(model, dataset, cache, test_idx; device=device)
     merge!(log, test_metrics)
     log["trained_at"]  = string(now(UTC))
     log["resumed"]     = opts["resume"]
@@ -258,6 +279,7 @@ function _save_model_card(path, arch, model, dataset, log, test_metrics, opts)
             "batch"         => opts["batch"],
             "l2"            => opts["l2"],
             "patience"      => opts["patience"],
+            "device"        => opts["device"],
         ),
         "metrics" => Dict(
             "test_mse"                => get(test_metrics, "test_mse",                nothing),

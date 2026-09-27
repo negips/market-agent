@@ -52,6 +52,8 @@ module StockSwingPredictor
 
 using TijoriData
 using Flux, BSON
+using CUDA, cuDNN   # loaded eagerly so Flux's gpu()/cpu() dispatch to CUDA when available;
+                    # CUDA.jl loads fine with no GPU present (CUDA.functional() == false, gpu() no-ops to cpu)
 using DataFrames, CSV
 using HTTP, JSON3
 using Statistics, LinearAlgebra
