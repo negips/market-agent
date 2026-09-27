@@ -233,35 +233,38 @@ function collect_ohlcv(symbols::Vector{String}, token_map::Dict{String,Int},
     mkpath(out_dir)
     ok = skipped = failed = 0
     total = length(symbols)
+    t_start = time()
 
     for (i, sym) in enumerate(symbols)
         path = joinpath(out_dir, "$(sym)_daily.csv")
         if !refresh && isfile(path)
             skipped += 1
-            continue
+        else
+            token = get(token_map, sym, nothing)
+            if isnothing(token)
+                @warn "[$i/$total] No instrument token for $sym — skipping"
+                failed += 1
+            else
+                df = fetch_ohlcv(token, from_date, to_date, session)
+                if isempty(df)
+                    failed += 1
+                    @info "[$i/$total] $sym — 0 bars"
+                else
+                    CSV.write(path, df)
+                    ok += 1
+                    @info "[$i/$total] $sym — $(nrow(df)) days"
+                end
+                sleep(0.35)   # ~3 req/s rate limit
+            end
         end
 
-        token = get(token_map, sym, nothing)
-        if isnothing(token)
-            @warn "[$i/$total] No instrument token for $sym — skipping"
-            failed += 1
-            continue
+        if i % 100 == 0 || i == total
+            elapsed = round(Int, time() - t_start)
+            @info "  ── [$i/$total] $ok fetched, $skipped skipped, $failed failed — $(elapsed)s elapsed"
         end
-
-        df = fetch_ohlcv(token, from_date, to_date, session)
-        if isempty(df)
-            failed += 1
-            @debug "[$i/$total] $sym — empty response"
-            continue
-        end
-
-        CSV.write(path, df)
-        ok += 1
-        @info "[$i/$total] $sym — $(nrow(df)) days"
-        sleep(0.35)   # ~3 req/s rate limit
     end
 
-    @info "OHLCV collection done: $ok fetched, $skipped skipped, $failed failed"
+    @info "Daily OHLCV done: $ok fetched, $skipped skipped, $failed failed"
 end
 
 """
@@ -358,31 +361,34 @@ function collect_ohlcv_hourly(symbols::Vector{String}, token_map::Dict{String,In
     mkpath(out_dir)
     ok = skipped = failed = 0
     total = length(symbols)
+    t_start = time()
 
     for (i, sym) in enumerate(symbols)
         path = joinpath(out_dir, "$(sym)_hourly.csv")
         if !refresh && isfile(path)
             skipped += 1
-            continue
+        else
+            token = get(token_map, sym, nothing)
+            if isnothing(token)
+                @warn "[$i/$total] No token for $sym — skipping hourly"
+                failed += 1
+            else
+                df = fetch_ohlcv_hourly(token, from_date, to_date, session)
+                if isempty(df)
+                    failed += 1
+                    @info "[$i/$total] $sym hourly — 0 bars"
+                else
+                    CSV.write(path, df)
+                    ok += 1
+                    @info "[$i/$total] $sym hourly — $(nrow(df)) bars"
+                end
+            end
         end
 
-        token = get(token_map, sym, nothing)
-        if isnothing(token)
-            @warn "[$i/$total] No token for $sym — skipping hourly"
-            failed += 1
-            continue
+        if i % 100 == 0 || i == total
+            elapsed = round(Int, time() - t_start)
+            @info "  ── [$i/$total] $ok fetched, $skipped skipped, $failed failed — $(elapsed)s elapsed"
         end
-
-        df = fetch_ohlcv_hourly(token, from_date, to_date, session)
-        if isempty(df)
-            failed += 1
-            @debug "[$i/$total] $sym — empty hourly response"
-            continue
-        end
-
-        CSV.write(path, df)
-        ok += 1
-        @info "[$i/$total] $sym hourly — $(nrow(df)) bars"
     end
 
     @info "Hourly OHLCV done: $ok fetched, $skipped skipped, $failed failed"
@@ -472,29 +478,34 @@ function collect_ohlcv_5min(symbols::Vector{String}, token_map::Dict{String,Int}
     mkpath(out_dir)
     ok = skipped = failed = 0
     total = length(symbols)
+    t_start = time()
 
     for (i, sym) in enumerate(symbols)
         path = joinpath(out_dir, "$(sym)_5min.csv")
         if !refresh && isfile(path)
-            skipped += 1; continue
+            skipped += 1
+        else
+            token = get(token_map, sym, nothing)
+            if isnothing(token)
+                @warn "[$i/$total] No token for $sym — skipping 5min"
+                failed += 1
+            else
+                df = fetch_ohlcv_5min(token, from_date, to_date, session)
+                if isempty(df)
+                    failed += 1
+                    @info "[$i/$total] $sym 5min — 0 bars"
+                else
+                    CSV.write(path, df)
+                    ok += 1
+                    @info "[$i/$total] $sym 5min — $(nrow(df)) bars"
+                end
+            end
         end
 
-        token = get(token_map, sym, nothing)
-        if isnothing(token)
-            @warn "[$i/$total] No token for $sym — skipping 5min"
-            failed += 1; continue
+        if i % 100 == 0 || i == total
+            elapsed = round(Int, time() - t_start)
+            @info "  ── [$i/$total] $ok fetched, $skipped skipped, $failed failed — $(elapsed)s elapsed"
         end
-
-        df = fetch_ohlcv_5min(token, from_date, to_date, session)
-        if isempty(df)
-            failed += 1
-            @debug "[$i/$total] $sym — empty 5min response"
-            continue
-        end
-
-        CSV.write(path, df)
-        ok += 1
-        @info "[$i/$total] $sym 5min — $(nrow(df)) bars"
     end
 
     @info "5min OHLCV done: $ok fetched, $skipped skipped, $failed failed"
@@ -589,29 +600,34 @@ function collect_ohlcv_15min(symbols::Vector{String}, token_map::Dict{String,Int
     mkpath(out_dir)
     ok = skipped = failed = 0
     total = length(symbols)
+    t_start = time()
 
     for (i, sym) in enumerate(symbols)
         path = joinpath(out_dir, "$(sym)_15min.csv")
         if !refresh && isfile(path)
-            skipped += 1; continue
+            skipped += 1
+        else
+            token = get(token_map, sym, nothing)
+            if isnothing(token)
+                @warn "[$i/$total] No token for $sym — skipping 15min"
+                failed += 1
+            else
+                df = fetch_ohlcv_15min(token, from_date, to_date, session)
+                if isempty(df)
+                    failed += 1
+                    @info "[$i/$total] $sym 15min — 0 bars"
+                else
+                    CSV.write(path, df)
+                    ok += 1
+                    @info "[$i/$total] $sym 15min — $(nrow(df)) bars"
+                end
+            end
         end
 
-        token = get(token_map, sym, nothing)
-        if isnothing(token)
-            @warn "[$i/$total] No token for $sym — skipping 15min"
-            failed += 1; continue
+        if i % 100 == 0 || i == total
+            elapsed = round(Int, time() - t_start)
+            @info "  ── [$i/$total] $ok fetched, $skipped skipped, $failed failed — $(elapsed)s elapsed"
         end
-
-        df = fetch_ohlcv_15min(token, from_date, to_date, session)
-        if isempty(df)
-            failed += 1
-            @debug "[$i/$total] $sym — empty 15min response"
-            continue
-        end
-
-        CSV.write(path, df)
-        ok += 1
-        @info "[$i/$total] $sym 15min — $(nrow(df)) bars"
     end
 
     @info "15min OHLCV done: $ok fetched, $skipped skipped, $failed failed"

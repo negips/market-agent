@@ -16,6 +16,9 @@ Output:
 Usage:
   julia --project=packages/StockSwingPredictor scripts/collect_nse_ohlcv.jl
   julia --project=packages/StockSwingPredictor scripts/collect_nse_ohlcv.jl --daily-only
+  julia --project=packages/StockSwingPredictor scripts/collect_nse_ohlcv.jl --hourly-only
+  julia --project=packages/StockSwingPredictor scripts/collect_nse_ohlcv.jl --5min-only
+  julia --project=packages/StockSwingPredictor scripts/collect_nse_ohlcv.jl --15min-only
   julia --project=packages/StockSwingPredictor scripts/collect_nse_ohlcv.jl --symbol RELIANCE
   julia --project=packages/StockSwingPredictor scripts/collect_nse_ohlcv.jl --refresh
   julia --project=packages/StockSwingPredictor scripts/collect_nse_ohlcv.jl --from 2015-01-01
@@ -31,10 +34,13 @@ const DEFAULT_FROM = Date(2010, 1, 1)
 
 function parse_args()
     args = Dict{String,Any}(
-        "daily_only" => false,
-        "refresh"    => false,
-        "symbol"     => nothing,
-        "from"       => DEFAULT_FROM,
+        "daily_only"      => false,
+        "hourly_only"     => false,
+        "fivemin_only"    => false,
+        "fifteenmin_only" => false,
+        "refresh"         => false,
+        "symbol"          => nothing,
+        "from"            => DEFAULT_FROM,
     )
     i = 1
     while i <= length(ARGS)
@@ -48,15 +54,21 @@ Fetches daily (full history from --from), hourly (400-day retention),
 NSE-listed EQ and INDICES instrument in Kite's instrument list.
 
 Flags:
-  --daily-only        Only fetch daily bars (skip hourly, 5-min, 15-min)
+  --daily-only        Only fetch daily bars
+  --hourly-only       Only fetch hourly (60-min) bars
+  --5min-only         Only fetch 5-minute bars
+  --15min-only        Only fetch 15-minute bars
   --symbol SYM        Fetch only this NSE tradingsymbol (e.g. --symbol RELIANCE)
   --refresh           Re-fetch all even if CSV already exists
   --from DATE         Daily history start date (default: 2010-01-01)
   -h, --help          Show this message
 """)
             exit(0)
-        elseif a == "--daily-only"; args["daily_only"] = true; i += 1
-        elseif a == "--refresh";    args["refresh"]    = true; i += 1
+        elseif a == "--daily-only";   args["daily_only"]      = true; i += 1
+        elseif a == "--hourly-only";  args["hourly_only"]     = true; i += 1
+        elseif a == "--5min-only";    args["fivemin_only"]    = true; i += 1
+        elseif a == "--15min-only";   args["fifteenmin_only"] = true; i += 1
+        elseif a == "--refresh";      args["refresh"]         = true; i += 1
         elseif a == "--symbol" && i + 1 <= length(ARGS)
             args["symbol"] = ARGS[i+1]; i += 2
         elseif a == "--from" && i + 1 <= length(ARGS)
@@ -75,6 +87,14 @@ function main()
 
     mkpath(NSE_DIR)
 
+    # ── Determine which intervals to run ──────────────────────────────────────
+    any_flag = args["daily_only"] || args["hourly_only"] ||
+               args["fivemin_only"] || args["fifteenmin_only"]
+    run_daily    = !any_flag || args["daily_only"]
+    run_hourly   = !any_flag || args["hourly_only"]
+    run_5min     = !any_flag || args["fivemin_only"]
+    run_15min    = !any_flag || args["fifteenmin_only"]
+
     # ── Load NSE instrument list ───────────────────────────────────────────────
     @info "Loading NSE instrument list from Kite…"
     instr     = load_instruments(session; exchange="NSE", refresh=true)
@@ -91,32 +111,35 @@ function main()
     to_date = today() - Day(1)
 
     # ── Daily ─────────────────────────────────────────────────────────────────
-    @info "── NSE Daily: $(length(symbols)) symbols ($(args["from"]) → $to_date) ──"
-    collect_ohlcv(symbols, token_map, session, NSE_DIR,
-                  args["from"], to_date; refresh=refresh)
-
-    args["daily_only"] && return
+    if run_daily
+        @info "── NSE Daily: $(length(symbols)) symbols ($(args["from"]) → $to_date) ──"
+        collect_ohlcv(symbols, token_map, session, NSE_DIR,
+                      args["from"], to_date; refresh=refresh)
+    end
 
     # ── Hourly ────────────────────────────────────────────────────────────────
-    # Kite retains 60-min bars for ~400 days
-    hourly_from = today() - Day(399)
-    @info "── NSE Hourly: $(length(symbols)) symbols ($hourly_from → $to_date) ──"
-    collect_ohlcv_hourly(symbols, token_map, session, NSE_DIR,
-                         hourly_from, to_date; refresh=refresh)
+    if run_hourly
+        hourly_from = today() - Day(399)
+        @info "── NSE Hourly: $(length(symbols)) symbols ($hourly_from → $to_date) ──"
+        collect_ohlcv_hourly(symbols, token_map, session, NSE_DIR,
+                             hourly_from, to_date; refresh=refresh)
+    end
 
     # ── 5-minute ──────────────────────────────────────────────────────────────
-    # Kite retains 5-min bars for 100 days
-    fivemin_from = today() - Day(99)
-    @info "── NSE 5-min: $(length(symbols)) symbols ($fivemin_from → $to_date) ──"
-    collect_ohlcv_5min(symbols, token_map, session, NSE_DIR,
-                       fivemin_from, to_date; refresh=refresh)
+    if run_5min
+        fivemin_from = today() - Day(99)
+        @info "── NSE 5-min: $(length(symbols)) symbols ($fivemin_from → $to_date) ──"
+        collect_ohlcv_5min(symbols, token_map, session, NSE_DIR,
+                           fivemin_from, to_date; refresh=refresh)
+    end
 
     # ── 15-minute ─────────────────────────────────────────────────────────────
-    # Kite retains 15-min bars for 200 days
-    fifteenmin_from = today() - Day(199)
-    @info "── NSE 15-min: $(length(symbols)) symbols ($fifteenmin_from → $to_date) ──"
-    collect_ohlcv_15min(symbols, token_map, session, NSE_DIR,
-                        fifteenmin_from, to_date; refresh=refresh)
+    if run_15min
+        fifteenmin_from = today() - Day(199)
+        @info "── NSE 15-min: $(length(symbols)) symbols ($fifteenmin_from → $to_date) ──"
+        collect_ohlcv_15min(symbols, token_map, session, NSE_DIR,
+                            fifteenmin_from, to_date; refresh=refresh)
+    end
 end
 
 main()

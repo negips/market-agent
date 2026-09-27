@@ -20,6 +20,9 @@ Prerequisites:
 Usage:
   julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl
   julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --daily-only
+  julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --hourly-only
+  julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --5min-only
+  julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --15min-only
   julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --skip-5min
   julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --skip-15min
   julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --dry-run
@@ -436,12 +439,15 @@ Usage:
   julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl [FLAGS]
 
 Flags:
-  --symbol SYM   Update only this one symbol (applied to both NSE and BSE if --include-bse).
-  --daily-only   Update only daily bars; skip hourly, 5-min, and 15-min.
-  --skip-5min    Skip the 5-minute pass.
-  --skip-15min   Skip the 15-minute pass.
-  --include-bse  Also update BSE CSVs in website/data/ohlcv/bse/ (run collect_bse_ohlcv.jl first).
-  --dry-run      Report what would be fetched without making any API calls.
+  --symbol SYM    Update only this one symbol (applied to both NSE and BSE if --include-bse).
+  --daily-only    Update only daily bars.
+  --hourly-only   Update only hourly (60-min) bars.
+  --5min-only     Update only 5-minute bars.
+  --15min-only    Update only 15-minute bars.
+  --skip-5min     Skip the 5-minute pass (overrides --5min-only if both given).
+  --skip-15min    Skip the 15-minute pass (overrides --15min-only if both given).
+  --include-bse   Also update BSE CSVs in website/data/ohlcv/bse/ (run collect_bse_ohlcv.jl first).
+  --dry-run       Report what would be fetched without making any API calls.
 
 Reads each existing *_daily.csv / *_hourly.csv / *_5min.csv / *_15min.csv in
 website/data/ohlcv/nse/ (and ohlcv/bse/ if --include-bse), finds the last
@@ -453,11 +459,20 @@ NOTE: 5-min bars have a 100-day retention window; 15-min bars have a
         return
     end
 
-    daily_only   = "--daily-only"   in ARGS
-    skip_5min    = "--skip-5min"    in ARGS || "--daily-only" in ARGS
-    skip_15min   = "--skip-15min"   in ARGS || "--daily-only" in ARGS
-    include_bse  = "--include-bse"  in ARGS
-    dry_run      = "--dry-run"      in ARGS
+    daily_only      = "--daily-only"   in ARGS
+    hourly_only     = "--hourly-only"  in ARGS
+    fivemin_only    = "--5min-only"    in ARGS
+    fifteenmin_only = "--15min-only"   in ARGS
+    skip_5min       = "--skip-5min"    in ARGS
+    skip_15min      = "--skip-15min"   in ARGS
+    include_bse     = "--include-bse"  in ARGS
+    dry_run         = "--dry-run"      in ARGS
+
+    any_only  = daily_only || hourly_only || fivemin_only || fifteenmin_only
+    run_daily  = !any_only || daily_only
+    run_hourly = !any_only || hourly_only
+    run_5min   = (!any_only || fivemin_only)    && !skip_5min
+    run_15min  = (!any_only || fifteenmin_only) && !skip_15min
 
     # Optional single-symbol filter (--symbol INFY)
     sym_idx   = findfirst(==("--symbol"), ARGS)
@@ -520,34 +535,31 @@ NOTE: 5-min bars have a 100-day retention window; 15-min bars have a
 
     # ── NSE update ────────────────────────────────────────────────────────────
     @info "═══ NSE ═══"
-    @info "── Daily bars ──"
-    update_daily!(daily_syms, nse_token_map, session, yest; dry_run)
 
-    if daily_only
-        @info "Skipping hourly, 5-min, and 15-min updates (--daily-only)."
-    else
+    if run_daily
+        @info "── Daily bars ──"
+        update_daily!(daily_syms, nse_token_map, session, yest; dry_run)
+    end
+
+    if run_hourly
         @info "── Hourly bars ──"
         update_hourly!(hourly_syms, nse_token_map, session, yest; dry_run)
+    end
 
-        if skip_5min
-            @info "Skipping 5-min update (--skip-5min)."
-        else
-            @info "── 5-min bars (equity) ──"
-            update_5min!(fivemin_syms, nse_token_map, session, yest; dry_run)
+    if run_5min
+        @info "── 5-min bars (equity) ──"
+        update_5min!(fivemin_syms, nse_token_map, session, yest; dry_run)
 
-            @info "── 5-min bars (macro) ──"
-            update_macro_5min!(session, yest; dry_run)
-        end
+        @info "── 5-min bars (macro) ──"
+        update_macro_5min!(session, yest; dry_run)
+    end
 
-        if skip_15min
-            @info "Skipping 15-min update (--skip-15min)."
-        else
-            @info "── 15-min bars (equity) ──"
-            update_15min!(fifteenmin_syms, nse_token_map, session, yest; dry_run)
+    if run_15min
+        @info "── 15-min bars (equity) ──"
+        update_15min!(fifteenmin_syms, nse_token_map, session, yest; dry_run)
 
-            @info "── 15-min bars (macro) ──"
-            update_macro_15min!(session, yest; dry_run)
-        end
+        @info "── 15-min bars (macro) ──"
+        update_macro_15min!(session, yest; dry_run)
     end
 
     # ── BSE update (optional) ─────────────────────────────────────────────────
@@ -572,26 +584,28 @@ NOTE: 5-min bars have a 100-day retention window; 15-min bars have a
 
         @info "Found $(length(bse_daily_syms)) BSE daily, $(length(bse_hourly_syms)) hourly, $(length(bse_5min_syms)) 5-min, $(length(bse_15min_syms)) 15-min CSVs"
 
-        @info "── BSE Daily bars ──"
-        update_daily!(bse_daily_syms, bse_token_map, session, yest;
-                      dry_run, out_dir=BSE_OHLCV_DIR)
+        if run_daily
+            @info "── BSE Daily bars ──"
+            update_daily!(bse_daily_syms, bse_token_map, session, yest;
+                          dry_run, out_dir=BSE_OHLCV_DIR)
+        end
 
-        if !daily_only
+        if run_hourly
             @info "── BSE Hourly bars ──"
             update_hourly!(bse_hourly_syms, bse_token_map, session, yest;
                            dry_run, out_dir=BSE_OHLCV_DIR)
+        end
 
-            if !skip_5min
-                @info "── BSE 5-min bars ──"
-                update_5min!(bse_5min_syms, bse_token_map, session, yest;
-                             dry_run, out_dir=BSE_OHLCV_DIR)
-            end
+        if run_5min
+            @info "── BSE 5-min bars ──"
+            update_5min!(bse_5min_syms, bse_token_map, session, yest;
+                         dry_run, out_dir=BSE_OHLCV_DIR)
+        end
 
-            if !skip_15min
-                @info "── BSE 15-min bars ──"
-                update_15min!(bse_15min_syms, bse_token_map, session, yest;
-                              dry_run, out_dir=BSE_OHLCV_DIR)
-            end
+        if run_15min
+            @info "── BSE 15-min bars ──"
+            update_15min!(bse_15min_syms, bse_token_map, session, yest;
+                          dry_run, out_dir=BSE_OHLCV_DIR)
         end
     elseif include_bse
         @warn "BSE directory not found ($BSE_OHLCV_DIR) — run collect_bse_ohlcv.jl first."
