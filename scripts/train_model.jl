@@ -11,6 +11,7 @@ Usage:
   julia --project=packages/StockSwingPredictor scripts/train_model.jl --resume --epochs 50 --lr 1e-4
   julia --project=packages/StockSwingPredictor scripts/train_model.jl --overfit 64
   julia --project=packages/StockSwingPredictor scripts/train_model.jl --device gpu
+  julia --project=packages/StockSwingPredictor scripts/train_model.jl --arch v3
 """
 
 using StockSwingPredictor, Flux, CUDA, JSON3, Dates, Printf, Statistics
@@ -27,7 +28,7 @@ const ARCH_REGISTRY = Dict{String, SwingArchitecture}(
 )
 
 function parse_args()
-    opts = Dict{String,Any}("epochs"=>150, "lr"=>1e-3, "batch"=>32,
+    opts = Dict{String,Any}("epochs"=>150, "lr"=>1e-3, "batch"=>nothing,
                              "l2"=>1e-4, "patience"=>15, "resume"=>false,
                              "arch"=>"v2", "overfit"=>0, "device"=>"cpu")
     i = 1
@@ -39,10 +40,10 @@ Usage:
   julia --project=packages/StockSwingPredictor scripts/train_model.jl [options]
 
 Options:
-  --arch NAME   Architecture to train: v1, v2 (default: v2)
+  --arch NAME   Architecture to train: v1, v2, v3 (default: v2)
   --epochs N    Training epochs (default: 150)
   --lr FLOAT    Learning rate (default: 1e-3)
-  --batch N     Batch size (default: 32)
+  --batch N     Batch size (default: 32 on cpu, 256 on gpu)
   --l2 FLOAT    L2 regularisation lambda (default: 1e-4)
   --patience N  Early stopping patience (default: 15)
   --device NAME cpu or gpu (default: cpu). gpu requires CUDA.functional() —
@@ -95,6 +96,14 @@ function _resolve_device(requested::String)::Symbol
     return :gpu
 end
 
+"""Resolve `--batch` to a concrete batch size, defaulting to 256 on GPU and 32 on
+CPU (larger GPU batches better amortise kernel-launch/transfer overhead) when the
+user didn't pass `--batch` explicitly. Applies uniformly across all architectures."""
+function _resolve_batch(requested::Union{Int,Nothing}, device::Symbol)::Int
+    isnothing(requested) || return requested
+    return device === :gpu ? 256 : 32
+end
+
 """Read the highest completed epoch number from epoch_log.jsonl (epoch-end records only)."""
 function _last_completed_epoch(log_path::String)::Int
     isfile(log_path) || return 0
@@ -115,6 +124,8 @@ function main()
 
     arch   = ARCH_REGISTRY[opts["arch"]]
     device = _resolve_device(opts["device"])
+    opts["batch"] = _resolve_batch(opts["batch"], device)
+    @info "Batch size: $(opts["batch"])"
 
     @info "Loading inference cache…"
     cache = load_inference_cache(CACHE_FILE)
@@ -171,6 +182,9 @@ function main()
     else
         model = build_model(arch)
         @info "Fresh model: $(arch.name)"
+        # epoch_log.jsonl is opened in append mode inside train! (so --resume can
+        # keep history) — a fresh run must clear any stale log from a previous run.
+        isfile(epoch_log) && rm(epoch_log)
     end
 
     n_params = sum(length, Flux.trainables(model))

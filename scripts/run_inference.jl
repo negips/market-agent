@@ -14,7 +14,7 @@ Usage:
 Arguments:
   --symbol SYMBOL   NSE ticker (e.g. INFY, RELIANCE, TCS)
   --date   DATE     Trading date in DD-MM-YYYY or YYYY-MM-DD format
-  --arch   NAME     Architecture to use: v1, v2 (default: v1)
+  --arch   NAME     Architecture to use: v1, v2, v3 (default: v1)
   --model  PATH     Explicit model BSON path (overrides --arch)
   --output PATH     Output JSON path (default: website/data/prediction_result.json)
 
@@ -24,7 +24,7 @@ Output format: JSON with keys:
   actual[{datetime, close}],
   history{dates, closes}
 
-Note: LLM features are not used by DualCNN_v1 / DualCNN_v2.
+Note: LLM features are not used by DualCNN_v1 / DualCNN_v2 / DualCNN_v3.
 """
 
 using StockSwingPredictor, Flux, JSON3, Dates
@@ -32,7 +32,7 @@ using StockSwingPredictor, Flux, JSON3, Dates
 const REPO_ROOT = joinpath(@__DIR__, "..")
 
 # Maps --arch shorthand → model folder name under website/data/models/
-const ARCH_DIRS = Dict("v1" => "DualCNN_v1", "v2" => "DualCNN_v2")
+const ARCH_DIRS = Dict("v1" => "DualCNN_v1", "v2" => "DualCNN_v2", "v3" => "DualCNN_v3")
 
 function _parse_date(s::String)::Date
     # Accept DD-MM-YYYY (preferred) or YYYY-MM-DD (fallback)
@@ -58,12 +58,12 @@ function parse_args()
             println("""
 Usage:
   julia --project=packages/StockSwingPredictor scripts/run_inference.jl \\
-        --symbol INFY --date 15-01-2024 [--arch v1|v2]
+        --symbol INFY --date 15-01-2024 [--arch v1|v2|v3]
 
 Options:
   --symbol SYMBOL   NSE ticker symbol (required)
   --date DATE       Trading date DD-MM-YYYY (required, must be in inference cache)
-  --arch NAME       Architecture to use: v1, v2 (default: v1)
+  --arch NAME       Architecture to use: v1, v2, v3 (default: v1)
   --model PATH      Explicit model BSON path — overrides --arch
   --output PATH     Output JSON path (default: website/data/prediction_result.json)
 
