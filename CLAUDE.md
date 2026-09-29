@@ -76,6 +76,9 @@ market-agent/
 │           ├── universe.jl         # candidate universe: confidence-filtered, market-cap-ranked, capped
 │           └── display.jl          # Base.show overrides
 │           # news_features.jl: later stage — see TradingGameRules.txt and the TradingGame module docstring
+│       └── docs/                   # LaTeX architecture write-ups (.tex + .bib + built .pdf, all tracked)
+│           └── tradinggame_scaling.tex  # anchor-token cross-attention scaling proposal — equations,
+│                                         # TikZ schematics, measured-GPU-memory regression, references
 │
 ├── scripts/                        # standalone Julia scripts (not packages)
 │   ├── generate_nse_list.jl              # builds data/nse_companies_latest.json
@@ -122,9 +125,14 @@ Do not introduce Python.
 
 ## Documentation
 
-Every package has its own `docs/` directory (not yet created — add as packages grow).
-Module-level docstrings describe the package's role in the pipeline and link to related
-packages with `See also: [OtherModule](@ref)`.
+Every package has its own `docs/` directory, added as packages grow — for detailed
+architecture write-ups (design proposals, complexity analysis, anything that wants
+equations/diagrams/citations), not day-to-day API docs. Written in LaTeX; `.tex`,
+`.bib`, and the built `.pdf` are all tracked in git (unlike `papers/`, which is
+downloaded reference material and is gitignored). First instance:
+`packages/TradingGame/docs/tradinggame_scaling.tex`. Module-level docstrings describe
+each package's role in the pipeline and link to related packages with
+`See also: [OtherModule](@ref)`.
 
 ## Package dependency rules
 

@@ -34,6 +34,8 @@ website/data/
 *.fls
 *.fdb_latexmk
 *.synctex.gz
+*.bbl
+*.blg
 
 # ── Local scratch ─────────────────────────────────────────────────────────────
 papers/
