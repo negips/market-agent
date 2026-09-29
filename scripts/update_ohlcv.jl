@@ -42,7 +42,18 @@ const MACRO_DIR     = joinpath(OHLCV_ROOT, "macro")
 """
 Read only the date/datetime column from a CSV and return the maximum value.
 Uses `select` so it never loads OHLCV columns for large files.
-Returns `nothing` if the file is missing or empty.
+Returns `nothing` if the file is missing, empty, or every row fails to parse.
+
+A row that fails to parse as `T` (e.g. two bars glued together with no
+newline between them, from an interrupted or concurrent append — the CSV
+appends in this script are not safe to run two-at-once against the same
+file) becomes `missing` rather than raising here; `maximum` alone would then
+silently propagate that single `missing` to the *whole file's* result,
+turning one corrupted row into "I can't tell you anything about this file"
+instead of "one row was bad, here's the latest good timestamp." We skip
+missing rows and warn instead, so the caller still gets a usable answer and
+the corruption is visible rather than surfacing later as an unrelated
+`MethodError` deep in `Dates`.
 """
 function _last_value(path::String, col::Symbol, T::Type)
     isfile(path) || return nothing
@@ -53,7 +64,16 @@ function _last_value(path::String, col::Symbol, T::Type)
         return nothing
     end
     isempty(df) && return nothing
-    return maximum(df[!, col])
+
+    n_bad = count(ismissing, df[!, col])
+    n_bad > 0 && @warn "$path: $n_bad row(s) failed to parse as $T — file may be " *
+                        "corrupted (e.g. two bars glued together from an interrupted " *
+                        "or concurrent write). Ignoring them for the last-known-good " *
+                        "timestamp; inspect the file directly if this recurs."
+
+    good = skipmissing(df[!, col])
+    isempty(good) && return nothing
+    return maximum(good)
 end
 
 _last_daily_date(sym::String, dir::String=NSE_OHLCV_DIR) =
