@@ -73,9 +73,9 @@ market-agent/
 │           ├── policy.jl           # recurrent/transformer actor-critic (ActorCriticPolicy, Flux)
 │           ├── ppo.jl              # hand-rolled PPO + GAE (collect_rollout, ppo_update!)
 │           ├── train.jl            # training loop: train_policy! — checkpoint, episode_log.jsonl, STOP
+│           ├── universe.jl         # candidate universe: confidence-filtered, market-cap-ranked, capped
 │           └── display.jl          # Base.show overrides
-│           # universe.jl, news_features.jl: later stages —
-│           # see TradingGameRules.txt and the TradingGame module docstring
+│           # news_features.jl: later stage — see TradingGameRules.txt and the TradingGame module docstring
 │
 ├── scripts/                        # standalone Julia scripts (not packages)
 │   ├── generate_nse_list.jl              # builds data/nse_companies_latest.json
@@ -493,6 +493,23 @@ Outputs (under `website/data/models/{arch.name}/`):
 
 To stop training cleanly: `touch website/data/models/DualCNN_v3/STOP` (saves checkpoint).
 Hard stop without save: `touch website/data/models/DualCNN_v3/STOP_NOW`.
+
+### build_universe_snapshot.jl
+
+Builds the `TradingGame` candidate universe: filters `nse_companies_latest.json`'s
+already-computed confidence scores (>= 40, no live sidecar calls), ranks by market
+cap, caps at `N_CANDIDATE_STOCKS` (60), and restricts to symbols with a cached
+`InferenceCache` entry.
+
+```bash
+julia --project=packages/TradingGame scripts/build_universe_snapshot.jl        # top 60
+julia --project=packages/TradingGame scripts/build_universe_snapshot.jl --n 100
+```
+
+Prerequisites: `nse_companies_latest.json` (`generate_nse_list.jl` then
+`run_confidence_checks.jl`) and `inference_cache.bson` (`build_cache.jl`).
+Output: `website/data/trading_game/universe_latest.json` — load with
+`TradingGame.load_universe_snapshot` as `EpisodeConfig.candidate_universe`.
 
 ### Website
 

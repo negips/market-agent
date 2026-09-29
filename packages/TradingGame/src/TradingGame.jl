@@ -13,8 +13,10 @@ the objective is continuous portfolio-value maximisation.
 
 1. Simulator + rule-compliance tests (`env.jl`, `action.jl`, `baseline_policy.jl`) — done.
 2. Observation assembly + actor-critic network (`observation.jl`, `policy.jl`) — done.
-3. Hand-rolled PPO + a small-universe training sanity check (`ppo.jl`, `train.jl`) — current.
-4. Full-scale training + historical backtest validation — not started.
+3. Hand-rolled PPO + a small-universe training sanity check (`ppo.jl`, `train.jl`) — done.
+4. Full-scale training + historical backtest validation — in progress:
+   candidate universe (`universe.jl`, `scripts/build_universe_snapshot.jl`) done;
+   historical news-signal backfill (`news_features.jl`) not started.
 5. Live execution — explicitly out of scope for this package; see
    `StockSwingPredictor.broker.jl` for the read-only Kite portfolio functions a
    future live-execution follow-up would extend (no order-placement function
@@ -37,6 +39,14 @@ reset!(env, EpisodeConfig(
 result = step!(env, heuristic_policy(env))   # or random_policy(env), or your own JointAction
 result.reward         # log-return of portfolio value this step
 portfolio_value(env)
+```
+
+## Quick start: candidate universe
+
+```julia
+entries = build_candidate_universe(cache, "website/data/nse_companies_latest.json")
+save_universe_snapshot(entries, "website/data/trading_game/universe_latest.json")
+candidate_universe = load_universe_snapshot("website/data/trading_game/universe_latest.json")
 ```
 
 ## Quick start: train
@@ -64,16 +74,17 @@ include("observation.jl")
 include("policy.jl")
 include("ppo.jl")
 include("train.jl")
+include("universe.jl")
 include("display.jl")
 
 export
     # constants
     FEE_RATE, SETTLEMENT_DAYS, MIN_HOLD_DAYS, MAX_HOLD_DAYS, DECISION_INTERVAL_MIN,
     DecisionGranularity, HOURLY, MINUTE_15, TRAINING_DECISION_GRANULARITY,
-    N_CANDIDATE_STOCKS, GAMMA, GAE_LAMBDA, CLIP_EPS, VALUE_LOSS_COEF, ENTROPY_COEF,
-    DECAY_HALFLIFE_HOURS, N_HOURLY_BARS_SHORT, N_PRICE_CHANNELS, N_MACRO_DAYS,
-    N_MACRO_SERIES, MACRO_SERIES_NAMES, N_NEWS_FEATURES, N_HOLDING_FEATURES,
-    N_PORTFOLIO_SCALARS,
+    N_CANDIDATE_STOCKS, MIN_CONFIDENCE_SCORE, GAMMA, GAE_LAMBDA, CLIP_EPS,
+    VALUE_LOSS_COEF, ENTROPY_COEF, DECAY_HALFLIFE_HOURS, N_HOURLY_BARS_SHORT,
+    N_PRICE_CHANNELS, N_MACRO_DAYS, N_MACRO_SERIES, MACRO_SERIES_NAMES,
+    N_NEWS_FEATURES, N_HOLDING_FEATURES, N_PORTFOLIO_SCALARS,
 
     # types
     ActionType, HOLD, SELL, BUY, RawAction, ResolvedTrade, JointAction,
@@ -99,6 +110,9 @@ export
     RolloutStep, collect_rollout, compute_gae, ppo_update!,
 
     # train
-    train_policy!, save_training_log
+    train_policy!, save_training_log,
+
+    # universe
+    UniverseEntry, build_candidate_universe, save_universe_snapshot, load_universe_snapshot
 
 end

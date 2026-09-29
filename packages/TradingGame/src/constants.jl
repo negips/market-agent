@@ -38,6 +38,16 @@ Cap on the joint-action candidate universe size. Smaller than
 """
 const N_CANDIDATE_STOCKS = 60
 
+"""
+Minimum `confidence.score` (0–100) a company must have, read from
+`nse_companies_latest.json`, to enter the candidate universe — matches
+`CompanyConfidence.PASS_THRESHOLD`. Duplicated here (rather than depending on
+`CompanyConfidence`) because `universe.jl` only ever reads this pre-computed
+score from JSON, never calls `CompanyConfidence.analyze` itself — see
+`universe.jl`'s module docstring for why.
+"""
+const MIN_CONFIDENCE_SCORE = 40.0
+
 # ── Observation shape (observation.jl) ───────────────────────────────────────
 
 const N_HOURLY_BARS_SHORT = 120   # ~17 trading days of hourly bars — actor-critic encoder window

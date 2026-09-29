@@ -14,6 +14,10 @@ conventions (checkpoint round-trip, `episode_log.jsonl`, `STOP`/`STOP_NOW`).
 Fast, mechanical tests only — the actual "does the policy learn" sanity check
 (episode return trending upward over many iterations) is a manual run; see
 the TradingGame module docstring's quick-start.
+
+`test_universe.jl` (Stage 4): candidate-universe filtering/ranking/persistence
+against a synthetic `nse_companies_latest.json`-shaped fixture — offline, no
+sidecar or real data files required.
 """
 
 using Test, TradingGame, StockSwingPredictor, Flux, CUDA, JSON3, Dates, Random
@@ -21,3 +25,4 @@ using Test, TradingGame, StockSwingPredictor, Flux, CUDA, JSON3, Dates, Random
 include("test_rules.jl")
 include("test_policy.jl")
 include("test_train.jl")
+include("test_universe.jl")
