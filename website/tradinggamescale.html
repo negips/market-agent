@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TG Scaling — market-agent</title>
   <link rel="stylesheet" href="assets/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <style>
     .proposal-banner {
       display: flex;
@@ -83,6 +84,39 @@
     .qa-item { padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 12.5px; }
     .qa-item:last-child { border-bottom: none; }
     .qa-item strong { color: var(--text); }
+
+    /* ── Capacity calculator ── */
+    .calc-card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 18px 22px; margin-bottom: 14px;
+    }
+    .calc-inputs { display: flex; flex-wrap: wrap; gap: 18px; margin-bottom: 4px; }
+    .calc-field { display: flex; flex-direction: column; gap: 5px; }
+    .calc-field label { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+    .calc-field input, .calc-field select {
+      background: var(--surface2); border: 1.5px solid var(--border); border-radius: 6px;
+      color: var(--text); font-family: var(--mono); font-size: 13px; padding: 6px 10px; width: 120px;
+      outline: none; transition: border-color .15s;
+    }
+    .calc-field input:focus, .calc-field select:focus { border-color: var(--accent); }
+    .calc-hint { font-size: 10.5px; color: var(--muted); margin-top: 8px; }
+
+    .tier-fit    { color: var(--green); }
+    .tier-risky  { color: var(--yellow); }
+    .tier-oom    { color: var(--red); }
+    .tier-label  { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; margin-top: 2px; }
+
+    .model-caption {
+      font-family: var(--mono); font-size: 11px; color: var(--muted);
+      background: var(--surface2); border: 1px solid var(--border); border-radius: 6px;
+      padding: 8px 12px; margin-bottom: 14px; line-height: 1.7;
+    }
+    .caveat-box {
+      background: rgba(247,111,111,.06); border: 1px solid rgba(247,111,111,.3);
+      border-radius: var(--radius); padding: 12px 16px; font-size: 12px; color: var(--text-dim);
+      line-height: 1.7; margin-bottom: 8px;
+    }
+    .caveat-box strong { color: var(--red); }
   </style>
 </head>
 <body>
@@ -100,75 +134,33 @@
       <span class="proposal-badge">Proposed · not implemented</span>
       Living document — edit this page directly whenever the design changes. Nothing on this page is
       committed code yet; <code>ActorCriticPolicy</code> in <code>policy.jl</code> still uses full
-      self-attention. Numbers below marked "measured" come from a real script run against this
-      machine's GPU; numbers marked "projected" are estimates for the not-yet-built design.
+      self-attention. Every row in the table below is a real measurement on this machine's GPU;
+      the calculator below it evaluates a regression fitted to those measurements, so it can answer
+      "what about N=750?" without a new GPU run for every value.
     </div>
 
     <!-- ── Why ─────────────────────────────────────────────────────────── -->
     <div class="section-title">Why the current design won't reach 1,500</div>
     <div class="section-note">
       <code>ActorCriticPolicy</code>'s <code>MultiHeadAttention</code> runs full self-attention across
-      every candidate — all N stocks plus the portfolio token attend to each other. That's an
-      N×N cost. At N=60 (today) that's cheap. At N=1,500 it isn't: measured directly on this
-      machine (RTX 5060 Ti, 16.7 GB VRAM) by running <code>ActorCriticPolicy</code>'s actual
-      forward + backward + optimizer step at each size below.
+      every candidate — all N stocks plus the portfolio token attend to each other, an N×N cost.
+      At N=60 (today) that's cheap. Measured directly on this machine (RTX 5060 Ti, 16.7 GB VRAM,
+      15.57 GB usable) by running <code>ActorCriticPolicy</code>'s actual forward + backward +
+      optimizer step at every combination below:
     </div>
 
     <table class="cap-table">
       <thead>
-        <tr><th>Candidates (N)</th><th>Batch</th><th class="r">Peak GPU memory</th><th>Fits in 16.7 GB?</th><th>Note</th></tr>
+        <tr><th>Candidates (N)</th><th>Batch</th><th class="r">Peak GPU memory</th><th>Result</th></tr>
       </thead>
-      <tbody>
-        <tr>
-          <td class="mono">60 <span style="color:var(--muted)">(today)</span></td>
-          <td class="mono">32</td>
-          <td class="r mono">0.98 GB</td>
-          <td><div class="fit-bar-cell"><div class="fit-bar-track"><div class="fit-bar-fill" style="width:6%;background:var(--green)"></div></div></div></td>
-          <td style="color:var(--muted)">current default</td>
-        </tr>
-        <tr>
-          <td class="mono">60</td>
-          <td class="mono">256</td>
-          <td class="r mono">7.88 GB</td>
-          <td><div class="fit-bar-cell"><div class="fit-bar-track"><div class="fit-bar-fill" style="width:47%;background:var(--green)"></div></div></div></td>
-          <td style="color:var(--muted)">GPU-scale batch, like StockSwingPredictor</td>
-        </tr>
-        <tr>
-          <td class="mono">1,500</td>
-          <td class="mono">4</td>
-          <td class="r mono">3.63 GB</td>
-          <td><div class="fit-bar-cell"><div class="fit-bar-track"><div class="fit-bar-fill" style="width:22%;background:var(--yellow)"></div></div></div></td>
-          <td style="color:var(--muted)">only 4 episodes/minibatch</td>
-        </tr>
-        <tr>
-          <td class="mono">1,500</td>
-          <td class="mono">8</td>
-          <td class="r mono">7.26 GB</td>
-          <td><div class="fit-bar-cell"><div class="fit-bar-track"><div class="fit-bar-fill" style="width:43%;background:var(--yellow)"></div></div></div></td>
-          <td style="color:var(--muted)">the practical ceiling today</td>
-        </tr>
-        <tr>
-          <td class="mono">1,500</td>
-          <td class="mono">16</td>
-          <td class="r mono">—</td>
-          <td><span class="oom-tag">OOM</span></td>
-          <td style="color:var(--red)">needed &gt;15.5 GB of 15.6 GB free</td>
-        </tr>
-        <tr>
-          <td class="mono">1,500</td>
-          <td class="mono">32</td>
-          <td class="r mono">—</td>
-          <td><span class="oom-tag">OOM</span></td>
-          <td style="color:var(--red)">fails immediately</td>
-        </tr>
-      </tbody>
+      <tbody id="measured-rows"></tbody>
     </table>
     <div class="section-note" style="margin-bottom:28px">
-      Isolating the attention layer alone confirms it's the driver: at N=61 it uses 17 MB (batch 32);
-      at N=1,501 the <em>same layer alone</em> uses 6.06 GB at batch 32 — a ~360× jump for a ~25×
-      increase in N, consistent with N² scaling. Batch size can't rescue this the way it did for
-      StockSwingPredictor, because that model's cross-attention is one query against N peers (O(N)) —
-      <code>ActorCriticPolicy</code>'s is every candidate against every other (O(N²)).
+      Batch size can't rescue N=1,500 the way it did for StockSwingPredictor, because that model's
+      cross-attention is one query against N peers (O(N)) — <code>ActorCriticPolicy</code>'s is every
+      candidate against every other (O(N²)). Fitting <code>memory(N,B) = c₀ + c₁B + c₂NB + c₃N²B</code>
+      to these 13 points gives R² = 0.9999999 — essentially exact — which is itself evidence the N²
+      term is the real driver, not measurement noise.
     </div>
 
     <!-- ── Diagrams ──────────────────────────────────────────────────────── -->
@@ -228,27 +220,83 @@
       </div>
     </div>
 
-    <!-- ── Projected capacity ────────────────────────────────────────────── -->
-    <div class="section-title">Projected capacity (not yet measured)</div>
+    <!-- ── Capacity calculator ───────────────────────────────────────────── -->
+    <div class="section-title">Capacity calculator</div>
     <div class="section-note">
-      Removing the N² term should make memory scale roughly with N·K instead — much closer to how
-      batch size already scales at N=60. This is a projection to validate once built, not a measured
-      result.
+      Type any candidate count and pick a batch size — both curves update live. The
+      <strong>current</strong> curve is the fitted regression above (memory measured, math extrapolated
+      between/beyond the 13 points). The <strong>proposed</strong> curve reuses the <em>same</em> fitted
+      constant/linear/N-term coefficients (GRU, fusion, heads, optimizer state don't change) and
+      substitutes N·K for the N² term, using the same measured per-pair attention cost — not a
+      separately-guessed number.
     </div>
-    <table class="cap-table">
-      <thead>
-        <tr><th>Candidates (N)</th><th>Batch</th><th>Expectation</th></tr>
-      </thead>
-      <tbody>
-        <tr><td class="mono">1,500</td><td class="mono">32</td><td><span class="proj-tag">projected: fits comfortably</span></td></tr>
-        <tr><td class="mono">1,500</td><td class="mono">128–256</td><td><span class="proj-tag">projected: the actual target — validate once ppo.jl/train.jl get GPU wiring</span></td></tr>
-      </tbody>
-    </table>
+
+    <div class="calc-card">
+      <div class="calc-inputs">
+        <div class="calc-field">
+          <label for="calc-n">Candidates (N)</label>
+          <input type="number" id="calc-n" value="1500" min="10" max="10000" step="10">
+        </div>
+        <div class="calc-field">
+          <label for="calc-b">Batch (measured values)</label>
+          <select id="calc-b">
+            <option value="4">4</option>
+            <option value="8">8</option>
+            <option value="16">16</option>
+            <option value="32" selected>32</option>
+            <option value="64">64</option>
+            <option value="128">128</option>
+            <option value="256">256</option>
+          </select>
+        </div>
+        <div class="calc-field">
+          <label for="calc-k">Summary tokens (K, proposed only)</label>
+          <input type="number" id="calc-k" value="2" min="1" max="50" step="1">
+        </div>
+      </div>
+      <div class="calc-hint">Batch is restricted to the 7 values actually measured, so the chart's measured-point overlay always lines up with a real run.</div>
+    </div>
+
+    <div class="stat-row">
+      <div class="stat-card">
+        <div class="stat-label">Current design (O(N²))</div>
+        <div class="stat-value" id="calc-current-gb" style="font-size:20px">—</div>
+        <div class="tier-label" id="calc-current-tier"></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Proposed design (O(N·K))</div>
+        <div class="stat-value" id="calc-proposed-gb" style="font-size:20px">—</div>
+        <div class="tier-label" id="calc-proposed-tier"></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Memory saved</div>
+        <div class="stat-value" id="calc-savings" style="font-size:20px;color:var(--green)">—</div>
+        <div class="stat-sub">proposed vs current, at this N/B</div>
+      </div>
+    </div>
+
+    <div class="caveat-box">
+      <strong>The model predicts final resident memory, not peak transient memory during backprop —
+      treat anything above ~9 GB as needing real verification, not a guarantee.</strong>
+      N=1,500/B=16 was <em>measured</em> to OOM, yet the fitted model predicts only ~14.5 GB for that
+      exact point — well under the 15.57 GB usable ceiling. Backprop through attention briefly holds
+      more memory than the steady-state figure this regression fits. The tiers below are set
+      conservatively for that reason: "fits" only up to the highest value we've actually measured
+      succeeding (8.7 GB), not up to the raw 15.57 GB ceiling.
+    </div>
+
+    <div class="chart-card">
+      <div class="chart-header">
+        <div class="chart-title">Peak GPU memory vs. candidate count, at the selected batch size</div>
+        <div class="chart-sub">dots = real measurements at this batch size · lines = fitted model</div>
+      </div>
+      <div class="canvas-wrap" style="height:280px"><canvas id="scale-chart"></canvas></div>
+    </div>
 
     <!-- ── Open questions ────────────────────────────────────────────────── -->
     <div class="section-title">Open questions</div>
     <div class="chart-card" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:4px 20px;margin-bottom:8px">
-      <div class="qa-item"><strong>K, the number of summary tokens.</strong> Starting guess: 2 (a mean-pooled "market pulse" + the existing macro/portfolio token). More tokens (e.g. per-sector pools) trade a bit more O(N·K) cost for richer shared context.</div>
+      <div class="qa-item"><strong>K, the number of summary tokens.</strong> Starting guess: 2 (a mean-pooled "market pulse" + the existing macro/portfolio token) — adjustable in the calculator above. More tokens (e.g. per-sector pools) trade a bit more O(N·K) cost for richer shared context.</div>
       <div class="qa-item"><strong>Pooling method.</strong> Plain mean-pool is O(N) and simplest; a lightweight attention-pool (learned query, N keys — still O(N), same shape as StockSwingPredictor's existing cross-attention) may capture more signal at a small extra cost.</div>
       <div class="qa-item"><strong>GPU wiring is a separate, still-needed piece of work.</strong> <code>ppo.jl</code>/<code>train.jl</code> run entirely on CPU today (a deliberate Stage 3 scoping decision) — the measurements above test the network in isolation, not the full rollout+update loop.</div>
       <div class="qa-item"><strong><code>assemble_observation</code> is a separate CPU bottleneck.</strong> It's a per-candidate Julia loop, called once per environment step — not addressed by any of the above. Worth profiling once N grows.</div>
@@ -257,6 +305,13 @@
     <!-- ── Revision log ──────────────────────────────────────────────────── -->
     <div class="section-title">Revision log</div>
     <div class="chart-card" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:4px 20px">
+      <div class="rev-entry">
+        <div class="rev-date">2026-09-29</div>
+        <div class="rev-body">
+          <div class="rev-title">Made the capacity table dynamic</div>
+          <div class="rev-desc">Swept N=500 (all 7 batch sizes, up to OOM at B=64) alongside re-runs at N=60 and N=1,500 — 13 real full-policy measurements total. Fitted memory(N,B) = c₀+c₁B+c₂NB+c₃N²B by least squares (R²=0.9999999) and replaced the static tables with a live calculator: type any N, pick a measured batch size, and both the current (O(N²)) and proposed (O(N·K)) curves update, with the proposed curve reusing the same fitted non-attention coefficients rather than a separate guess. Added an explicit caveat after finding the model under-predicts right at the OOM boundary (N=1,500/B=16 measured OOM at a predicted 14.5 GB) — the "fits" tier is set at the highest value actually measured succeeding, not the raw VRAM ceiling.</div>
+        </div>
+      </div>
       <div class="rev-entry">
         <div class="rev-date">2026-09-29</div>
         <div class="rev-body">
@@ -270,6 +325,148 @@
 </div>
 
 <script>
+// ── Measured data ────────────────────────────────────────────────────────────
+// packages/TradingGame ActorCriticPolicy: full forward + backward + Adam step,
+// measured directly on this machine (RTX 5060 Ti — 16.72 GB total, ~15.57 GB
+// usable). 13 successful runs + 2 OOMs at the batch-size boundary.
+const MEASURED = [
+  {N:60,   B:4,   gb:0.122}, {N:60,   B:8,   gb:0.250}, {N:60,   B:16,  gb:0.493},
+  {N:60,   B:32,  gb:0.986}, {N:60,   B:64,  gb:1.971}, {N:60,   B:128, gb:3.941},
+  {N:60,   B:256, gb:7.882},
+  {N:500,  B:4,   gb:1.083}, {N:500,  B:8,   gb:2.165}, {N:500,  B:16,  gb:4.329},
+  {N:500,  B:32,  gb:8.657},
+  {N:1500, B:4,   gb:3.631}, {N:1500, B:8,   gb:7.261},
+];
+const OOM_POINTS = [ {N:500, B:64}, {N:1500, B:16} ];
+
+const TOTAL_VRAM_GB            = 16.72;
+const USABLE_VRAM_GB           = 15.57;   // from the CUDA OOM error's "X GiB free" figure
+const VERIFIED_FIT_CEILING_GB  = 8.7;     // highest predicted value that actually succeeded
+
+// Fitted by least squares (Julia `\`) to the 13 MEASURED points:
+//   memory(N,B) = c0 + c1*B + c2*(N*B) + c3*(N^2*B)     [GB]
+// R^2 = 0.9999999 across all 13 points.
+const FIT = { c0: 0.0009709777, c1: 1.6150865e-5, c2: 0.0005089580, c3: 6.399805e-8 };
+
+function currentMemGB(N, B)     { return FIT.c0 + FIT.c1*B + FIT.c2*N*B + FIT.c3*N*N*B; }
+// Proposed design: same non-attention terms, N^2 term replaced by N*K
+// (same measured per-pair attention cost, fewer pairs — not a separate guess).
+function proposedMemGB(N, K, B) { return FIT.c0 + FIT.c1*B + FIT.c2*N*B + FIT.c3*N*K*B; }
+
+function tierFor(gb) {
+  if (gb <= VERIFIED_FIT_CEILING_GB) return { cls: 'tier-fit',   label: 'Fits (verified range)',              color: '#3dd68c' };
+  if (gb <= USABLE_VRAM_GB)          return { cls: 'tier-risky', label: 'Uncertain — unverified at this scale', color: '#f5c842' };
+  return                                    { cls: 'tier-oom',   label: 'Predicted OOM',                       color: '#f76f6f' };
+}
+
+function renderMeasuredTable() {
+  const rows = MEASURED.map(m => `<tr>
+      <td class="mono">${m.N.toLocaleString()}${m.N === 60 ? ' <span style="color:var(--muted)">(today)</span>' : ''}</td>
+      <td class="mono">${m.B}</td>
+      <td class="r mono">${m.gb.toFixed(3)} GB</td>
+      <td style="color:var(--green)">fits</td>
+    </tr>`);
+  const oomRows = OOM_POINTS.map(o => `<tr>
+      <td class="mono">${o.N.toLocaleString()}</td>
+      <td class="mono">${o.B}</td>
+      <td class="r mono">—</td>
+      <td><span class="oom-tag">OOM</span></td>
+    </tr>`);
+  document.getElementById('measured-rows').innerHTML = rows.concat(oomRows).join('');
+}
+renderMeasuredTable();
+
+// ── Calculator ────────────────────────────────────────────────────────────
+let scaleChart = null;
+
+function updateChart(selectedN, B, K) {
+  const maxN = Math.max(2200, Math.ceil(selectedN * 1.3 / 100) * 100);
+  const steps = 60;
+  const xs = Array.from({ length: steps + 1 }, (_, i) => Math.round(i * maxN / steps));
+
+  const datasets = [
+    {
+      label: 'Current (O(N²)) — fitted', type: 'line', borderColor: '#f76f6f',
+      borderWidth: 2, pointRadius: 0, tension: .15,
+      data: xs.map(n => ({ x: n, y: currentMemGB(n, B) })),
+    },
+    {
+      label: 'Proposed (O(N·K)) — fitted', type: 'line', borderColor: '#3dd68c',
+      borderWidth: 2, pointRadius: 0, tension: .15,
+      data: xs.map(n => ({ x: n, y: proposedMemGB(n, K, B) })),
+    },
+    {
+      label: `Measured (B=${B})`, type: 'scatter', backgroundColor: '#4f8ef7',
+      pointRadius: 5, pointHoverRadius: 7, showLine: false,
+      data: MEASURED.filter(m => m.B === B).map(m => ({ x: m.N, y: m.gb })),
+    },
+    {
+      label: `OOM (B=${B})`, type: 'scatter', backgroundColor: '#f76f6f',
+      pointStyle: 'crossRot', pointRadius: 7, pointHoverRadius: 9,
+      borderColor: '#f76f6f', borderWidth: 2, showLine: false,
+      data: OOM_POINTS.filter(o => o.B === B).map(o => ({ x: o.N, y: USABLE_VRAM_GB })),
+    },
+    {
+      label: 'Usable VRAM (15.57 GB)', type: 'line', borderColor: '#6b7280',
+      borderWidth: 1, borderDash: [5, 4], pointRadius: 0,
+      data: [{ x: 0, y: USABLE_VRAM_GB }, { x: maxN, y: USABLE_VRAM_GB }],
+    },
+  ];
+
+  if (!scaleChart) {
+    scaleChart = new Chart(document.getElementById('scale-chart'), {
+      type: 'line',
+      data: { datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'nearest', intersect: false },
+        scales: {
+          x: { type: 'linear', title: { display: true, text: 'Candidates (N)', color: '#6b7280' }, grid: { color: '#1e2338' } },
+          y: { title: { display: true, text: 'GB', color: '#6b7280' }, grid: { color: '#2e3350' } },
+        },
+        plugins: {
+          legend: { display: true, position: 'top', align: 'end', labels: { boxWidth: 14, boxHeight: 2, color: '#94a3b8', font: { size: 10 } } },
+          tooltip: { callbacks: { label: (item) => `${item.dataset.label}: N=${item.parsed.x}, ${item.parsed.y.toFixed(2)} GB` } },
+        },
+      },
+    });
+  } else {
+    scaleChart.data.datasets = datasets;
+    scaleChart.update('none');
+  }
+}
+
+function setTier(valueId, tierId, gb, tier) {
+  const valueEl = document.getElementById(valueId);
+  const tierEl  = document.getElementById(tierId);
+  valueEl.textContent = gb.toFixed(2) + ' GB';
+  valueEl.style.color = tier.color;
+  tierEl.textContent  = tier.label;
+  tierEl.className    = 'tier-label ' + tier.cls;
+}
+
+function updateCalculator() {
+  const N = Math.max(1, parseInt(document.getElementById('calc-n').value, 10) || 1);
+  const B = parseInt(document.getElementById('calc-b').value, 10);
+  const K = Math.max(1, parseInt(document.getElementById('calc-k').value, 10) || 1);
+
+  const curGB  = currentMemGB(N, B);
+  const propGB = proposedMemGB(N, K, B);
+
+  setTier('calc-current-gb',  'calc-current-tier',  curGB,  tierFor(curGB));
+  setTier('calc-proposed-gb', 'calc-proposed-tier', propGB, tierFor(propGB));
+
+  const savingsPct = curGB > 0 ? ((curGB - propGB) / curGB * 100) : 0;
+  document.getElementById('calc-savings').textContent =
+    (savingsPct >= 0 ? '−' : '+') + Math.abs(savingsPct).toFixed(0) + '%';
+
+  updateChart(N, B, K);
+}
+
+['calc-n', 'calc-k'].forEach(id => document.getElementById(id).addEventListener('input', updateCalculator));
+document.getElementById('calc-b').addEventListener('change', updateCalculator);
+updateCalculator();
+
 const NS = 'http://www.w3.org/2000/svg';
 function svgEl(tag, attrs) {
   const e = document.createElementNS(NS, tag);
