@@ -63,6 +63,17 @@
               </svg>`,
     },
     {
+      href:  'tradinggamescale.html',
+      label: 'TG Scaling',
+      icon:  `<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24">
+                <circle cx="6" cy="12" r="2.2"/>
+                <circle cx="18" cy="5" r="2.2"/>
+                <circle cx="18" cy="12" r="2.2"/>
+                <circle cx="18" cy="19" r="2.2"/>
+                <path d="M8 12h7.5M10 12l6-5.5M10 12l6 5.5"/>
+              </svg>`,
+    },
+    {
       href:  'jumps.html',
       label: 'Jumps',
       icon:  `<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24">

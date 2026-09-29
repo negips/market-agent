@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TG Scaling — market-agent</title>
+  <link rel="stylesheet" href="assets/style.css">
+  <style>
+    .proposal-banner {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: rgba(245,200,66,.08);
+      border: 1px solid rgba(245,200,66,.35);
+      border-radius: var(--radius);
+      padding: 12px 16px;
+      margin-bottom: 22px;
+      font-size: 12.5px;
+      color: var(--text-dim);
+    }
+    .proposal-badge {
+      font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .06em;
+      color: var(--yellow); background: rgba(245,200,66,.15);
+      padding: 3px 9px; border-radius: 99px; flex-shrink: 0;
+    }
+
+    .section-title {
+      font-size: 12px; font-weight: 600; color: var(--muted);
+      text-transform: uppercase; letter-spacing: .07em;
+      margin: 34px 0 12px; display: flex; align-items: center; gap: 10px;
+    }
+    .section-title:first-child { margin-top: 0; }
+    .section-title::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+    .section-note { font-size: 12.5px; color: var(--text-dim); margin: -4px 0 16px; line-height: 1.7; max-width: 800px; }
+
+    /* ── Diagram comparison ── */
+    .diagram-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 8px; }
+    @media (max-width: 820px) { .diagram-pair { grid-template-columns: 1fr; } }
+    .diagram-panel {
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 14px 16px 6px;
+    }
+    .diagram-panel.bad  { border-color: rgba(247,111,111,.35); }
+    .diagram-panel.good { border-color: rgba(61,214,140,.35); }
+    .diagram-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 2px; }
+    .diagram-name { font-size: 12.5px; font-weight: 700; }
+    .diagram-tag {
+      font-family: var(--mono); font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 99px;
+    }
+    .diagram-panel.bad  .diagram-tag { color: var(--red);   background: rgba(247,111,111,.12); }
+    .diagram-panel.good .diagram-tag { color: var(--green); background: rgba(61,214,140,.12); }
+    .diagram-caption { font-size: 11px; color: var(--muted); margin: 4px 0 6px; }
+    .diagram-panel svg { display: block; width: 100%; height: auto; }
+
+    /* ── Capacity table ── */
+    table.cap-table {
+      width: 100%; border-collapse: collapse; background: var(--surface);
+      border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;
+      font-size: 12px; margin-bottom: 10px;
+    }
+    table.cap-table th {
+      background: var(--surface2); border-bottom: 1px solid var(--border);
+      padding: 8px 14px; text-align: left; font-size: 10px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
+    }
+    table.cap-table th.r, table.cap-table td.r { text-align: right; }
+    table.cap-table td { padding: 8px 14px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    table.cap-table tr:last-child td { border-bottom: none; }
+    table.cap-table td.mono { font-family: var(--mono); font-size: 11.5px; }
+    .fit-bar-cell { display: flex; align-items: center; gap: 8px; min-width: 140px; }
+    .fit-bar-track { flex: 1; height: 6px; background: var(--surface2); border-radius: 99px; overflow: hidden; }
+    .fit-bar-fill  { height: 100%; border-radius: 99px; }
+    .oom-tag { font-size: 10px; font-weight: 800; color: var(--red); letter-spacing: .04em; }
+    .proj-tag { font-size: 10px; color: var(--muted); font-style: italic; }
+
+    /* ── Revision log ── */
+    .rev-entry { display: flex; gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+    .rev-entry:last-child { border-bottom: none; }
+    .rev-date { font-family: var(--mono); font-size: 11px; color: var(--muted); flex-shrink: 0; width: 84px; padding-top: 1px; }
+    .rev-body .rev-title { font-size: 13px; font-weight: 600; margin-bottom: 3px; }
+    .rev-body .rev-desc { font-size: 12px; color: var(--text-dim); line-height: 1.6; }
+
+    .qa-item { padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 12.5px; }
+    .qa-item:last-child { border-bottom: none; }
+    .qa-item strong { color: var(--text); }
+  </style>
+</head>
+<body>
+<script src="assets/nav.js"></script>
+
+<div class="main">
+  <div class="page-header">
+    <div class="page-title">Trading Game — Scaling Architecture</div>
+    <div class="page-subtitle">Proposal for growing the candidate universe from 60 to ~1,500 companies</div>
+  </div>
+
+  <div class="page-content">
+
+    <div class="proposal-banner">
+      <span class="proposal-badge">Proposed · not implemented</span>
+      Living document — edit this page directly whenever the design changes. Nothing on this page is
+      committed code yet; <code>ActorCriticPolicy</code> in <code>policy.jl</code> still uses full
+      self-attention. Numbers below marked "measured" come from a real script run against this
+      machine's GPU; numbers marked "projected" are estimates for the not-yet-built design.
+    </div>
+
+    <!-- ── Why ─────────────────────────────────────────────────────────── -->
+    <div class="section-title">Why the current design won't reach 1,500</div>
+    <div class="section-note">
+      <code>ActorCriticPolicy</code>'s <code>MultiHeadAttention</code> runs full self-attention across
+      every candidate — all N stocks plus the portfolio token attend to each other. That's an
+      N×N cost. At N=60 (today) that's cheap. At N=1,500 it isn't: measured directly on this
+      machine (RTX 5060 Ti, 16.7 GB VRAM) by running <code>ActorCriticPolicy</code>'s actual
+      forward + backward + optimizer step at each size below.
+    </div>
+
+    <table class="cap-table">
+      <thead>
+        <tr><th>Candidates (N)</th><th>Batch</th><th class="r">Peak GPU memory</th><th>Fits in 16.7 GB?</th><th>Note</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="mono">60 <span style="color:var(--muted)">(today)</span></td>
+          <td class="mono">32</td>
+          <td class="r mono">0.98 GB</td>
+          <td><div class="fit-bar-cell"><div class="fit-bar-track"><div class="fit-bar-fill" style="width:6%;background:var(--green)"></div></div></div></td>
+          <td style="color:var(--muted)">current default</td>
+        </tr>
+        <tr>
+          <td class="mono">60</td>
+          <td class="mono">256</td>
+          <td class="r mono">7.88 GB</td>
+          <td><div class="fit-bar-cell"><div class="fit-bar-track"><div class="fit-bar-fill" style="width:47%;background:var(--green)"></div></div></div></td>
+          <td style="color:var(--muted)">GPU-scale batch, like StockSwingPredictor</td>
+        </tr>
+        <tr>
+          <td class="mono">1,500</td>
+          <td class="mono">4</td>
+          <td class="r mono">3.63 GB</td>
+          <td><div class="fit-bar-cell"><div class="fit-bar-track"><div class="fit-bar-fill" style="width:22%;background:var(--yellow)"></div></div></div></td>
+          <td style="color:var(--muted)">only 4 episodes/minibatch</td>
+        </tr>
+        <tr>
+          <td class="mono">1,500</td>
+          <td class="mono">8</td>
+          <td class="r mono">7.26 GB</td>
+          <td><div class="fit-bar-cell"><div class="fit-bar-track"><div class="fit-bar-fill" style="width:43%;background:var(--yellow)"></div></div></div></td>
+          <td style="color:var(--muted)">the practical ceiling today</td>
+        </tr>
+        <tr>
+          <td class="mono">1,500</td>
+          <td class="mono">16</td>
+          <td class="r mono">—</td>
+          <td><span class="oom-tag">OOM</span></td>
+          <td style="color:var(--red)">needed &gt;15.5 GB of 15.6 GB free</td>
+        </tr>
+        <tr>
+          <td class="mono">1,500</td>
+          <td class="mono">32</td>
+          <td class="r mono">—</td>
+          <td><span class="oom-tag">OOM</span></td>
+          <td style="color:var(--red)">fails immediately</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="section-note" style="margin-bottom:28px">
+      Isolating the attention layer alone confirms it's the driver: at N=61 it uses 17 MB (batch 32);
+      at N=1,501 the <em>same layer alone</em> uses 6.06 GB at batch 32 — a ~360× jump for a ~25×
+      increase in N, consistent with N² scaling. Batch size can't rescue this the way it did for
+      StockSwingPredictor, because that model's cross-attention is one query against N peers (O(N)) —
+      <code>ActorCriticPolicy</code>'s is every candidate against every other (O(N²)).
+    </div>
+
+    <!-- ── Diagrams ──────────────────────────────────────────────────────── -->
+    <div class="section-title">Current vs. proposed attention pattern</div>
+    <div class="diagram-pair">
+      <div class="diagram-panel bad">
+        <div class="diagram-heading">
+          <span class="diagram-name">Current — full self-attention</span>
+          <span class="diagram-tag">O(N²)</span>
+        </div>
+        <div class="diagram-caption">Every candidate attends to every other candidate directly</div>
+        <svg id="graph-current" viewBox="0 0 340 250"></svg>
+      </div>
+      <div class="diagram-panel good">
+        <div class="diagram-heading">
+          <span class="diagram-name">Proposed — shared summary tokens</span>
+          <span class="diagram-tag">O(N·K)</span>
+        </div>
+        <div class="diagram-caption">Each candidate cross-attends only to K shared tokens (K≈2, fixed)</div>
+        <svg id="graph-proposed" viewBox="0 0 340 250"></svg>
+      </div>
+    </div>
+
+    <div class="section-note">
+      Each candidate still gets a joint, context-aware decision — it just gets that context from a
+      small set of <strong>shared summary tokens</strong> instead of from every other candidate
+      individually. This mirrors <code>StockSwingPredictor</code>'s existing cross-attention pattern
+      (one query against N peers), just inverted: here every candidate is a query, and the peer set
+      is replaced by a small, fixed K.
+    </div>
+
+    <!-- ── Proposed pipeline ─────────────────────────────────────────────── -->
+    <div class="section-title">Proposed policy pipeline</div>
+    <div class="flow-row" style="display:flex;overflow-x:auto;gap:0;margin-bottom:8px">
+      <div class="flow-step" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;min-width:168px;flex-shrink:0">
+        <div style="font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:5px">Per stock</div>
+        <span style="font-family:var(--mono);font-size:12px;font-weight:700;color:var(--accent);display:block;margin-bottom:4px">GRU encoder</span>
+        <div style="font-size:11.5px;color:var(--text-dim);line-height:1.55">Unchanged — weight-shared across all N candidates</div>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:center;flex-shrink:0;width:30px;color:var(--border);font-size:18px">→</div>
+      <div class="flow-step" style="background:rgba(61,214,140,.05);border:1px solid rgba(61,214,140,.35);border-radius:var(--radius);padding:12px 14px;min-width:190px;flex-shrink:0">
+        <div style="font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:var(--green);margin-bottom:5px">New — O(N)</div>
+        <span style="font-family:var(--mono);font-size:12px;font-weight:700;color:var(--green);display:block;margin-bottom:4px">Pool → K summary tokens</span>
+        <div style="font-size:11.5px;color:var(--text-dim);line-height:1.55">Mean/attention-pool all N embeddings → 1 "market pulse" token; portfolio+macro token unchanged. K≈2 to start.</div>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:center;flex-shrink:0;width:30px;color:var(--border);font-size:18px">→</div>
+      <div class="flow-step" style="background:rgba(61,214,140,.05);border:1px solid rgba(61,214,140,.35);border-radius:var(--radius);padding:12px 14px;min-width:190px;flex-shrink:0">
+        <div style="font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:var(--green);margin-bottom:5px">Changed — O(N·K)</div>
+        <span style="font-family:var(--mono);font-size:12px;font-weight:700;color:var(--green);display:block;margin-bottom:4px">Cross-attention</span>
+        <div style="font-size:11.5px;color:var(--text-dim);line-height:1.55">N candidates (queries) × K summary tokens (keys/values) — not N×N</div>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:center;flex-shrink:0;width:30px;color:var(--border);font-size:18px">→</div>
+      <div class="flow-step" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;min-width:168px;flex-shrink:0">
+        <div style="font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:5px">Output</div>
+        <span style="font-family:var(--mono);font-size:12px;font-weight:700;color:var(--accent);display:block;margin-bottom:4px">actor + critic heads</span>
+        <div style="font-size:11.5px;color:var(--text-dim);line-height:1.55">Unchanged — critic reads the pooled summary directly</div>
+      </div>
+    </div>
+
+    <!-- ── Projected capacity ────────────────────────────────────────────── -->
+    <div class="section-title">Projected capacity (not yet measured)</div>
+    <div class="section-note">
+      Removing the N² term should make memory scale roughly with N·K instead — much closer to how
+      batch size already scales at N=60. This is a projection to validate once built, not a measured
+      result.
+    </div>
+    <table class="cap-table">
+      <thead>
+        <tr><th>Candidates (N)</th><th>Batch</th><th>Expectation</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="mono">1,500</td><td class="mono">32</td><td><span class="proj-tag">projected: fits comfortably</span></td></tr>
+        <tr><td class="mono">1,500</td><td class="mono">128–256</td><td><span class="proj-tag">projected: the actual target — validate once ppo.jl/train.jl get GPU wiring</span></td></tr>
+      </tbody>
+    </table>
+
+    <!-- ── Open questions ────────────────────────────────────────────────── -->
+    <div class="section-title">Open questions</div>
+    <div class="chart-card" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:4px 20px;margin-bottom:8px">
+      <div class="qa-item"><strong>K, the number of summary tokens.</strong> Starting guess: 2 (a mean-pooled "market pulse" + the existing macro/portfolio token). More tokens (e.g. per-sector pools) trade a bit more O(N·K) cost for richer shared context.</div>
+      <div class="qa-item"><strong>Pooling method.</strong> Plain mean-pool is O(N) and simplest; a lightweight attention-pool (learned query, N keys — still O(N), same shape as StockSwingPredictor's existing cross-attention) may capture more signal at a small extra cost.</div>
+      <div class="qa-item"><strong>GPU wiring is a separate, still-needed piece of work.</strong> <code>ppo.jl</code>/<code>train.jl</code> run entirely on CPU today (a deliberate Stage 3 scoping decision) — the measurements above test the network in isolation, not the full rollout+update loop.</div>
+      <div class="qa-item"><strong><code>assemble_observation</code> is a separate CPU bottleneck.</strong> It's a per-candidate Julia loop, called once per environment step — not addressed by any of the above. Worth profiling once N grows.</div>
+    </div>
+
+    <!-- ── Revision log ──────────────────────────────────────────────────── -->
+    <div class="section-title">Revision log</div>
+    <div class="chart-card" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:4px 20px">
+      <div class="rev-entry">
+        <div class="rev-date">2026-09-29</div>
+        <div class="rev-body">
+          <div class="rev-title">Initial proposal</div>
+          <div class="rev-desc">Measured that the current full-self-attention ActorCriticPolicy OOMs on this machine's 16.7 GB GPU between batch 8 and 16 at N=1,500. Proposed replacing candidate-to-candidate self-attention with candidate-to-summary-token cross-attention (O(N·K) instead of O(N²)) to unlock GPU-scale batch sizes at 1,500 candidates, mirroring StockSwingPredictor's existing cross-attention pattern.</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+const NS = 'http://www.w3.org/2000/svg';
+function svgEl(tag, attrs) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  return e;
+}
+
+// 7 candidate positions on a circle (illustrative — N is small here only for legibility)
+const CAND = [
+  [170, 34], [238, 72], [256, 148], [208, 208],
+  [132, 208], [84, 148], [102, 72],
+];
+
+function drawGraph(svgId, { hubs = [] } = {}) {
+  const svg = document.getElementById(svgId);
+  svg.innerHTML = '';
+
+  const edgeColor = '#2a314f';
+
+  if (hubs.length === 0) {
+    // Full mesh: every candidate to every other candidate.
+    for (let i = 0; i < CAND.length; i++) {
+      for (let j = i + 1; j < CAND.length; j++) {
+        svg.appendChild(svgEl('line', {
+          x1: CAND[i][0], y1: CAND[i][1], x2: CAND[j][0], y2: CAND[j][1],
+          stroke: edgeColor, 'stroke-width': 1,
+        }));
+      }
+    }
+  } else {
+    // Star: every candidate to every hub only.
+    for (const c of CAND) {
+      for (const h of hubs) {
+        svg.appendChild(svgEl('line', {
+          x1: c[0], y1: c[1], x2: h.x, y2: h.y,
+          stroke: edgeColor, 'stroke-width': 1.2,
+        }));
+      }
+    }
+  }
+
+  // Candidate nodes
+  for (const [x, y] of CAND) {
+    svg.appendChild(svgEl('circle', {
+      cx: x, cy: y, r: 8, fill: '#122455', stroke: '#4f8ef7', 'stroke-width': 1.4,
+    }));
+  }
+
+  // Hub nodes (summary tokens), drawn on top
+  hubs.forEach((h, i) => {
+    svg.appendChild(svgEl('circle', {
+      cx: h.x, cy: h.y, r: 13, fill: '#0b2e20', stroke: '#3dd68c', 'stroke-width': 1.8,
+    }));
+    const t = svgEl('text', {
+      x: h.x, y: h.y + 27, fill: '#3dd68c', 'font-size': 8.5, 'text-anchor': 'middle',
+    });
+    t.textContent = h.label;
+    svg.appendChild(t);
+  });
+
+  const cap = svgEl('text', {
+    x: 170, y: 238, fill: '#4a5278', 'font-size': 9, 'text-anchor': 'middle',
+  });
+  cap.textContent = hubs.length === 0
+    ? `${CAND.length} candidates, ${CAND.length * (CAND.length - 1) / 2} edges`
+    : `${CAND.length} candidates × ${hubs.length} summary tokens = ${CAND.length * hubs.length} edges`;
+  svg.appendChild(cap);
+}
+
+drawGraph('graph-current', { hubs: [] });
+drawGraph('graph-proposed', { hubs: [
+  { x: 150, y: 130, label: 'market pulse' },
+  { x: 195, y: 130, label: 'portfolio' },
+] });
+</script>
+</body>
+</html>
