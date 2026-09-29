@@ -1,0 +1,104 @@
+"""
+    TradingGame
+
+Rule-exact market simulator and hand-rolled PPO training pipeline for the
+trading game defined in `TradingGameRules.txt` (repo root): start with cash,
+buy/sell NSE/BSE stocks, sale proceeds settle into spendable cash after
+`SETTLEMENT_DAYS`, a bought lot cannot be voluntarily sold before
+`MIN_HOLD_DAYS` and is force-sold at `MAX_HOLD_DAYS`, every trade costs
+`FEE_RATE`, decisions happen at the `TRAINING_DECISION_GRANULARITY` cadence, and
+the objective is continuous portfolio-value maximisation.
+
+## Stages
+
+1. Simulator + rule-compliance tests (`env.jl`, `action.jl`, `baseline_policy.jl`) — done.
+2. Observation assembly + actor-critic network (`observation.jl`, `policy.jl`) — done.
+3. Hand-rolled PPO + a small-universe training sanity check (`ppo.jl`, `train.jl`) — current.
+4. Full-scale training + historical backtest validation — not started.
+5. Live execution — explicitly out of scope for this package; see
+   `StockSwingPredictor.broker.jl` for the read-only Kite portfolio functions a
+   future live-execution follow-up would extend (no order-placement function
+   exists anywhere in this repo yet).
+
+## Quick start: simulate
+
+```julia
+using TradingGame, StockSwingPredictor
+
+cache = load_inference_cache("website/data/inference_cache.bson")
+env   = TradingGameEnv(cache)
+reset!(env, EpisodeConfig(
+    initial_cash       = 1_000_000.0,
+    start_date         = Date(2024, 1, 1),
+    end_date           = Date(2024, 6, 30),
+    candidate_universe = ["INFY", "TCS", "RELIANCE"],
+))
+
+result = step!(env, heuristic_policy(env))   # or random_policy(env), or your own JointAction
+result.reward         # log-return of portfolio value this step
+portfolio_value(env)
+```
+
+## Quick start: train
+
+```julia
+policy = ActorCriticPolicy()
+train_config = EpisodeConfig(initial_cash=1_000_000.0, start_date=Date(2024,1,1),
+                              end_date=Date(2024,3,31), candidate_universe=["INFY","TCS","RELIANCE"])
+policy, log = train_policy!(policy, env, train_config;
+                      iterations=100, checkpoint_path="policy.bson",
+                      episode_log_path="episode_log.jsonl", stop_file="STOP")
+log["train_return"]   # Σ log-returns per training-rollout episode — should trend upward
+```
+
+See also: [StockSwingPredictor](@ref)
+"""
+module TradingGame
+
+include("constants.jl")
+include("types.jl")
+include("action.jl")
+include("env.jl")
+include("baseline_policy.jl")
+include("observation.jl")
+include("policy.jl")
+include("ppo.jl")
+include("train.jl")
+include("display.jl")
+
+export
+    # constants
+    FEE_RATE, SETTLEMENT_DAYS, MIN_HOLD_DAYS, MAX_HOLD_DAYS, DECISION_INTERVAL_MIN,
+    DecisionGranularity, HOURLY, MINUTE_15, TRAINING_DECISION_GRANULARITY,
+    N_CANDIDATE_STOCKS, GAMMA, GAE_LAMBDA, CLIP_EPS, VALUE_LOSS_COEF, ENTROPY_COEF,
+    DECAY_HALFLIFE_HOURS, N_HOURLY_BARS_SHORT, N_PRICE_CHANNELS, N_MACRO_DAYS,
+    N_MACRO_SERIES, MACRO_SERIES_NAMES, N_NEWS_FEATURES, N_HOLDING_FEATURES,
+    N_PORTFOLIO_SCALARS,
+
+    # types
+    ActionType, HOLD, SELL, BUY, RawAction, ResolvedTrade, JointAction,
+    Holding, ReservedCashLot, Portfolio, EpisodeConfig, TradingGameEnv, StepResult,
+    CashConstraintViolation,
+
+    # action
+    resolve_actions,
+
+    # env
+    reset!, step!, portfolio_value, is_decision_bar,
+
+    # baseline_policy
+    random_policy, heuristic_policy,
+
+    # observation
+    MacroCache, build_macro_cache, Observation, assemble_observation, stack_observations,
+
+    # policy
+    ActorCriticPolicy, save_policy, load_policy,
+
+    # ppo
+    RolloutStep, collect_rollout, compute_gae, ppo_update!,
+
+    # train
+    train_policy!, save_training_log
+
+end

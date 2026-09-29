@@ -1,0 +1,139 @@
+"""
+Recurrent/transformer actor-critic policy — no CNN reuse from
+`StockSwingPredictor` (per the confirmed architecture decision; see the
+`TradingGame` module docstring).
+
+Pipeline: per-stock GRU temporal encoder (weight-shared across candidates) →
+concat news + holding-state features → fuse back to `embed_dim` → macro GRU +
+portfolio `Dense` form a "portfolio token" → `MultiHeadAttention` over all `N`
+stock embeddings plus the portfolio token (the "joint" part of the joint
+policy — each stock's representation can attend to every other candidate and
+to the shared cash state) → per-stock actor head + pooled critic head.
+
+`policy.jl` itself only calls `Flux.gpu`/`Flux.cpu` — GPU dispatch activates
+because `StockSwingPredictor` (a dependency) eagerly does `using CUDA, cuDNN`.
+`TradingGame`'s own `CUDA` dependency (see `Project.toml`) exists only so
+`test/test_policy.jl` can call `CUDA.functional()` directly.
+"""
+
+using Flux, BSON, Dates
+
+struct ActorCriticPolicy
+    hourly_encoder    :: Flux.GRU
+    fusion            :: Dense
+    macro_encoder     :: Flux.GRU
+    portfolio_encoder :: Dense
+    attn              :: Flux.MultiHeadAttention
+    actor_head        :: Dense
+    critic_head       :: Chain
+end
+
+Flux.@layer ActorCriticPolicy
+
+"""
+Build a fresh `ActorCriticPolicy`. `embed_dim` is the per-stock embedding
+width used throughout (hourly encoder output, fusion output, attention
+embedding); `macro_embed_dim` is the macro-GRU's output width before it's
+concatenated with the portfolio scalars.
+"""
+function ActorCriticPolicy(; embed_dim::Int=64, macro_embed_dim::Int=16,
+                            attn_heads::Int=4, critic_hidden::Vector{Int}=[64, 32])
+    hourly_encoder    = GRU(N_PRICE_CHANNELS => embed_dim)
+    fusion            = Dense(embed_dim + N_NEWS_FEATURES + N_HOLDING_FEATURES => embed_dim, relu)
+    macro_encoder     = GRU(N_MACRO_SERIES => macro_embed_dim)
+    portfolio_encoder = Dense(macro_embed_dim + N_PORTFOLIO_SCALARS => embed_dim, relu)
+    attn              = MultiHeadAttention(embed_dim; nheads=attn_heads)
+    actor_head        = Dense(embed_dim => 4)   # 3 action-type logits + 1 buy-weight logit
+
+    critic_layers = Any[]
+    in_dim = embed_dim
+    for h in critic_hidden
+        push!(critic_layers, Dense(in_dim => h, relu))
+        in_dim = h
+    end
+    push!(critic_layers, Dense(in_dim => 1))
+    critic_head = Chain(critic_layers...)
+
+    return ActorCriticPolicy(hourly_encoder, fusion, macro_encoder, portfolio_encoder,
+                              attn, actor_head, critic_head)
+end
+
+"""
+Forward pass over a batch produced by `stack_observations`.
+
+- `hourly`    :: `(N_HOURLY_BARS_SHORT, N_PRICE_CHANNELS, N, B)`
+- `news`      :: `(N_NEWS_FEATURES, N, B)`
+- `holding`   :: `(N_HOLDING_FEATURES, N, B)`
+- `macro_ctx` :: `(N_MACRO_DAYS, N_MACRO_SERIES, B)`
+- `portfolio` :: `(N_PORTFOLIO_SCALARS, B)`
+
+# Returns
+`(action_logits, buy_weight_logit, value)`:
+`action_logits :: (3, N, B)` (HOLD/SELL/BUY logits per candidate),
+`buy_weight_logit :: (N, B)`, `value :: (B,)`.
+"""
+function (m::ActorCriticPolicy)(hourly::AbstractArray{<:Real, 4}, news::AbstractArray{<:Real, 3},
+                                 holding::AbstractArray{<:Real, 3}, macro_ctx::AbstractArray{<:Real, 3},
+                                 portfolio::AbstractMatrix{<:Real})
+    bars, ch, N, B = size(hourly)
+    embed_dim = size(m.actor_head.weight, 2)
+
+    # ── Per-stock temporal encoder (weight-shared via the N*B batch fold) ────
+    x = permutedims(hourly, (2, 1, 3, 4))                 # (ch, bars, N, B)
+    x = reshape(x, ch, bars, N * B)
+    h = m.hourly_encoder(x)                                # (embed, bars, N*B)
+    stock_emb = reshape(h[:, end, :], embed_dim, N, B)      # last timestep only
+
+    # ── News + holding-state fusion ──────────────────────────────────────────
+    fused = vcat(stock_emb, reshape(news, :, N, B), reshape(holding, :, N, B))
+    fused = m.fusion(reshape(fused, size(fused, 1), N * B))
+    stock_emb = reshape(fused, embed_dim, N, B)
+
+    # ── Macro + portfolio conditioning → one extra "portfolio token" ────────
+    macro_x   = permutedims(macro_ctx, (2, 1, 3))           # (series, days, B)
+    macro_h   = m.macro_encoder(macro_x)                    # (macro_embed, days, B)
+    macro_emb = macro_h[:, end, :]                           # (macro_embed, B)
+    port_tok  = m.portfolio_encoder(vcat(macro_emb, portfolio))   # (embed, B)
+    port_tok  = reshape(port_tok, embed_dim, 1, B)
+
+    # ── Cross-candidate attention (the "joint" decision) ─────────────────────
+    seq = cat(stock_emb, port_tok; dims=2)                  # (embed, N+1, B)
+    attended, _ = m.attn(seq)                                # (embed, N+1, B)
+    stock_out = attended[:, 1:N, :]
+    port_out  = attended[:, N + 1, :]
+
+    # ── Heads ─────────────────────────────────────────────────────────────────
+    actor_out = m.actor_head(reshape(stock_out, embed_dim, N * B))   # (4, N*B)
+    actor_out = reshape(actor_out, 4, N, B)
+    action_logits    = actor_out[1:3, :, :]
+    buy_weight_logit = actor_out[4, :, :]
+
+    value = vec(m.critic_head(port_out))
+
+    return action_logits, buy_weight_logit, value
+end
+
+# ── Persistence ────────────────────────────────────────────────────────────────────
+#
+# Mirrors StockSwingPredictor's save_model/load_model: CPU-resident weights so
+# a GPU-trained checkpoint stays portable, plus the constructor hyperparameters
+# needed to rebuild an identically-shaped policy before loading state into it.
+
+"""Save `policy`'s weights (always CPU-resident, for portability) and the
+hyperparameters needed to reconstruct it, to BSON at `path`."""
+function save_policy(policy::ActorCriticPolicy, path::String;
+                      embed_dim::Int, macro_embed_dim::Int, attn_heads::Int,
+                      critic_hidden::Vector{Int}, meta::Dict=Dict())
+    state = Flux.state(cpu(policy))
+    BSON.@save path state embed_dim macro_embed_dim attn_heads critic_hidden meta
+    @info "Policy saved → $path"
+end
+
+"""Load an `ActorCriticPolicy` from BSON. Returns `(policy, meta)`."""
+function load_policy(path::String)
+    BSON.@load path state embed_dim macro_embed_dim attn_heads critic_hidden meta
+    policy = ActorCriticPolicy(embed_dim=embed_dim, macro_embed_dim=macro_embed_dim,
+                                attn_heads=attn_heads, critic_hidden=critic_hidden)
+    Flux.loadmodel!(policy, state)
+    return policy, meta
+end

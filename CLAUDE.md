@@ -44,22 +44,38 @@ market-agent/
 │   │       ├── rss.jl              # RSS feed fetcher + XML parser
 │   │       ├── llm_classify.jl     # Claude API → NewsSignal (symbol, sentiment, severity)
 │   │       └── poller.jl           # concurrent polling loop + JSONL writer
-│   └── StockSwingPredictor/     # Neural network large-move predictor + broker client
+│   ├── StockSwingPredictor/     # Neural network large-move predictor + broker client
+│   │   ├── Project.toml
+│   │   └── src/
+│   │       ├── StockSwingPredictor.jl  # module entry + exports
+│   │       ├── types.jl               # all structs (LLMFeatures, TrainingExample, Dataset, …)
+│   │       ├── kite_data.jl           # instrument lookup, daily + hourly OHLCV fetch + cache
+│   │       ├── macro_data.jl          # macro instrument OHLCV: Yahoo Finance + Kite CDS/NSE
+│   │       ├── inference_cache.jl     # InferenceCache: aligned price matrices for O(1) batch slicing
+│   │       ├── broker.jl              # Kite portfolio/funds: get_holdings, get_positions, get_margins, get_orders
+│   │       ├── fundamentals.jl        # quarterly P&L feature extraction via TijoriData (not active)
+│   │       ├── llm_extract.jl         # Claude API → 15 scalar signals from PDFs
+│   │       ├── features.jl            # TS derived features, vector assembly
+│   │       ├── dataset.jl             # sliding-window examples, normalisation, split
+│   │       ├── model.jl               # Flux.jl DualCNN, save/load
+│   │       ├── train.jl               # training loop, early stopping, chunked eval
+│   │       └── display.jl             # Base.show overrides
+│   └── TradingGame/             # RL-trained portfolio trading policy (simulator + training)
 │       ├── Project.toml
 │       └── src/
-│           ├── StockSwingPredictor.jl  # module entry + exports
-│           ├── types.jl               # all structs (LLMFeatures, TrainingExample, Dataset, …)
-│           ├── kite_data.jl           # instrument lookup, daily + hourly OHLCV fetch + cache
-│           ├── macro_data.jl          # macro instrument OHLCV: Yahoo Finance + Kite CDS/NSE
-│           ├── inference_cache.jl     # InferenceCache: aligned price matrices for O(1) batch slicing
-│           ├── broker.jl              # Kite portfolio/funds: get_holdings, get_positions, get_margins, get_orders
-│           ├── fundamentals.jl        # quarterly P&L feature extraction via TijoriData (not active)
-│           ├── llm_extract.jl         # Claude API → 15 scalar signals from PDFs
-│           ├── features.jl            # TS derived features, vector assembly
-│           ├── dataset.jl             # sliding-window examples, normalisation, split
-│           ├── model.jl               # Flux.jl DualCNN, save/load
-│           ├── train.jl               # training loop, early stopping, chunked eval
-│           └── display.jl             # Base.show overrides
+│           ├── TradingGame.jl      # module entry + exports
+│           ├── constants.jl        # FEE_RATE, SETTLEMENT_DAYS, MIN_HOLD_DAYS, MAX_HOLD_DAYS, …
+│           ├── types.jl            # Portfolio, Holding, ReservedCashLot, TradingGameEnv, …
+│           ├── action.jl           # joint action space + cash-constraint/lock-up masking
+│           ├── env.jl              # reset!/step! — exact TradingGameRules.txt enforcement
+│           ├── baseline_policy.jl  # random + momentum-heuristic policies (rule-compliance validation)
+│           ├── observation.jl      # obs tensor assembly: InferenceCache + MacroCache + news + portfolio
+│           ├── policy.jl           # recurrent/transformer actor-critic (ActorCriticPolicy, Flux)
+│           ├── ppo.jl              # hand-rolled PPO + GAE (collect_rollout, ppo_update!)
+│           ├── train.jl            # training loop: train_policy! — checkpoint, episode_log.jsonl, STOP
+│           └── display.jl          # Base.show overrides
+│           # universe.jl, news_features.jl: later stages —
+│           # see TradingGameRules.txt and the TradingGame module docstring
 │
 ├── scripts/                        # standalone Julia scripts (not packages)
 │   ├── generate_nse_list.jl              # builds data/nse_companies_latest.json
@@ -119,7 +135,12 @@ EarningsCalendar        — NSE data only, no dependencies on other packages
 NewsMonitor             — BSE/RSS news polling + LLM classification; no dependencies on other packages
 StockSwingPredictor     — depends on TijoriData; Kite used directly via HTTP
                           includes broker.jl (portfolio, positions, funds, orders)
-Backtest                — no external data dependencies (planned)
+TradingGame             — depends on StockSwingPredictor (InferenceCache, macro_data);
+                          CompanyConfidence (universe pre-filter) and NewsMonitor
+                          (NewsSignal, historical announcements DB) land with the
+                          news/universe stages. Simulator + RL training only — no
+                          order placement (see StockSwingPredictor/broker.jl for
+                          the future live-execution follow-up)
 ```
 
 ## Using CompanyConfidence

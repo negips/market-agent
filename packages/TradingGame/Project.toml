@@ -1,0 +1,29 @@
+name = "TradingGame"
+uuid = "e8a1f6c4-2b9d-4e7a-b3c6-5f0d8a2c4e9b"
+version = "0.1.0"
+authors = ["Trading Agent Project"]
+
+[deps]
+BSON = "fbb218c0-5317-5bc6-957e-2ee96dd4b1f0"
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+Flux = "587475ba-b771-5e3f-ad9e-33799f191a9c"
+JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
+Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+StockSwingPredictor = "b7c2d4e1-9f3a-4b8d-a6c5-2e7f1d3b9a4e"
+
+[sources]
+StockSwingPredictor = {path = "/home/prabal/workstation/git/Agents/packages/StockSwingPredictor"}
+
+[compat]
+CUDA = "6.4.0"
+julia = "1.9"
+
+[extras]
+Test = "8dfed614-e22c-358e-ad98-d399df5bc394"
+
+[targets]
+test = ["Test"]

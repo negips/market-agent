@@ -7,5 +7,6 @@
 6. The total value of the portfolio is equal to the total value of the stocks (which is continuously changing) + the amount of cash + the amount of reserve cash.
 7. Purchase/selling decisions can only be made when the stock exchanges are open and, once every 15 minutes or, immediately after a news item has been released.
 8. A particular purchased stock can be held for a maximum of 10 days. After 10 days the player will be forced to sell the stock.
-9. All transactions involving buying and selling of stocks costs 0.5% of the total transaction value as fees. In case of stock purchase this gets deducted from the available cash. In case of stock sale this gets deducted from the cash received from the sale of the stocks. 
-10. The objective of the game is to continuously maximize the total value of the portfolio.
+9. Stocks bought can not be sold again for 1 day.
+10. All transactions involving buying and selling of stocks costs 0.5% of the total transaction value as fees. In case of stock purchase this gets deducted from the available cash. In case of stock sale this gets deducted from the cash received from the sale of the stocks. 
+11. The objective of the game is to continuously maximize the total value of the portfolio.
