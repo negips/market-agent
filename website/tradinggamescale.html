@@ -117,6 +117,8 @@
       line-height: 1.7; margin-bottom: 8px;
     }
     .caveat-box strong { color: var(--red); }
+    .caveat-box.yellow { background: rgba(245,200,66,.07); border-color: rgba(245,200,66,.35); }
+    .caveat-box.yellow strong { color: var(--yellow); }
   </style>
 </head>
 <body>
@@ -176,20 +178,25 @@
       </div>
       <div class="diagram-panel good">
         <div class="diagram-heading">
-          <span class="diagram-name">Proposed — shared summary tokens</span>
-          <span class="diagram-tag">O(N·K)</span>
+          <span class="diagram-name">Proposed — anchors + macro + portfolio</span>
+          <span class="diagram-tag">O(N·(K+2))</span>
         </div>
-        <div class="diagram-caption">Each candidate cross-attends only to K shared tokens (K≈2, fixed)</div>
+        <div class="diagram-caption">Each candidate cross-attends to K fixed anchor stocks + a macro token + a portfolio token</div>
         <svg id="graph-proposed" viewBox="0 0 340 250"></svg>
       </div>
     </div>
 
     <div class="section-note">
-      Each candidate still gets a joint, context-aware decision — it just gets that context from a
-      small set of <strong>shared summary tokens</strong> instead of from every other candidate
-      individually. This mirrors <code>StockSwingPredictor</code>'s existing cross-attention pattern
-      (one query against N peers), just inverted: here every candidate is a query, and the peer set
-      is replaced by a small, fixed K.
+      <strong>Revised 2026-09-29</strong> — the original proposal pooled all N candidates into one
+      mean-pooled "market pulse" token. That throws away exactly what made cross-attention worth using
+      over mean-pool in <code>StockSwingPredictor</code> v1→v2 in the first place: every candidate ends
+      up reading the same blurred average, with no selectivity. Fixed by cross-attending to a small
+      <strong>fixed set of real anchor stocks</strong> (K of them — index/sector leaders, not a
+      synthetic average) instead of a pooled token, and by splitting the previously-combined
+      macro+portfolio token into <strong>two separate tokens</strong> so a candidate can learn to weight
+      "broad market conditions" and "my own book state" independently rather than reading them
+      pre-blended by a fixed linear combination. Still O(N·(K+2)) — K anchors plus the 2 fixed
+      macro/portfolio tokens, none of it scaling with N.
     </div>
 
     <!-- ── Proposed pipeline ─────────────────────────────────────────────── -->
@@ -202,21 +209,27 @@
       </div>
       <div style="display:flex;align-items:center;justify-content:center;flex-shrink:0;width:30px;color:var(--border);font-size:18px">→</div>
       <div class="flow-step" style="background:rgba(61,214,140,.05);border:1px solid rgba(61,214,140,.35);border-radius:var(--radius);padding:12px 14px;min-width:190px;flex-shrink:0">
-        <div style="font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:var(--green);margin-bottom:5px">New — O(N)</div>
-        <span style="font-family:var(--mono);font-size:12px;font-weight:700;color:var(--green);display:block;margin-bottom:4px">Pool → K summary tokens</span>
-        <div style="font-size:11.5px;color:var(--text-dim);line-height:1.55">Mean/attention-pool all N embeddings → 1 "market pulse" token; portfolio+macro token unchanged. K≈2 to start.</div>
+        <div style="font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:var(--green);margin-bottom:5px">New — O(1)</div>
+        <span style="font-family:var(--mono);font-size:12px;font-weight:700;color:var(--green);display:block;margin-bottom:4px">Designate K anchors</span>
+        <div style="font-size:11.5px;color:var(--text-dim);line-height:1.55">Gather K fixed candidates' own GRU embeddings (e.g. index/sector leaders) — no pooling, no extra encoder pass, real distinguishable stocks</div>
       </div>
       <div style="display:flex;align-items:center;justify-content:center;flex-shrink:0;width:30px;color:var(--border);font-size:18px">→</div>
       <div class="flow-step" style="background:rgba(61,214,140,.05);border:1px solid rgba(61,214,140,.35);border-radius:var(--radius);padding:12px 14px;min-width:190px;flex-shrink:0">
-        <div style="font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:var(--green);margin-bottom:5px">Changed — O(N·K)</div>
+        <div style="font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:var(--green);margin-bottom:5px">Changed — O(1)</div>
+        <span style="font-family:var(--mono);font-size:12px;font-weight:700;color:var(--green);display:block;margin-bottom:4px">Macro + portfolio, separately</span>
+        <div style="font-size:11.5px;color:var(--text-dim);line-height:1.55">Two small encoders → two tokens, not one pre-fused Dense combination</div>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:center;flex-shrink:0;width:30px;color:var(--border);font-size:18px">→</div>
+      <div class="flow-step" style="background:rgba(61,214,140,.05);border:1px solid rgba(61,214,140,.35);border-radius:var(--radius);padding:12px 14px;min-width:190px;flex-shrink:0">
+        <div style="font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:var(--green);margin-bottom:5px">Changed — O(N·(K+2))</div>
         <span style="font-family:var(--mono);font-size:12px;font-weight:700;color:var(--green);display:block;margin-bottom:4px">Cross-attention</span>
-        <div style="font-size:11.5px;color:var(--text-dim);line-height:1.55">N candidates (queries) × K summary tokens (keys/values) — not N×N</div>
+        <div style="font-size:11.5px;color:var(--text-dim);line-height:1.55">N candidates (queries) × (K anchors + macro + portfolio) keys/values — not N×N, and not one blended token</div>
       </div>
       <div style="display:flex;align-items:center;justify-content:center;flex-shrink:0;width:30px;color:var(--border);font-size:18px">→</div>
       <div class="flow-step" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;min-width:168px;flex-shrink:0">
         <div style="font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:5px">Output</div>
         <span style="font-family:var(--mono);font-size:12px;font-weight:700;color:var(--accent);display:block;margin-bottom:4px">actor + critic heads</span>
-        <div style="font-size:11.5px;color:var(--text-dim);line-height:1.55">Unchanged — critic reads the pooled summary directly</div>
+        <div style="font-size:11.5px;color:var(--text-dim);line-height:1.55">Unchanged — critic reads the attended portfolio token's output</div>
       </div>
     </div>
 
@@ -227,8 +240,8 @@
       <strong>current</strong> curve is the fitted regression above (memory measured, math extrapolated
       between/beyond the 13 points). The <strong>proposed</strong> curve reuses the <em>same</em> fitted
       constant/linear/N-term coefficients (GRU, fusion, heads, optimizer state don't change) and
-      substitutes N·K for the N² term, using the same measured per-pair attention cost — not a
-      separately-guessed number.
+      substitutes N·(K+2) for the N² term — K adjustable anchor stocks, plus the now-separate macro and
+      portfolio tokens — using the same measured per-pair attention cost, not a separately-guessed number.
     </div>
 
     <div class="calc-card">
@@ -250,11 +263,11 @@
           </select>
         </div>
         <div class="calc-field">
-          <label for="calc-k">Summary tokens (K, proposed only)</label>
-          <input type="number" id="calc-k" value="2" min="1" max="50" step="1">
+          <label for="calc-k">Anchor stocks (K, proposed only)</label>
+          <input type="number" id="calc-k" value="8" min="1" max="50" step="1">
         </div>
       </div>
-      <div class="calc-hint">Batch is restricted to the 7 values actually measured, so the chart's measured-point overlay always lines up with a real run.</div>
+      <div class="calc-hint">Batch is restricted to the 7 values actually measured, so the chart's measured-point overlay always lines up with a real run. Proposed design attends to K anchors + 2 fixed tokens (macro, portfolio) — total context tokens = K+2.</div>
     </div>
 
     <div class="stat-row">
@@ -264,7 +277,7 @@
         <div class="tier-label" id="calc-current-tier"></div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">Proposed design (O(N·K))</div>
+        <div class="stat-label">Proposed design (O(N·(K+2)))</div>
         <div class="stat-value" id="calc-proposed-gb" style="font-size:20px">—</div>
         <div class="tier-label" id="calc-proposed-tier"></div>
       </div>
@@ -273,6 +286,19 @@
         <div class="stat-value" id="calc-savings" style="font-size:20px;color:var(--green)">—</div>
         <div class="stat-sub">proposed vs current, at this N/B</div>
       </div>
+    </div>
+
+    <div class="caveat-box yellow">
+      <strong>The O(N·K) fix alone doesn't get N=1,500 to batch 128–256 on this GPU — the linear-in-N
+      term now dominates.</strong>
+      At the calculator's own defaults (N=1,500, K=8, B=32): current design predicts 29.0 GB, proposed
+      predicts 24.5 GB — a real ~16% reduction, but both still exceed this card's usable VRAM. Removing
+      the N² attention term doesn't touch the c₂·N·B term (GRU encoding each candidate's own price
+      history, one pass per candidate regardless of attention pattern) — solved for the fitted
+      coefficients, that term alone caps the proposed design at N=1,500 to roughly
+      <strong>B≈11 verified-safe, B≈20 before the usable ceiling</strong> — nowhere near 256. Reaching
+      GPU-scale batch sizes at N=1,500 needs a second lever on top of this proposal: a smaller
+      per-candidate <code>embed_dim</code>, mixed precision, or gradient-checkpointing the GRU.
     </div>
 
     <div class="caveat-box">
@@ -296,8 +322,11 @@
     <!-- ── Open questions ────────────────────────────────────────────────── -->
     <div class="section-title">Open questions</div>
     <div class="chart-card" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:4px 20px;margin-bottom:8px">
-      <div class="qa-item"><strong>K, the number of summary tokens.</strong> Starting guess: 2 (a mean-pooled "market pulse" + the existing macro/portfolio token) — adjustable in the calculator above. More tokens (e.g. per-sector pools) trade a bit more O(N·K) cost for richer shared context.</div>
-      <div class="qa-item"><strong>Pooling method.</strong> Plain mean-pool is O(N) and simplest; a lightweight attention-pool (learned query, N keys — still O(N), same shape as StockSwingPredictor's existing cross-attention) may capture more signal at a small extra cost.</div>
+      <div class="qa-item"><strong>Which K stocks are anchors?</strong> Candidates: index constituents (e.g. Nifty 50), top-K by market cap, or one per major sector for spread. Whatever's chosen must be a subset of the episode's own candidate universe (so its embedding is already computed — no extra encoding pass) and should be stable enough episode-to-episode that the policy isn't relearning "who the anchors are" constantly. K is adjustable in the calculator above; default shown there is 8.</div>
+      <div class="qa-item"><strong>Are anchors picked once per episode, or re-selected per step?</strong> Fixed per episode is simplest and keeps K genuinely constant for the O(N·(K+2)) accounting; re-selecting (e.g. today's top movers) could be more informative but reopens a small O(N) selection cost each step and makes the attended set non-stationary within an episode.</div>
+      <div class="qa-item"><strong>Macro/portfolio token split — encoder architecture.</strong> Two small independent encoders (reusing the existing macro GRU + a portfolio Dense, just not concatenated before projection) is the obvious default; hasn't been checked for whether either token alone still carries enough signal once they can no longer lean on each other.</div>
+      <div class="qa-item"><strong>GPU wiring is a separate, still-needed piece of work.</strong> <code>ppo.jl</code>/<code>train.jl</code> run entirely on CPU today (a deliberate Stage 3 scoping decision) — the measurements above test the network in isolation, not the full rollout+update loop.</div>
+      <div class="qa-item"><strong><code>assemble_observation</code> is a separate CPU bottleneck.</strong> It's a per-candidate Julia loop, called once per environment step — not addressed by any of the above. Worth profiling once N grows.</div>
       <div class="qa-item"><strong>GPU wiring is a separate, still-needed piece of work.</strong> <code>ppo.jl</code>/<code>train.jl</code> run entirely on CPU today (a deliberate Stage 3 scoping decision) — the measurements above test the network in isolation, not the full rollout+update loop.</div>
       <div class="qa-item"><strong><code>assemble_observation</code> is a separate CPU bottleneck.</strong> It's a per-candidate Julia loop, called once per environment step — not addressed by any of the above. Worth profiling once N grows.</div>
     </div>
@@ -305,6 +334,13 @@
     <!-- ── Revision log ──────────────────────────────────────────────────── -->
     <div class="section-title">Revision log</div>
     <div class="chart-card" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:4px 20px">
+      <div class="rev-entry">
+        <div class="rev-date">2026-09-29</div>
+        <div class="rev-body">
+          <div class="rev-title">Dropped the pooled "market pulse" token; split macro from portfolio</div>
+          <div class="rev-desc">Questioned during review: pooling all N candidates into one mean-pooled token throws away the selectivity that motivated cross-attention over mean-pool in the first place (same reasoning as StockSwingPredictor's v1→v2 move) — every candidate would've read the same blurred average. Replaced with cross-attention to a small fixed set of K real anchor stocks (index/sector leaders — their embeddings are already computed as part of the N candidates, no extra pooling pass). Separately, split the previously-combined macro+portfolio token (concatenated then passed through one shared Dense layer) into two independent tokens, so a candidate's attention can weight "broad market conditions" and "my own book state" differently instead of reading them pre-blended by a fixed linear combination. Cost is still O(N·(K+2)) — none of it scales with N. Updated the diagrams, pipeline, capacity calculator (K now means "anchor stocks"; formula uses N·(K+2)), and open questions accordingly. <strong>Also surfaced while re-testing the calculator against this change:</strong> the fix only removes the N² term — at N=1,500 the linear c₂·N·B term (GRU cost, one pass per candidate) already dominates, capping the proposed design's real batch size at N=1,500 to ~11–20, not the 128–256 the initial entry below hoped for. Added a callout above the chart making this explicit rather than letting the calculator imply the proposal alone solves GPU-scale batching at N=1,500.</div>
+        </div>
+      </div>
       <div class="rev-entry">
         <div class="rev-date">2026-09-29</div>
         <div class="rev-body">
@@ -349,9 +385,11 @@ const VERIFIED_FIT_CEILING_GB  = 8.7;     // highest predicted value that actual
 const FIT = { c0: 0.0009709777, c1: 1.6150865e-5, c2: 0.0005089580, c3: 6.399805e-8 };
 
 function currentMemGB(N, B)     { return FIT.c0 + FIT.c1*B + FIT.c2*N*B + FIT.c3*N*N*B; }
-// Proposed design: same non-attention terms, N^2 term replaced by N*K
-// (same measured per-pair attention cost, fewer pairs — not a separate guess).
-function proposedMemGB(N, K, B) { return FIT.c0 + FIT.c1*B + FIT.c2*N*B + FIT.c3*N*K*B; }
+// Proposed design: same non-attention terms, N^2 term replaced by N*(K+2) —
+// K adjustable anchor stocks plus 2 fixed tokens (macro, portfolio, now
+// separate instead of pre-fused). Same measured per-pair attention cost,
+// fewer pairs — not a separately-guessed number.
+function proposedMemGB(N, K, B) { return FIT.c0 + FIT.c1*B + FIT.c2*N*B + FIT.c3*N*(K + 2)*B; }
 
 function tierFor(gb) {
   if (gb <= VERIFIED_FIT_CEILING_GB) return { cls: 'tier-fit',   label: 'Fits (verified range)',              color: '#3dd68c' };
@@ -391,7 +429,7 @@ function updateChart(selectedN, B, K) {
       data: xs.map(n => ({ x: n, y: currentMemGB(n, B) })),
     },
     {
-      label: 'Proposed (O(N·K)) — fitted', type: 'line', borderColor: '#3dd68c',
+      label: 'Proposed (O(N·(K+2))) — fitted', type: 'line', borderColor: '#3dd68c',
       borderWidth: 2, pointRadius: 0, tension: .15,
       data: xs.map(n => ({ x: n, y: proposedMemGB(n, K, B) })),
     },
@@ -515,13 +553,20 @@ function drawGraph(svgId, { hubs = [] } = {}) {
     }));
   }
 
-  // Hub nodes (summary tokens), drawn on top
-  hubs.forEach((h, i) => {
+  // Hub nodes, drawn on top. 'anchor' = a real candidate stock (same blue as
+  // the outer nodes — it IS one of them, just always attended to); 'context'
+  // = a synthesized token (macro, portfolio) — green, as before.
+  hubs.forEach((h) => {
+    const anchor = h.kind === 'anchor';
     svg.appendChild(svgEl('circle', {
-      cx: h.x, cy: h.y, r: 13, fill: '#0b2e20', stroke: '#3dd68c', 'stroke-width': 1.8,
+      cx: h.x, cy: h.y, r: anchor ? 9 : 11,
+      fill:   anchor ? '#122455' : '#0b2e20',
+      stroke: anchor ? '#f5c842' : '#3dd68c',
+      'stroke-width': anchor ? 2 : 1.8,
     }));
     const t = svgEl('text', {
-      x: h.x, y: h.y + 27, fill: '#3dd68c', 'font-size': 8.5, 'text-anchor': 'middle',
+      x: h.x, y: h.y + (anchor ? 20 : 22), fill: anchor ? '#f5c842' : '#3dd68c',
+      'font-size': 8, 'text-anchor': 'middle',
     });
     t.textContent = h.label;
     svg.appendChild(t);
@@ -532,14 +577,16 @@ function drawGraph(svgId, { hubs = [] } = {}) {
   });
   cap.textContent = hubs.length === 0
     ? `${CAND.length} candidates, ${CAND.length * (CAND.length - 1) / 2} edges`
-    : `${CAND.length} candidates × ${hubs.length} summary tokens = ${CAND.length * hubs.length} edges`;
+    : `${CAND.length} candidates × ${hubs.length} tokens (K anchors + macro + portfolio) = ${CAND.length * hubs.length} edges`;
   svg.appendChild(cap);
 }
 
 drawGraph('graph-current', { hubs: [] });
 drawGraph('graph-proposed', { hubs: [
-  { x: 150, y: 130, label: 'market pulse' },
-  { x: 195, y: 130, label: 'portfolio' },
+  { x: 128, y: 116, label: 'anchor', kind: 'anchor' },
+  { x: 128, y: 150, label: 'anchor', kind: 'anchor' },
+  { x: 212, y: 116, label: 'macro',     kind: 'context' },
+  { x: 212, y: 150, label: 'portfolio', kind: 'context' },
 ] });
 </script>
 </body>
