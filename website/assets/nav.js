@@ -55,6 +55,14 @@
               </svg>`,
     },
     {
+      href:  'tradinggame.html',
+      label: 'Trading Game',
+      icon:  `<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24">
+                <rect x="3" y="3" width="18" height="18" rx="2"/>
+                <path d="M8 13l2.5 2.5L16 9.5"/>
+              </svg>`,
+    },
+    {
       href:  'jumps.html',
       label: 'Jumps',
       icon:  `<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24">

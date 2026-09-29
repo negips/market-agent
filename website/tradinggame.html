@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Trading Game — market-agent</title>
+  <link rel="stylesheet" href="assets/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    /* ── Section headers (matches architecture.html) ── */
+    .section-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .07em;
+      margin: 34px 0 12px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .section-title:first-child { margin-top: 0; }
+    .section-title::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+    .section-note { font-size: 12.5px; color: var(--text-dim); margin: -4px 0 16px; line-height: 1.7; max-width: 780px; }
+
+    /* ── Rule cards ── */
+    .rule-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+    .rule-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px 14px;
+      position: relative;
+    }
+    .rule-card.new { border-color: rgba(61,214,140,.4); background: rgba(61,214,140,.05); }
+    .rule-num {
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--accent);
+      background: rgba(79,142,247,.1);
+      display: inline-block;
+      padding: 1px 7px;
+      border-radius: 99px;
+      margin-bottom: 7px;
+    }
+    .rule-card.new .rule-num { color: var(--green); background: rgba(61,214,140,.15); }
+    .rule-text { font-size: 12.5px; color: var(--text-dim); line-height: 1.6; }
+    .rule-badge {
+      position: absolute; top: 10px; right: 12px;
+      font-size: 9px; text-transform: uppercase; letter-spacing: .05em;
+      color: var(--green); font-weight: 700;
+    }
+
+    /* ── Flow diagram (pipeline / policy internals) ── */
+    .flow-row {
+      display: flex;
+      align-items: stretch;
+      gap: 0;
+      overflow-x: auto;
+      padding-bottom: 6px;
+      margin-bottom: 8px;
+    }
+    .flow-step {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px 14px;
+      min-width: 168px;
+      flex-shrink: 0;
+    }
+    .flow-step .flow-kind {
+      font-size: 9px; text-transform: uppercase; letter-spacing: .06em;
+      color: var(--muted); margin-bottom: 5px;
+    }
+    .flow-step .flow-file {
+      font-family: var(--mono); font-size: 12px; font-weight: 700;
+      color: var(--accent); display: block; margin-bottom: 4px;
+    }
+    .flow-step .flow-desc { font-size: 11.5px; color: var(--text-dim); line-height: 1.55; }
+    .flow-arrow {
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0; width: 30px; color: var(--border); font-size: 18px;
+    }
+
+    /* ── Stage table ── */
+    .stage-status { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 600; }
+    .stage-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .stage-done  .stage-dot { background: var(--green); }
+    .stage-done  { color: var(--green); }
+    .stage-current .stage-dot { background: var(--accent); animation: pulse 2s infinite; }
+    .stage-current { color: var(--accent); }
+    .stage-pending .stage-dot { background: var(--border); }
+    .stage-pending { color: var(--muted); }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+
+    /* ── Chart card ── */
+    .chart-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px 24px;
+      margin-bottom: 8px;
+    }
+    .chart-header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 4px; flex-wrap: wrap; gap: 6px; }
+    .chart-title { font-size: 13px; font-weight: 600; }
+    .chart-sub { font-size: 11px; color: var(--muted); }
+    .canvas-wrap { position: relative; height: 240px; margin-top: 14px; }
+
+    /* ── Code blocks ── */
+    .code-block {
+      background: #0b0d14;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      font-family: var(--mono);
+      font-size: 12px;
+      line-height: 1.7;
+      color: var(--text-dim);
+      overflow-x: auto;
+      margin-bottom: 14px;
+      white-space: pre;
+    }
+    .code-block .kw   { color: #f5c842; }
+    .code-block .str  { color: #3dd68c; }
+    .code-block .com  { color: var(--muted); font-style: italic; }
+    .code-block .fn   { color: #4f8ef7; }
+
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    @media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
+
+    .open-item {
+      display: flex; gap: 12px; padding: 12px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .open-item:last-child { border-bottom: none; }
+    .open-item .oi-mark { color: var(--yellow); font-size: 14px; line-height: 1.5; flex-shrink: 0; }
+    .open-item .oi-title { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 3px; }
+    .open-item .oi-desc { font-size: 12px; color: var(--text-dim); line-height: 1.6; }
+  </style>
+</head>
+<body>
+<script src="assets/nav.js"></script>
+<script src="assets/utils.js"></script>
+
+<div class="main">
+  <div class="page-header">
+    <div class="page-title">Trading Game</div>
+    <div class="page-subtitle">Reinforcement-learning portfolio policy · rules, architecture, and training pipeline</div>
+  </div>
+
+  <div class="page-content">
+
+    <!-- ── Status row ────────────────────────────────────────────────────── -->
+    <div class="stat-row">
+      <div class="stat-card">
+        <div class="stat-label">Build stage</div>
+        <div class="stat-value" style="color:var(--accent)">3 <span style="color:var(--muted);font-size:14px">of 4</span></div>
+        <div class="stat-sub">PPO training loop — done</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Tests passing</div>
+        <div class="stat-value" style="color:var(--green)">3,310</div>
+        <div class="stat-sub">0 failures · packages/TradingGame/test</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Sanity-check return</div>
+        <div class="stat-value">−0.16 → <span style="color:var(--green)">+0.67</span></div>
+        <div class="stat-sub">mean episode return, first 20 vs last 20 of 80 iters</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Rule package</div>
+        <div class="stat-value" style="font-size:16px">0.5% fee · 1–10 day hold</div>
+        <div class="stat-sub">2-day settlement · 15-min / on-news cadence</div>
+      </div>
+    </div>
+
+    <!-- ── Rules ─────────────────────────────────────────────────────────── -->
+    <div class="section-title">The rules</div>
+    <div class="section-note">
+      Verbatim from <code>TradingGameRules.txt</code> (repo root) — the single source of truth every
+      constant in <code>constants.jl</code> and every check in <code>test_rules.jl</code> traces back to.
+      Rule 9 (the 1-day lock-up) was added after Stage 1 shipped and folded into the simulator and its
+      test suite the same day.
+    </div>
+    <div class="rule-grid">
+      <div class="rule-card"><span class="rule-num">1–2</span><div class="rule-text">Start with a configurable amount of cash. Initial portfolio value equals that starting cash exactly.</div></div>
+      <div class="rule-card"><span class="rule-num">3</span><div class="rule-text">Buy and sell stocks on the NSE or BSE.</div></div>
+      <div class="rule-card"><span class="rule-num">4</span><div class="rule-text">Sale proceeds go into <em>reserved cash</em> — counts toward portfolio value, but can't fund a purchase — for 2 trading days before becoming spendable cash.</div></div>
+      <div class="rule-card"><span class="rule-num">5</span><div class="rule-text">Purchases are capped by available (non-reserved) cash.</div></div>
+      <div class="rule-card"><span class="rule-num">6</span><div class="rule-text">Portfolio value = stock value (continuously changing) + cash + reserved cash.</div></div>
+      <div class="rule-card"><span class="rule-num">7</span><div class="rule-text">Decisions only while markets are open, at most every 15 minutes — or immediately after a news release.</div></div>
+      <div class="rule-card"><span class="rule-num">8</span><div class="rule-text">A position is force-sold after 10 trading days, no exceptions.</div></div>
+      <div class="rule-card new"><span class="rule-badge">added</span><span class="rule-num">9</span><div class="rule-text">A bought lot can't be voluntarily sold again for 1 trading day.</div></div>
+      <div class="rule-card"><span class="rule-num">10</span><div class="rule-text">Every buy or sell costs 0.5% of the transaction value in fees — deducted from cash on a buy, from proceeds on a sell.</div></div>
+      <div class="rule-card"><span class="rule-num">11</span><div class="rule-text">Objective: continuously maximize total portfolio value.</div></div>
+    </div>
+
+    <!-- ── Pipeline ──────────────────────────────────────────────────────── -->
+    <div class="section-title">Pipeline</div>
+    <div class="section-note">
+      <code>packages/TradingGame/src/</code> — one file per concern, mirroring
+      <code>StockSwingPredictor</code>'s conventions (checkpoint-on-improvement, streamed
+      <code>episode_log.jsonl</code>, <code>STOP</code>/<code>STOP_NOW</code> sentinels).
+    </div>
+    <div class="flow-row">
+      <div class="flow-step">
+        <div class="flow-kind">Simulator</div>
+        <span class="flow-file">env.jl</span>
+        <div class="flow-desc"><code>reset!</code> / <code>step!</code> — exact rule enforcement, settlement, forced exits, fees</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step">
+        <div class="flow-kind">Masking</div>
+        <span class="flow-file">action.jl</span>
+        <div class="flow-desc">Cash-constraint + lock-up masking — a policy can't learn an invalid trade because it never sees one</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step">
+        <div class="flow-kind">State</div>
+        <span class="flow-file">observation.jl</span>
+        <div class="flow-desc">Tensors from <code>InferenceCache</code> + real macro OHLCV + portfolio ratios (never raw ₹)</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step">
+        <div class="flow-kind">Model</div>
+        <span class="flow-file">policy.jl</span>
+        <div class="flow-desc"><code>ActorCriticPolicy</code> — recurrent/transformer, no CNN reuse</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step">
+        <div class="flow-kind">RL</div>
+        <span class="flow-file">ppo.jl</span>
+        <div class="flow-desc">Hand-rolled PPO + GAE — no RL library exists in this Flux stack</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step">
+        <div class="flow-kind">Loop</div>
+        <span class="flow-file">train.jl</span>
+        <div class="flow-desc"><code>train_policy!</code> — checkpoint, log, STOP sentinels</div>
+      </div>
+    </div>
+
+    <!-- ── Policy architecture ───────────────────────────────────────────── -->
+    <div class="section-title">Policy architecture</div>
+    <div class="section-note">
+      One joint decision per step across every candidate stock and the shared cash pool — not
+      independent per-stock scores. <code>ActorCriticPolicy</code>, built entirely from Flux
+      primitives already used elsewhere in this repo.
+    </div>
+    <div class="flow-row">
+      <div class="flow-step">
+        <div class="flow-kind">Per stock</div>
+        <span class="flow-file">GRU encoder</span>
+        <div class="flow-desc">120-bar hourly window, weight-shared across all N candidates</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step">
+        <div class="flow-kind">Fusion</div>
+        <span class="flow-file">+ news + holding</span>
+        <div class="flow-desc">Concat recency-decayed news signal + per-lot hold-state, back to embed_dim</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step">
+        <div class="flow-kind">Joint decision</div>
+        <span class="flow-file">MultiHeadAttention</span>
+        <div class="flow-desc">Every stock attends to every other, plus a macro+portfolio "cash token"</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-step">
+        <div class="flow-kind">Output</div>
+        <span class="flow-file">actor + critic heads</span>
+        <div class="flow-desc">3 action logits (HOLD/SELL/BUY) + buy-weight per stock, plus V(s)</div>
+      </div>
+    </div>
+
+    <div class="two-col" style="margin-top:14px">
+      <div>
+        <div class="section-title" style="margin-top:0">Observation shape</div>
+        <table class="data-table">
+          <tbody>
+            <tr><td>Hourly window</td><td class="num mono">120 bars × 3 ch</td></tr>
+            <tr><td>Macro context</td><td class="num mono">10 days × 9 series</td></tr>
+            <tr><td>News features</td><td class="num mono">2 / stock</td></tr>
+            <tr><td>Holding state</td><td class="num mono">3 / stock</td></tr>
+            <tr><td>Portfolio scalars</td><td class="num mono">4 (ratios, never ₹)</td></tr>
+            <tr><td>Candidate cap</td><td class="num mono">60 stocks</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div>
+        <div class="section-title" style="margin-top:0">PPO hyperparameters</div>
+        <table class="data-table">
+          <tbody>
+            <tr><td>γ (discount)</td><td class="num mono">0.99</td></tr>
+            <tr><td>GAE λ</td><td class="num mono">0.95</td></tr>
+            <tr><td>Clip ε</td><td class="num mono">0.2</td></tr>
+            <tr><td>Value loss coef.</td><td class="num mono">0.5</td></tr>
+            <tr><td>Entropy coef.</td><td class="num mono">0.01</td></tr>
+            <tr><td>Decision cadence</td><td class="num mono">hourly (15-min proxy)</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── Build stages ──────────────────────────────────────────────────── -->
+    <div class="section-title">Build stages</div>
+    <div class="tbl-wrap">
+      <table class="data-table">
+        <thead>
+          <tr><th class="no-sort">Stage</th><th class="no-sort">Files</th><th class="no-sort">What it validates</th><th class="no-sort">Status</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>1 · Simulator</strong></td>
+            <td class="mono">env.jl, action.jl, types.jl</td>
+            <td>3,237 rule-compliance assertions — full historical replay, random + heuristic baselines, zero invariant violations</td>
+            <td><span class="stage-status stage-done"><span class="stage-dot"></span>Done</span></td>
+          </tr>
+          <tr>
+            <td><strong>2 · Observation + policy</strong></td>
+            <td class="mono">observation.jl, policy.jl</td>
+            <td>Tensor shapes, gradient flow through every sub-layer, GPU forward pass</td>
+            <td><span class="stage-status stage-done"><span class="stage-dot"></span>Done</span></td>
+          </tr>
+          <tr>
+            <td><strong>3 · PPO training</strong></td>
+            <td class="mono">ppo.jl, train.jl</td>
+            <td>Checkpoint round-trip, STOP/STOP_NOW, held-out eval — and a real learning signal (see below)</td>
+            <td><span class="stage-status stage-done"><span class="stage-dot"></span>Done</span></td>
+          </tr>
+          <tr>
+            <td><strong>4 · Full-scale training</strong></td>
+            <td class="mono">universe.jl, news_features.jl</td>
+            <td>CompanyConfidence-filtered candidate universe, historical news-signal backfill, real multi-year backtest</td>
+            <td><span class="stage-status stage-pending"><span class="stage-dot"></span>Not started</span></td>
+          </tr>
+          <tr>
+            <td><strong>5 · Live execution</strong></td>
+            <td class="mono">— (explicitly out of scope)</td>
+            <td>Order placement via Kite — <code>StockSwingPredictor/broker.jl</code> is read-only today</td>
+            <td><span class="stage-status stage-pending"><span class="stage-dot"></span>Not started</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- ── Learnability chart ────────────────────────────────────────────── -->
+    <div class="section-title">Does it actually learn?</div>
+    <div class="section-note">
+      An 80-iteration PPO run on a synthetic scenario — one stock trending strongly up, one down, one flat
+      over a 40-trading-day window — so "buy and hold the winner" is a clearly optimal, learnable policy.
+      A policy that had learned nothing would hover near zero. This is a mechanics sanity check on
+      synthetic data, not a real-market backtest.
+    </div>
+    <div class="chart-card">
+      <div class="chart-header">
+        <div class="chart-title">Episode return per training iteration</div>
+        <div class="chart-sub">Σ log-returns · random policy sampling · single synthetic episode replayed each iteration</div>
+      </div>
+      <div class="canvas-wrap"><canvas id="return-chart"></canvas></div>
+    </div>
+    <div class="stat-row">
+      <div class="stat-card">
+        <div class="stat-label">Mean return, first 20 iters</div>
+        <div class="stat-value" style="color:var(--red);font-size:18px">−0.164</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Mean return, last 20 iters</div>
+        <div class="stat-value" style="color:var(--green);font-size:18px">+0.667</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Best single episode</div>
+        <div class="stat-value" style="font-size:18px">+0.861 <span style="color:var(--muted);font-size:12px">iter 80</span></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Portfolio value trend</div>
+        <div class="stat-value" style="font-size:18px">₹82K → ₹236K</div>
+        <div class="stat-sub">on ₹100,000 starting cash</div>
+      </div>
+    </div>
+
+    <!-- ── Quick start ───────────────────────────────────────────────────── -->
+    <div class="section-title">Quick start</div>
+    <div class="two-col">
+      <div>
+        <div class="chart-sub" style="margin-bottom:8px">Simulate</div>
+        <div class="code-block"><span class="kw">using</span> TradingGame, StockSwingPredictor
+
+cache = load_inference_cache(<span class="str">"website/data/inference_cache.bson"</span>)
+env   = <span class="fn">TradingGameEnv</span>(cache)
+<span class="fn">reset!</span>(env, <span class="fn">EpisodeConfig</span>(
+    initial_cash       = <span class="str">1_000_000.0</span>,
+    start_date         = Date(2024, 1, 1),
+    end_date           = Date(2024, 6, 30),
+    candidate_universe = [<span class="str">"INFY"</span>, <span class="str">"TCS"</span>, <span class="str">"RELIANCE"</span>],
+))
+
+result = <span class="fn">step!</span>(env, <span class="fn">heuristic_policy</span>(env))
+result.reward  <span class="com"># log-return of portfolio value this step</span>
+<span class="fn">portfolio_value</span>(env)</div>
+      </div>
+      <div>
+        <div class="chart-sub" style="margin-bottom:8px">Train</div>
+        <div class="code-block">policy = <span class="fn">ActorCriticPolicy</span>()
+cfg = <span class="fn">EpisodeConfig</span>(initial_cash=<span class="str">1_000_000.0</span>,
+    start_date=Date(2024,1,1), end_date=Date(2024,3,31),
+    candidate_universe=[<span class="str">"INFY"</span>,<span class="str">"TCS"</span>,<span class="str">"RELIANCE"</span>])
+
+policy, log = <span class="fn">train_policy!</span>(policy, env, cfg;
+    iterations=100, checkpoint_path=<span class="str">"policy.bson"</span>,
+    episode_log_path=<span class="str">"episode_log.jsonl"</span>, stop_file=<span class="str">"STOP"</span>)
+
+log[<span class="str">"train_return"</span>]  <span class="com"># should trend upward</span></div>
+      </div>
+    </div>
+
+    <!-- ── Open items ────────────────────────────────────────────────────── -->
+    <div class="section-title">Open items</div>
+    <div class="chart-card" style="padding:4px 20px">
+      <div class="open-item">
+        <div class="oi-mark">●</div>
+        <div>
+          <div class="oi-title">Candidate universe (universe.jl)</div>
+          <div class="oi-desc">Needs CompanyConfidence + market-cap ranking, run once via the Tijori sidecar and cached — never recomputed inside a rollout. Quick-start examples above hand-pick a 3-symbol watchlist instead.</div>
+        </div>
+      </div>
+      <div class="open-item">
+        <div class="oi-mark">●</div>
+        <div>
+          <div class="oi-title">Historical news features (news_features.jl)</div>
+          <div class="oi-desc"><code>NewsSignal</code> only exists live, from whenever the daemon started. Multi-year training needs a backfill classifying <code>nse_announcements.db</code> into the same shape. Until then, <code>observation.jl</code>'s news features are a documented neutral zero.</div>
+        </div>
+      </div>
+      <div class="open-item">
+        <div class="oi-mark">●</div>
+        <div>
+          <div class="oi-title">Live execution</div>
+          <div class="oi-desc">Explicitly out of scope. <code>StockSwingPredictor/broker.jl</code> is read-only (holdings, positions, margins, orders) — no order-placement function exists anywhere in this repo yet.</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+Chart.defaults.color           = '#6b7280';
+Chart.defaults.borderColor     = '#2e3350';
+Chart.defaults.backgroundColor = 'transparent';
+
+// 80-iteration PPO sanity-check run — real output, captured 2026-09-28.
+// Synthetic scenario: WINNER (+drift), LOSER (−drift), FLAT (no drift), 40 trading days.
+const RETURNS = [
+  -0.1926,-0.1430,-0.4355,-0.0607,-0.2180,-0.2836, 0.1552,-0.3335,-0.1852,-0.0978,
+  -0.0445,-0.0328,-0.0636,-0.1592,-0.1632,-0.1970,-0.0605,-0.2902,-0.3595,-0.1243,
+  -0.1450,-0.0953,-0.0017,-0.2867,-0.0479,-0.1588,-0.2636,-0.2335,-0.0925,-0.1817,
+  -0.3409, 0.1459, 0.0424, 0.0386,-0.1996,-0.2680,-0.2363, 0.0321,-0.1259,-0.2265,
+  -0.2765,-0.1455,-0.1951, 0.0305, 0.0612, 0.0288,-0.0864, 0.0693,-0.1371, 0.2873,
+   0.0954, 0.1974, 0.1914, 0.4164, 0.0501, 0.2045, 0.4295, 0.3362, 0.4591, 0.7014,
+   0.2702, 0.7454, 0.7347, 0.7904, 0.5148, 0.3595, 0.6980, 0.7962, 0.5846, 0.6336,
+   0.7756, 0.6418, 0.6451, 0.6715, 0.6557, 0.7688, 0.6820, 0.8415, 0.6776, 0.8612,
+];
+
+// Rolling mean (window 5) as a light trend line — the raw series alone is noisy
+// enough (single-episode-per-iteration variance) to obscure the trend it's making.
+function rollingMean(arr, w) {
+  return arr.map((_, i) => {
+    const lo = Math.max(0, i - w + 1);
+    const slice = arr.slice(lo, i + 1);
+    return slice.reduce((a, b) => a + b, 0) / slice.length;
+  });
+}
+
+new Chart(document.getElementById('return-chart'), {
+  type: 'line',
+  data: {
+    labels: RETURNS.map((_, i) => i + 1),
+    datasets: [
+      {
+        label: 'Episode return',
+        data: RETURNS,
+        borderColor: 'rgba(79,142,247,.35)',
+        borderWidth: 1.5,
+        pointRadius: 0,
+        tension: 0,
+      },
+      {
+        label: 'Rolling mean (5)',
+        data: rollingMean(RETURNS, 5),
+        borderColor: '#4f8ef7',
+        borderWidth: 2.5,
+        pointRadius: 0,
+        tension: .25,
+      },
+    ],
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { mode: 'index', intersect: false },
+    scales: {
+      x: { title: { display: true, text: 'Iteration', color: '#6b7280' }, grid: { color: '#1e2338' } },
+      y: { title: { display: true, text: 'Σ log-return', color: '#6b7280' }, grid: { color: '#2e3350' } },
+    },
+    plugins: {
+      legend: {
+        display: true, position: 'top', align: 'end',
+        labels: { boxWidth: 18, boxHeight: 2, color: '#94a3b8', font: { size: 11 } },
+      },
+      tooltip: {
+        callbacks: {
+          title: (items) => `Iteration ${items[0].label}`,
+          label: (item) => `${item.dataset.label}: ${item.parsed.y.toFixed(4)}`,
+        },
+      },
+    },
+  },
+});
+</script>
+</body>
+</html>
