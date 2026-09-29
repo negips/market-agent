@@ -107,7 +107,13 @@ function train!(model::SwingPredictor,
     opt_state = Flux.setup(Flux.Adam(lr), model)
 
     best_val_loss  = Inf32
-    best_state     = Flux.state(cpu(model))
+    # `cpu(x) === x` for an already-CPU array — no copy at all, only a real
+    # device transfer (the :gpu path) actually allocates new arrays. Without
+    # `deepcopy`, a :cpu run's `best_state` would alias the live weights and
+    # every subsequent `Flux.update!` would silently mutate it too, so
+    # `Flux.loadmodel!(model, best_state)` at the end would "restore" whatever
+    # the LAST epoch produced, not the best one.
+    best_state     = deepcopy(Flux.state(cpu(model)))
     no_improve     = 0
     stop_now_fired = false
 
@@ -202,7 +208,7 @@ function train!(model::SwingPredictor,
         improved = val_mse < best_val_loss
         if improved
             best_val_loss       = val_mse
-            best_state          = Flux.state(cpu(model))
+            best_state          = deepcopy(Flux.state(cpu(model)))
             no_improve          = 0
             log["best_val_mse"] = best_val_loss
             log["best_epoch"]   = abs_epoch
