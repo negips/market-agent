@@ -73,6 +73,7 @@ include("baseline_policy.jl")
 include("observation.jl")
 include("policy.jl")
 include("ppo.jl")
+include("live.jl")
 include("train.jl")
 include("universe.jl")
 include("display.jl")
@@ -108,6 +109,9 @@ export
 
     # ppo
     RolloutStep, collect_rollout, compute_gae, ppo_update!,
+
+    # live
+    LiveTracker, start_episode!, make_live_callback,
 
     # train
     train_policy!, save_training_log,

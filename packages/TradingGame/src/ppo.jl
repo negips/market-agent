@@ -50,11 +50,17 @@ from `policy` at every decision step and recording a `RolloutStep` per step.
 omit them to use the documented neutral defaults (see `observation.jl`).
 `greedy=true` picks each candidate's `argmax` action instead of sampling —
 used for held-out evaluation rollouts, never for PPO training data (PPO needs
-the exploration and the matching stochastic log-probability)."""
+the exploration and the matching stochastic log-probability).
+
+`live_cb`, when given, is called as `live_cb(env, result)` after every `step!`
+— a hook for streaming this episode's progress (portfolio value, holdings,
+trade events) to a live viewer (see `live.jl`); it never affects rollout
+mechanics or training and defaults to a no-op."""
 function collect_rollout(env::TradingGameEnv, policy::ActorCriticPolicy, config::EpisodeConfig;
                           macro_cache::Union{Nothing, MacroCache}=nothing,
                           news_fn::Function=_zero_news,
                           greedy::Bool=false,
+                          live_cb::Union{Nothing, Function}=nothing,
                           rng::AbstractRNG=Random.default_rng())::Vector{RolloutStep}
     reset!(env, config)
     buffer = RolloutStep[]
@@ -84,6 +90,7 @@ function collect_rollout(env::TradingGameEnv, policy::ActorCriticPolicy, config:
         push!(buffer, RolloutStep(obs, action_idx, buy_weight, logprob, Float32(value[1]),
                                    Float32(result.reward), result.done))
         done = result.done
+        live_cb !== nothing && live_cb(env, result)
     end
     return buffer
 end

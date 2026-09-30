@@ -63,6 +63,14 @@
               </svg>`,
     },
     {
+      href:  'tradinggamelive.html',
+      label: 'Live Training',
+      icon:  `<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24">
+                <polyline points="3 17 9 11 13 15 21 7"/>
+                <circle cx="21" cy="7" r="2" fill="currentColor" stroke="none"/>
+              </svg>`,
+    },
+    {
       href:  'tradinggamescale.html',
       label: 'TG Scaling',
       icon:  `<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24">

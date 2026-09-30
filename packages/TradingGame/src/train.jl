@@ -35,6 +35,9 @@ on) using `train_config` as the (repeated, per iteration) training episode.
 - `stop_file`: `touch <stop_file>` for a clean stop (checkpoint saved) after
   the current iteration; `touch <stop_file with STOP replaced by STOP_NOW>`
   for a hard stop (no save), exactly matching `train_model.jl`.
+- `live_path`: when non-empty, streams this run's current episode (portfolio
+  value curve, holdings, recent trades) to that JSON path every `live_every_bars`
+  bars — see `live.jl` / `website/tradinggamelive.html`. Omit to disable.
 
 # Returns
 `(policy, log)` — `policy` is always reloaded to its best-checkpointed weights
@@ -54,10 +57,13 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
                  checkpoint_path::String="",
                  episode_log_path::String="",
                  stop_file::String="",
+                 live_path::String="",
+                 live_every_bars::Int=5,
                  embed_dim::Int=64, macro_embed_dim::Int=16, attn_heads::Int=4,
                  critic_hidden::Vector{Int}=[64, 32],
                  rng::AbstractRNG=Random.default_rng())
     opt_state = Flux.setup(Flux.Adam(lr), policy)
+    live_tracker = LiveTracker(path=live_path, every_bars=live_every_bars)
 
     best_return    = -Inf32
     # `cpu(x) === x` for an already-CPU array (no copy at all — verified directly;
@@ -86,8 +92,10 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
     for iter in 1:iterations
         iter_start = time()
 
+        start_episode!(live_tracker; iteration=iter, phase="train")
         buffer = collect_rollout(env, policy, train_config;
-                                  macro_cache=macro_cache, news_fn=news_fn, rng=rng)
+                                  macro_cache=macro_cache, news_fn=news_fn, rng=rng,
+                                  live_cb=make_live_callback(live_tracker))
         train_return = sum(s.reward for s in buffer)
         train_value  = portfolio_value(env)   # env sits at the rollout's terminal state
 
@@ -107,9 +115,11 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
         val_return, val_value = nothing, nothing
         do_eval = val_config !== nothing && (iter % eval_every == 0 || iter == iterations)
         if do_eval
+            start_episode!(live_tracker; iteration=iter, phase="val")
             eval_buffer = collect_rollout(env, policy, val_config;
                                            macro_cache=macro_cache, news_fn=news_fn,
-                                           greedy=true, rng=rng)
+                                           greedy=true, rng=rng,
+                                           live_cb=make_live_callback(live_tracker))
             val_return = sum(s.reward for s in eval_buffer)
             val_value  = portfolio_value(env)
             push!(log["val_return"], val_return)
@@ -138,10 +148,14 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
                 _fmt_duration(round(Int, iter_secs)), improved ? " ★" : "")
 
         if !isempty(episode_log_path)
+            # `best_return` starts at -Inf32 (nothing has improved on yet) — JSON has
+            # no Infinity literal, so JSON3.write errors outright unless it's swapped
+            # for `null` first, same convention `_sanitize_json` uses for the full log.
+            logged_best = isfinite(best_return) ? best_return : nothing
             open(episode_log_path, "a") do io
                 JSON3.write(io, (iteration=iter, train_return=train_return, train_final_value=train_value,
                                  loss=stats["loss"], val_return=val_return, val_final_value=val_value,
-                                 best_return=best_return, improved=improved,
+                                 best_return=logged_best, improved=improved,
                                  elapsed_secs=round(time() - train_start, digits=1)))
                 println(io)
             end

@@ -7,20 +7,20 @@ Every numeric value here traces back to a specific numbered rule in
 
 # ── Rule-derived constants ──────────────────────────────────────────────────────
 
-const FEE_RATE              = 0.005          # rule 10: 0.5% of transaction value, both legs
+const FEE_RATE              = 0.005          # rule 11: 0.5% of transaction value, both legs
 const SETTLEMENT_DAYS       = 2               # rule 4: reserved-cash → cash delay, in trading days
-const MIN_HOLD_DAYS         = 1               # rule 9: lock-up before a voluntary sale
-const MAX_HOLD_DAYS         = 10              # rule 8: forced exit after this many trading days
-const DECISION_INTERVAL_MIN = 15              # rule 7: minimum minutes between decisions
+const MIN_HOLD_DAYS         = 1               # rule 10: lock-up before a voluntary sale
+const MAX_HOLD_DAYS         = 10              # rule 9: forced exit after this many trading days
+const DECISION_INTERVAL_MIN = 15              # rule 8: minimum minutes between decisions
 
 # ── Decision cadence proxy ───────────────────────────────────────────────────────
 
 """
 Historical Kite 15-minute OHLCV retention caps at ~200 days and 5-minute at ~100
 days (see `packages/StockSwingPredictor/src/kite_data.jl`), so multi-year RL
-training cannot run at rule 7's literal 15-minute cadence. `HOURLY` trains the
+training cannot run at rule 8's literal 15-minute cadence. `HOURLY` trains the
 simulator at one decision per hourly bar (or immediately on a news bar) as a
-practical proxy — this is NOT exact rule-7 compliance, only a training-time
+practical proxy — this is NOT exact rule-8 compliance, only a training-time
 stand-in. `MINUTE_15` is reserved for a future live/rolling-window cache and is
 not yet implemented (`is_decision_bar` raises if selected).
 """

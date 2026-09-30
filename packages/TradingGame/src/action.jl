@@ -2,7 +2,7 @@
 Action masking and cash-constraint normalisation.
 
 `resolve_actions` is the single place rules 5 (purchases capped by available
-cash) and 9 (1-day lock-up before a voluntary sale) are enforced. The rest of
+cash) and 10 (1-day lock-up before a voluntary sale) are enforced. The rest of
 `step!` trusts its output unconditionally (see `CashConstraintViolation`) — a
 policy's raw output should never need to *learn* these constraints, only
 choose among the options this masking leaves available.

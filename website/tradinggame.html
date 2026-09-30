@@ -193,12 +193,13 @@
       <div class="rule-card"><span class="rule-num">3</span><div class="rule-text">Buy and sell stocks on the NSE or BSE.</div></div>
       <div class="rule-card"><span class="rule-num">4</span><div class="rule-text">Sale proceeds go into <em>reserved cash</em> — counts toward portfolio value, but can't fund a purchase — for 2 trading days before becoming spendable cash.</div></div>
       <div class="rule-card"><span class="rule-num">5</span><div class="rule-text">Purchases are capped by available (non-reserved) cash.</div></div>
-      <div class="rule-card"><span class="rule-num">6</span><div class="rule-text">Portfolio value = stock value (continuously changing) + cash + reserved cash.</div></div>
-      <div class="rule-card"><span class="rule-num">7</span><div class="rule-text">Decisions only while markets are open, at most every 15 minutes — or immediately after a news release.</div></div>
-      <div class="rule-card"><span class="rule-num">8</span><div class="rule-text">A position is force-sold after 10 trading days, no exceptions.</div></div>
-      <div class="rule-card new"><span class="rule-badge">added</span><span class="rule-num">9</span><div class="rule-text">A bought lot can't be voluntarily sold again for 1 trading day.</div></div>
-      <div class="rule-card"><span class="rule-num">10</span><div class="rule-text">Every buy or sell costs 0.5% of the transaction value in fees — deducted from cash on a buy, from proceeds on a sell.</div></div>
-      <div class="rule-card"><span class="rule-num">11</span><div class="rule-text">Objective: continuously maximize total portfolio value.</div></div>
+      <div class="rule-card new"><span class="rule-badge">added</span><span class="rule-num">6</span><div class="rule-text">Shares trade in whole-number counts only — no fractional shares.</div></div>
+      <div class="rule-card"><span class="rule-num">7</span><div class="rule-text">Portfolio value = stock value (continuously changing) + cash + reserved cash.</div></div>
+      <div class="rule-card"><span class="rule-num">8</span><div class="rule-text">Decisions only while markets are open, at most every 15 minutes — or immediately after a news release.</div></div>
+      <div class="rule-card"><span class="rule-num">9</span><div class="rule-text">A position is force-sold after 10 trading days, no exceptions.</div></div>
+      <div class="rule-card"><span class="rule-num">10</span><div class="rule-text">A bought lot can't be voluntarily sold again for 1 trading day.</div></div>
+      <div class="rule-card"><span class="rule-num">11</span><div class="rule-text">Every buy or sell costs 0.5% of the transaction value in fees — deducted from cash on a buy, from proceeds on a sell.</div></div>
+      <div class="rule-card"><span class="rule-num">12</span><div class="rule-text">Objective: continuously maximize total portfolio value.</div></div>
     </div>
 
     <!-- ── Pipeline ──────────────────────────────────────────────────────── -->
@@ -336,9 +337,9 @@
           </tr>
           <tr>
             <td><strong>4 · Full-scale training</strong></td>
-            <td class="mono">universe.jl, news_features.jl</td>
-            <td>CompanyConfidence-filtered candidate universe, historical news-signal backfill, real multi-year backtest</td>
-            <td><span class="stage-status stage-pending"><span class="stage-dot"></span>Not started</span></td>
+            <td class="mono">universe.jl, train_trading_policy.jl, news_features.jl</td>
+            <td>Candidate universe + training driver done; historical news-signal backfill and the actual multi-year run are not — watch a run live on the <a href="tradinggamelive.html" style="color:var(--accent)">Live Training</a> page</td>
+            <td><span class="stage-status stage-current"><span class="stage-dot"></span>In progress</span></td>
           </tr>
           <tr>
             <td><strong>5 · Live execution</strong></td>
@@ -417,6 +418,7 @@ policy, log = <span class="fn">train_policy!</span>(policy, env, cfg;
     episode_log_path=<span class="str">"episode_log.jsonl"</span>, stop_file=<span class="str">"STOP"</span>)
 
 log[<span class="str">"train_return"</span>]  <span class="com"># should trend upward</span></div>
+        <div class="section-note" style="margin:10px 0 0">Or just run <code>julia --project=packages/TradingGame scripts/train_trading_policy.jl</code> and watch it on the <a href="tradinggamelive.html" style="color:var(--accent)">Live Training</a> page.</div>
       </div>
     </div>
 

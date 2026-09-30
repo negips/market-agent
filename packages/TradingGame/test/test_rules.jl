@@ -62,7 +62,7 @@ end
         @test portfolio_value(env) == 54_321.0
     end
 
-    @testset "All hourly bars fall within NSE market hours (rule 7 precondition)" begin
+    @testset "All hourly bars fall within NSE market hours (rule 8 precondition)" begin
         cache = make_test_cache()
         for dt in cache.hourly_datetimes
             t = Time(dt)
@@ -70,23 +70,58 @@ end
         end
     end
 
-    @testset "Buy debits exactly notional*(1+FEE_RATE)" begin
+    @testset "Buy debits exactly floor(notional/price)*price*(1+FEE_RATE)" begin
         env = make_test_env()
         sym_idx  = first(env.candidate_sym_idx)
         price    = env.cache.hourly_closes[env.current_hour_idx, sym_idx]
-        notional = 1000.0
+        notional = 1000.0   # chosen to divide evenly (price == 100.0) — the flooring test below covers the remainder case
         date_idx = env.cache.date_index[env.current_date]
         cash_before = env.portfolio.cash
 
         TradingGame._apply_actions!(env, [ResolvedTrade(sym_idx, BUY, notional)], date_idx)
 
-        expected_fee   = FEE_RATE * notional
-        expected_debit = notional + expected_fee
+        expected_qty      = floor(notional / price)
+        expected_notional = expected_qty * price
+        expected_fee      = FEE_RATE * expected_notional
+        expected_debit    = expected_notional + expected_fee
         @test env.portfolio.cash ≈ cash_before - expected_debit
         @test length(env.portfolio.holdings) == 1
         h = env.portfolio.holdings[1]
-        @test h.quantity  ≈ notional / price
+        @test h.quantity  == expected_qty
         @test h.entry_fee ≈ expected_fee
+    end
+
+    @testset "Buy quantity is always a whole number of shares" begin
+        env = make_test_env()
+        sym_idx  = first(env.candidate_sym_idx)
+        price    = env.cache.hourly_closes[env.current_hour_idx, sym_idx]
+        # A notional that does NOT divide evenly by price — half a share's worth left over.
+        notional = 10.5 * price
+        date_idx = env.cache.date_index[env.current_date]
+        cash_before = env.portfolio.cash
+
+        TradingGame._apply_actions!(env, [ResolvedTrade(sym_idx, BUY, notional)], date_idx)
+
+        h = env.portfolio.holdings[1]
+        @test isinteger(h.quantity)
+        @test h.quantity == 10.0
+        # The unspent half-share's worth of cash stays as cash, not lost or rounded away.
+        spent = cash_before - env.portfolio.cash
+        @test spent < notional * (1 + FEE_RATE)
+        @test spent ≈ (10.0 * price) * (1 + FEE_RATE)
+    end
+
+    @testset "A buy request too small to afford one share is a no-op" begin
+        env = make_test_env()
+        sym_idx  = first(env.candidate_sym_idx)
+        price    = env.cache.hourly_closes[env.current_hour_idx, sym_idx]
+        date_idx = env.cache.date_index[env.current_date]
+        cash_before = env.portfolio.cash
+
+        TradingGame._apply_actions!(env, [ResolvedTrade(sym_idx, BUY, price * 0.5)], date_idx)
+
+        @test env.portfolio.cash == cash_before
+        @test isempty(env.portfolio.holdings)
     end
 
     @testset "Sell credits proceeds-minus-fee to reserved cash, not cash, immediately" begin
@@ -146,7 +181,7 @@ end
         @test env.portfolio.cash ≈ cash_before + 500.0
     end
 
-    @testset "1-day lock-up blocks a voluntary sell until MIN_HOLD_DAYS (rule 9)" begin
+    @testset "1-day lock-up blocks a voluntary sell until MIN_HOLD_DAYS (rule 10)" begin
         env = make_test_env()
         sym_idx = first(env.candidate_sym_idx)
 
@@ -167,7 +202,7 @@ end
         @test isempty(env.portfolio.holdings)
     end
 
-    @testset "Forced exit fires at exactly entry+MAX_HOLD_DAYS, never before (rule 8)" begin
+    @testset "Forced exit fires at exactly entry+MAX_HOLD_DAYS, never before (rule 9)" begin
         env = make_test_env(n_days=30)
         sym_idx = first(env.candidate_sym_idx)
         step!(env, [RawAction(sym_idx, BUY, 1.0)])

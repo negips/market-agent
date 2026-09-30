@@ -27,7 +27,7 @@ end
 """
 A mask-and-normalise output of `resolve_actions` — ready to execute as-is.
 `notional` is the cash amount to spend and is only meaningful for `BUY`;
-`SELL` always liquidates every sellable lot of `sym_idx` (see rule 9's 1-day
+`SELL` always liquidates every sellable lot of `sym_idx` (see rule 10's 1-day
 lock-up in `resolve_actions`).
 """
 struct ResolvedTrade
@@ -43,13 +43,13 @@ const JointAction = Vector{RawAction}
 
 """
 A single open position (one purchase lot). Multiple concurrent lots of the same
-symbol are tracked independently, each ageing against rules 8/9 on its own
+symbol are tracked independently, each ageing against rules 9/10 on its own
 `entry_date_idx` — this is what lets `resolve_actions` sell only the lots that
 have cleared the 1-day lock-up while leaving newer lots of the same stock held.
 
 `entry_date_idx`/`entry_hour_idx` index into the environment's `InferenceCache`
 (`dates`/`hourly_datetimes`) rather than storing a `Date`, so day-counting for
-rules 8 and 9 is exact trading-day arithmetic, not calendar-day arithmetic.
+rules 9 and 10 is exact trading-day arithmetic, not calendar-day arithmetic.
 """
 Base.@kwdef struct Holding
     symbol         :: String
@@ -102,7 +102,7 @@ episodes via `reset!` — this avoids re-loading the (tens-of-MB) cache per
 episode during RL rollouts.
 
 `news_hour_indices` holds hourly-bar indices at which a news event forces a
-decision bar regardless of the cadence timer (rule 7's "or immediately after a
+decision bar regardless of the cadence timer (rule 8's "or immediately after a
 news item"). Empty by default; populated from `news_features.jl` (Stage 2).
 
 `candidate_sym_idx` (a `Set`, for O(1) membership tests in `resolve_actions`)

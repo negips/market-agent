@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Live Training — market-agent</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<style>
+  .section-title {
+    font-size: 12px; font-weight: 600; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .07em;
+    margin: 34px 0 12px; display: flex; align-items: center; gap: 10px;
+  }
+  .section-title:first-child { margin-top: 0; }
+  .section-title::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+
+  .status-bar {
+    display: flex; align-items: center; gap: 22px; flex-wrap: wrap;
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 14px 20px; margin-bottom: 18px;
+  }
+  .status-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 7px; }
+  .status-live  { background: var(--green); animation: pulse 1.4s infinite; }
+  .status-idle  { background: var(--muted); }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(61,214,140,.5)} 70%{box-shadow:0 0 0 7px rgba(61,214,140,0)} 100%{box-shadow:0 0 0 0 rgba(61,214,140,0)} }
+  .status-label { font-size: 13px; font-weight: 600; color: var(--text); }
+  .status-sub { font-size: 11.5px; color: var(--muted); }
+  .status-metric { text-align: right; }
+  .status-metric .v { font-size: 16px; font-weight: 700; font-family: var(--mono); }
+  .status-metric .l { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  .phase-pill {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .05em; font-weight: 700;
+    padding: 2px 9px; border-radius: 99px;
+  }
+  .phase-train { background: rgba(79,142,247,.15); color: var(--accent); }
+  .phase-val   { background: rgba(61,214,140,.15); color: var(--green); }
+
+  .placeholder {
+    background: var(--surface); border: 1px dashed var(--border); border-radius: var(--radius);
+    padding: 40px 24px; text-align: center; color: var(--text-dim); font-size: 13px;
+  }
+  .placeholder code { display: block; margin-top: 12px; color: var(--accent); font-family: var(--mono); font-size: 12.5px; }
+
+  .chart-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 16px 20px; margin-bottom: 18px;
+  }
+  .chart-header { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 6px; }
+  .chart-title { font-size: 13px; font-weight: 600; color: var(--text); }
+  .chart-sub { font-size: 11.5px; color: var(--muted); }
+  .canvas-wrap { position: relative; height: 260px; margin-top: 14px; }
+  .canvas-wrap.small { height: 180px; }
+
+  .two-col { display: grid; grid-template-columns: 1.3fr 1fr; gap: 18px; align-items: start; }
+  @media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
+
+  .trade-feed { max-height: 320px; overflow-y: auto; }
+  .trade-row {
+    display: flex; align-items: center; gap: 10px; padding: 8px 4px;
+    border-bottom: 1px solid var(--border); font-size: 12px;
+  }
+  .trade-row:last-child { border-bottom: none; }
+  .trade-kind {
+    font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+    padding: 2px 7px; border-radius: 5px; flex-shrink: 0; width: 78px; text-align: center;
+  }
+  .trade-buy         { background: rgba(61,214,140,.12); color: var(--green); }
+  .trade-sell        { background: rgba(245,200,66,.12); color: var(--yellow); }
+  .trade-forced_exit { background: rgba(247,111,111,.12); color: var(--red); }
+  .trade-date { color: var(--muted); font-size: 10.5px; width: 76px; flex-shrink: 0; font-family: var(--mono); }
+  .trade-sym { font-weight: 600; flex: 1; }
+  .trade-amt { font-family: var(--mono); color: var(--text-dim); font-size: 11.5px; }
+
+  .pnl-pos { color: var(--green); }
+  .pnl-neg { color: var(--red); }
+</style>
+</head>
+<body>
+<script src="assets/nav.js"></script>
+<script src="assets/utils.js"></script>
+
+<div class="main">
+  <div class="page-header">
+    <div class="page-title">Live Training</div>
+    <div class="page-subtitle">Watch a PPO training run play out — portfolio value, current holdings, and every buy/sell as they happen</div>
+  </div>
+
+  <div class="page-content">
+    <div id="content">
+      <div class="placeholder" id="placeholder">
+        Waiting for a training run…
+        <code>julia --project=packages/TradingGame scripts/train_trading_policy.jl</code>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+Chart.defaults.color           = '#6b7280';
+Chart.defaults.borderColor     = '#2e3350';
+Chart.defaults.backgroundColor = 'transparent';
+
+const LIVE_URL = 'data/trading_game/live_status.json';
+const LOG_URL  = 'data/trading_game/episode_log.jsonl';
+
+let shown = false;
+let valueChart = null, iterChart = null;
+
+async function fetchJSON(url) {
+  const r = await fetch(url + '?t=' + Date.now(), { cache: 'no-store' });
+  if (!r.ok) throw new Error('fetch failed: ' + url);
+  return r.json();
+}
+
+async function fetchJSONL(url) {
+  const r = await fetch(url + '?t=' + Date.now(), { cache: 'no-store' });
+  if (!r.ok) throw new Error('fetch failed: ' + url);
+  const text = await r.text();
+  return text.trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+}
+
+function fmtRupee(v) {
+  if (v == null) return '—';
+  return '₹' + Math.round(v).toLocaleString('en-IN');
+}
+
+function revealLayout() {
+  if (shown) return;
+  shown = true;
+  document.getElementById('content').innerHTML = `
+    <div class="status-bar" id="status-bar"></div>
+
+    <div class="chart-card">
+      <div class="chart-header">
+        <div class="chart-title">Current episode — portfolio value</div>
+        <div class="chart-sub" id="value-chart-sub"></div>
+      </div>
+      <div class="canvas-wrap"><canvas id="value-chart"></canvas></div>
+    </div>
+
+    <div class="two-col">
+      <div class="chart-card" style="margin-bottom:0">
+        <div class="chart-header">
+          <div class="chart-title">Holdings</div>
+          <div class="chart-sub" id="holdings-sub"></div>
+        </div>
+        <div class="tbl-wrap" style="margin-top:12px">
+          <table class="data-table">
+            <thead><tr>
+              <th class="no-sort">Symbol</th><th class="no-sort">Qty</th>
+              <th class="no-sort">Entry</th><th class="no-sort">Current</th>
+              <th class="no-sort">Days held</th><th class="no-sort">Unrealized P&amp;L</th>
+            </tr></thead>
+            <tbody id="holdings-body"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="chart-card" style="margin-bottom:0">
+        <div class="chart-header">
+          <div class="chart-title">Recent decisions</div>
+          <div class="chart-sub">Newest first</div>
+        </div>
+        <div class="trade-feed" id="trade-feed" style="margin-top:8px"></div>
+      </div>
+    </div>
+
+    <div class="section-title">Training progress</div>
+    <div class="chart-card">
+      <div class="chart-header">
+        <div class="chart-title">Episode return per iteration</div>
+        <div class="chart-sub" id="iter-chart-sub">Σ log-return · training rollout vs held-out eval</div>
+      </div>
+      <div class="canvas-wrap"><canvas id="iter-chart"></canvas></div>
+    </div>
+  `;
+}
+
+function renderStatus(s) {
+  const bar = document.getElementById('status-bar');
+  const age = (Date.now() - Date.parse(s.updated_at + 'Z')) / 1000;
+  const live = age < 15;
+  const pnlPct = s.initial_cash > 0 ? (s.portfolio_value / s.initial_cash - 1) * 100 : 0;
+  const pnlCls = pnlPct >= 0 ? 'pnl-pos' : 'pnl-neg';
+  bar.innerHTML = `
+    <div><span class="status-dot ${live ? 'status-live' : 'status-idle'}"></span>
+      <span class="status-label">${live ? 'Live' : 'Idle'}</span>
+      <div class="status-sub">updated ${age < 60 ? Math.round(age) + 's ago' : Math.round(age/60) + 'm ago'}</div>
+    </div>
+    <span class="phase-pill ${s.phase === 'val' ? 'phase-val' : 'phase-train'}">${s.phase === 'val' ? 'Held-out eval' : 'Training'}</span>
+    <div class="status-metric"><div class="v">${s.iteration}</div><div class="l">Iteration</div></div>
+    <div class="status-metric"><div class="v">${s.current_date}</div><div class="l">Sim. date</div></div>
+    <div class="status-metric"><div class="v">${fmtRupee(s.portfolio_value)}</div><div class="l">Portfolio value</div></div>
+    <div class="status-metric"><div class="v ${pnlCls}">${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%</div><div class="l">vs. initial cash</div></div>
+    <div class="status-metric"><div class="v">${fmtRupee(s.cash)}</div><div class="l">Spendable cash</div></div>
+    <div class="status-metric"><div class="v">${fmtRupee(s.reserved_cash)}</div><div class="l">Reserved (settling)</div></div>
+  `;
+
+  document.getElementById('value-chart-sub').textContent =
+    `${s.holdings.length} position${s.holdings.length === 1 ? '' : 's'} held · episode started ${s.episode_started_at}Z`;
+
+  const points   = s.value_curve.map(p => ({ x: p.t, y: p.value }));
+  const baseline = s.value_curve.map(p => ({ x: p.t, y: s.initial_cash }));
+  if (!valueChart) {
+    valueChart = new Chart(document.getElementById('value-chart'), {
+      type: 'line',
+      data: { datasets: [
+        { label: 'Portfolio value', data: points, borderColor: '#4f8ef7', borderWidth: 2, pointRadius: 0, tension: .15 },
+        { label: 'Initial cash', data: baseline, borderColor: 'rgba(148,163,184,.4)', borderDash: [4,4], borderWidth: 1.5, pointRadius: 0 },
+      ]},
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        scales: {
+          x: {
+            type: 'time',
+            time: { unit: 'hour', minUnit: 'hour', tooltipFormat: 'MMM d, HH:mm', displayFormats: { hour: 'HH:mm' } },
+            title: { display: true, text: 'Date', color: '#6b7280' },
+            grid: { color: '#1e2338' },
+            ticks: {
+              major: { enabled: true },
+              font: (ctx) => ctx.tick && ctx.tick.major ? { weight: '600', size: 11 } : { size: 10 },
+              color: (ctx) => ctx.tick && ctx.tick.major ? '#94a3b8' : '#6b7280',
+            },
+          },
+          y: { title: { display: true, text: '₹', color: '#6b7280' }, grid: { color: '#2e3350' } },
+        },
+        plugins: {
+          legend: { display: true, position: 'top', align: 'end', labels: { boxWidth: 18, boxHeight: 2, color: '#94a3b8', font: { size: 11 } } },
+          tooltip: { callbacks: { label: (item) => `${item.dataset.label}: ${fmtRupee(item.parsed.y)}` } },
+        },
+      },
+    });
+  } else {
+    valueChart.data.datasets[0].data = points;
+    valueChart.data.datasets[1].data = baseline;
+    valueChart.update('none');
+  }
+
+  document.getElementById('holdings-sub').textContent = `Marked at ${s.current_date}`;
+  document.getElementById('holdings-body').innerHTML = s.holdings.length ? s.holdings.map(h => `
+    <tr>
+      <td><span class="symbol-chip">${esc(h.symbol)}</span></td>
+      <td class="num">${h.quantity.toFixed(2)}</td>
+      <td class="num">${fmtRupee(h.entry_price)}</td>
+      <td class="num">${fmtRupee(h.current_price)}</td>
+      <td class="num">${h.days_held}</td>
+      <td class="num ${h.unrealized_pnl >= 0 ? 'pnl-pos' : 'pnl-neg'}">${fmtRupee(h.unrealized_pnl)} (${h.unrealized_pnl_pct >= 0 ? '+' : ''}${h.unrealized_pnl_pct.toFixed(2)}%)</td>
+    </tr>`).join('') : `<tr><td colspan="6" class="na" style="padding:14px">All cash — no open positions</td></tr>`;
+
+  const trades = [...s.recent_trades].reverse();
+  document.getElementById('trade-feed').innerHTML = trades.length ? trades.map(t => `
+    <div class="trade-row">
+      <span class="trade-kind trade-${t.kind}">${t.kind === 'forced_exit' ? 'forced' : t.kind}</span>
+      <span class="trade-date">${t.date}</span>
+      <span class="trade-sym">${esc(t.symbol)}</span>
+      <span class="trade-amt">${t.quantity.toFixed(0)} shares @ ${fmtRupee(t.price)}, for ${fmtRupee(t.notional)}</span>
+    </div>`).join('') : `<div class="na" style="padding:14px">No trades yet this episode</div>`;
+}
+
+function renderIterChart(rows) {
+  const labels = rows.map(r => r.iteration);
+  const train  = rows.map(r => r.train_return);
+  const val    = rows.map(r => r.val_return);
+  const bests = rows.map(r => r.best_return).filter(v => v != null);
+  document.getElementById('iter-chart-sub').textContent =
+    `${rows.length} iteration${rows.length === 1 ? '' : 's'} logged · best return ${bests.length ? Math.max(...bests).toFixed(4) : '—'}`;
+  if (!iterChart) {
+    iterChart = new Chart(document.getElementById('iter-chart'), {
+      type: 'line',
+      data: { labels, datasets: [
+        { label: 'Train return', data: train, borderColor: 'rgba(79,142,247,.5)', borderWidth: 1.5, pointRadius: 0, tension: 0 },
+        { label: 'Held-out (val) return', data: val, borderColor: '#3dd68c', borderWidth: 2, pointRadius: 2, spanGaps: true },
+      ]},
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        scales: {
+          x: { title: { display: true, text: 'Iteration', color: '#6b7280' }, grid: { color: '#1e2338' } },
+          y: { title: { display: true, text: 'Σ log-return', color: '#6b7280' }, grid: { color: '#2e3350' } },
+        },
+        plugins: {
+          legend: { display: true, position: 'top', align: 'end', labels: { boxWidth: 18, boxHeight: 2, color: '#94a3b8', font: { size: 11 } } },
+        },
+      },
+    });
+  } else {
+    iterChart.data.labels = labels;
+    iterChart.data.datasets[0].data = train;
+    iterChart.data.datasets[1].data = val;
+    iterChart.update('none');
+  }
+}
+
+async function pollLive() {
+  try {
+    const s = await fetchJSON(LIVE_URL);
+    revealLayout();
+    renderStatus(s);
+  } catch {
+    // no live_status.json yet (or a training run isn't currently active) —
+    // leave whatever's on screen (placeholder, or the last good frame).
+  }
+}
+
+async function pollLog() {
+  try {
+    const rows = await fetchJSONL(LOG_URL);
+    revealLayout();
+    renderIterChart(rows);
+  } catch { /* no episode_log.jsonl yet */ }
+}
+
+pollLive(); pollLog();
+setInterval(pollLive, 3000);
+setInterval(pollLog, 8000);
+</script>
+</body>
+</html>

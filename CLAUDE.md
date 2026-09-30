@@ -72,6 +72,7 @@ market-agent/
 │           ├── observation.jl      # obs tensor assembly: InferenceCache + MacroCache + news + portfolio
 │           ├── policy.jl           # recurrent/transformer actor-critic (ActorCriticPolicy, Flux)
 │           ├── ppo.jl              # hand-rolled PPO + GAE (collect_rollout, ppo_update!)
+│           ├── live.jl             # streams the current episode to live_status.json (website/tradinggamelive.html)
 │           ├── train.jl            # training loop: train_policy! — checkpoint, episode_log.jsonl, STOP
 │           ├── universe.jl         # candidate universe: confidence-filtered, market-cap-ranked, capped
 │           └── display.jl          # Base.show overrides
@@ -518,6 +519,25 @@ Prerequisites: `nse_companies_latest.json` (`generate_nse_list.jl` then
 `run_confidence_checks.jl`) and `inference_cache.bson` (`build_cache.jl`).
 Output: `website/data/trading_game/universe_latest.json` — load with
 `TradingGame.load_universe_snapshot` as `EpisodeConfig.candidate_universe`.
+
+### train_trading_policy.jl
+
+Drives `TradingGame.train_policy!`: loads the cache + candidate universe, splits
+the cache's date range into a training window and a held-out validation tail,
+and trains a fresh `ActorCriticPolicy`. Streams `live_status.json` by default —
+watch the run at `website/tradinggamelive.html`.
+
+```bash
+julia --project=packages/TradingGame scripts/train_trading_policy.jl
+julia --project=packages/TradingGame scripts/train_trading_policy.jl --iterations 500 --val-days 40
+```
+
+Prerequisites: `inference_cache.bson` (`build_cache.jl`) and
+`universe_latest.json` (`build_universe_snapshot.jl`).
+Outputs (under `website/data/trading_game/`): `policy.bson`, `episode_log.jsonl`,
+`live_status.json`. Stop cleanly with `touch website/data/trading_game/STOP`
+(checkpoint saved) or hard-stop with `STOP_NOW` (no save), same convention as
+`train_model.jl`.
 
 ### Website
 
