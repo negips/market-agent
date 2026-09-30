@@ -12,6 +12,8 @@ const SETTLEMENT_DAYS       = 2               # rule 4: reserved-cash → cash d
 const MIN_HOLD_DAYS         = 1               # rule 10: lock-up before a voluntary sale
 const MAX_HOLD_DAYS         = 10              # rule 9: forced exit after this many trading days
 const DECISION_INTERVAL_MIN = 15              # rule 8: minimum minutes between decisions
+const MAX_POSITION_FRACTION = 0.15            # rule 12: a single symbol can't exceed this share of portfolio value
+const N_MAX_HOLDINGS        = 20              # rule 13: max distinct symbols held at once
 
 # ── Decision cadence proxy ───────────────────────────────────────────────────────
 

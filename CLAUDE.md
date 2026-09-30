@@ -530,6 +530,9 @@ watch the run at `website/tradinggamelive.html`.
 ```bash
 julia --project=packages/TradingGame scripts/train_trading_policy.jl
 julia --project=packages/TradingGame scripts/train_trading_policy.jl --iterations 500 --val-days 40
+julia --project=packages/TradingGame scripts/train_trading_policy.jl --resume --iterations 100
+julia --project=packages/TradingGame scripts/train_trading_policy.jl --seed 42
+julia --project=packages/TradingGame scripts/train_trading_policy.jl --init-from other_run/policy.bson
 ```
 
 Prerequisites: `inference_cache.bson` (`build_cache.jl`) and
@@ -537,7 +540,17 @@ Prerequisites: `inference_cache.bson` (`build_cache.jl`) and
 Outputs (under `website/data/trading_game/`): `policy.bson`, `episode_log.jsonl`,
 `live_status.json`. Stop cleanly with `touch website/data/trading_game/STOP`
 (checkpoint saved) or hard-stop with `STOP_NOW` (no save), same convention as
-`train_model.jl`.
+`train_model.jl`. To restart after either: re-run with `--resume` — loads
+`policy.bson` instead of a fresh policy and continues `episode_log.jsonl`'s
+iteration numbering (`--iterations` then means "how many more", not a new
+total), same `--resume` convention as `train_model.jl`.
+
+`--seed N` makes a fresh policy's initial weights reproducible
+(`ActorCriticPolicy(seed=...)`, via `Random.seed!`) and also seeds the PPO
+rollout's action sampling. `--init-from PATH` is a *fresh* run (iteration 1,
+cleared log — unlike `--resume`) that warm-starts the policy's weights from an
+existing checkpoint at `PATH` instead of random init; mutually exclusive with
+`--resume`.
 
 ### Website
 

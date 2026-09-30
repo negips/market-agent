@@ -81,8 +81,9 @@ end
         @test 1 <= log["best_iteration"] <= 5
 
         @test isfile(ckpt)
-        loaded, meta = load_policy(ckpt)
+        loaded, hyperparams, meta = load_policy(ckpt)
         @test meta["checkpoint"] == true
+        @test hyperparams == (embed_dim=8, macro_embed_dim=4, attn_heads=2, critic_hidden=[8])
         # train_policy! always reloads best-checkpointed weights before returning,
         # so the returned `policy` and the on-disk checkpoint must match exactly.
         obs = assemble_observation(env)
@@ -141,6 +142,30 @@ end
                                      rng=MersenneTwister(9))
         @test length(log["val_return"]) == 3   # iterations 2, 4, 6
         @test log["best_return"] in log["val_return"]   # checkpoint metric was the held-out return
+    end
+
+    @testset "iteration_offset continues numbering across a simulated --resume" begin
+        env, train_config, policy = _train_setup()
+        elog = tempname() * ".jsonl"
+
+        policy, log = train_policy!(policy, env, train_config;
+                                     iterations=3, k_epochs=1, minibatch_size=16,
+                                     episode_log_path=elog, rng=MersenneTwister(11))
+        @test log["best_iteration"] in 1:3
+
+        # Simulated resume: same log path (append, as --resume does), offset by the
+        # prior run's length — mirrors what scripts/train_trading_policy.jl computes
+        # via _last_completed_iteration(episode_log.jsonl).
+        policy, log2 = train_policy!(policy, env, train_config;
+                                      iterations=2, k_epochs=1, minibatch_size=16,
+                                      episode_log_path=elog, iteration_offset=3,
+                                      rng=MersenneTwister(12))
+        @test log2["best_iteration"] in 4:5
+
+        lines = readlines(elog)
+        @test length(lines) == 5   # 3 from the first run + 2 from the "resumed" one, not restarted at 1
+        iters = [JSON3.read(l)[:iteration] for l in lines]
+        @test iters == [1, 2, 3, 4, 5]
     end
 
 end

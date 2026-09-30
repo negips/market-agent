@@ -41,7 +41,7 @@ function make_test_cache(; n_days::Int=30, bars_per_day::Int=7,
                            hourly_datetimes, symbols, date_index, sym_index)
 end
 
-function make_test_env(; n_days::Int=30, initial_cash::Float64=100_000.0)
+function make_test_env(; n_days::Int=30, initial_cash::Float64=1_000_000.0)
     cache = make_test_cache(n_days=n_days)
     env   = TradingGameEnv(cache)
     reset!(env, EpisodeConfig(
@@ -219,6 +219,61 @@ end
         @test forced_exit_date_idx == entry_date_idx + MAX_HOLD_DAYS
     end
 
+    @testset "Position size capped at MAX_POSITION_FRACTION of portfolio value (rule 12)" begin
+        env = make_test_env(initial_cash=100_000.0)
+        sym_idx  = first(env.candidate_sym_idx)
+        price    = env.cache.hourly_closes[env.current_hour_idx, sym_idx]
+        date_idx = env.cache.date_index[env.current_date]
+
+        # weight=1.0 requests ~100% of available cash on a single symbol — the cap must bind
+        resolved = resolve_actions(env, [RawAction(sym_idx, BUY, 1.0)], date_idx)
+        @test length(resolved) == 1
+        total_value = portfolio_value(env)
+        @test resolved[1].notional <= MAX_POSITION_FRACTION * total_value + 1e-6
+        @test resolved[1].notional > 0.10 * total_value   # confirms it actually bound, not coincidentally under
+
+        TradingGame._apply_actions!(env, resolved, date_idx)
+        h = env.portfolio.holdings[1]
+        @test h.quantity * price <= MAX_POSITION_FRACTION * total_value + price   # within one share's rounding
+
+        # A further buy into the SAME symbol is capped down to ~0 (already at the ceiling)...
+        resolved2 = resolve_actions(env, [RawAction(sym_idx, BUY, 1.0)], date_idx)
+        @test isempty(resolved2)
+
+        # ...but a different symbol still has its own 15% headroom.
+        other_idx = first(setdiff(env.candidate_sym_idx, Set([sym_idx])))
+        resolved3 = resolve_actions(env, [RawAction(other_idx, BUY, 1.0)], date_idx)
+        @test length(resolved3) == 1
+    end
+
+    @testset "At most N_MAX_HOLDINGS distinct symbols held at once (rule 13)" begin
+        symbols = ["S$i" for i in 1:25]
+        cache   = make_test_cache(symbols=symbols)
+        env     = TradingGameEnv(cache)
+        reset!(env, EpisodeConfig(initial_cash=10_000_000.0, start_date=cache.dates[1],
+                                   end_date=cache.dates[end], candidate_universe=symbols))
+        date_idx = env.cache.date_index[env.current_date]
+
+        # 21 simultaneous new-symbol buys, equal weight — cash and the 15% cap are
+        # both slack here (each gets ~1/21 of a large cash pile), isolating rule 13.
+        first21 = [env.cache.sym_index[s] for s in symbols[1:21]]
+        resolved = resolve_actions(env, [RawAction(idx, BUY, 1.0) for idx in first21], date_idx)
+        bought = Set(t.sym_idx for t in resolved if t.kind == BUY)
+        @test length(bought) == N_MAX_HOLDINGS   # the 21st is masked out
+
+        TradingGame._apply_actions!(env, resolved, date_idx)
+        @test length(Set(h.sym_idx for h in env.portfolio.holdings)) == N_MAX_HOLDINGS
+
+        # Adding to an already-held symbol is still allowed at the cap...
+        resolved2 = resolve_actions(env, [RawAction(first(bought), BUY, 1.0)], date_idx)
+        @test any(t.kind == BUY for t in resolved2)
+
+        # ...but opening a brand-new (21st) position is not.
+        unheld_idx = env.cache.sym_index[symbols[22]]
+        resolved3 = resolve_actions(env, [RawAction(unheld_idx, BUY, 1.0)], date_idx)
+        @test isempty(resolved3)
+    end
+
     @testset "Under flat prices, portfolio value is fee-drag-only: non-increasing, never negative" begin
         cache = make_test_cache(n_days=20)
         cache.hourly_closes .= 100f0
@@ -257,6 +312,13 @@ end
                 for h in env.portfolio.holdings
                     @test date_idx - h.entry_date_idx < MAX_HOLD_DAYS
                 end
+
+                # N_MAX_HOLDINGS is a true invariant (rule 13 masks every buy that would
+                # exceed it). MAX_POSITION_FRACTION (rule 12) is purchase-time-only by
+                # design — price drift after a buy can legitimately carry a position
+                # above 15%, so it's NOT asserted here; see the dedicated rule-12 testset
+                # below for what IS guaranteed (the cap binds at the moment of purchase).
+                @test length(Set(h.sym_idx for h in env.portfolio.holdings)) <= N_MAX_HOLDINGS
 
                 @test steps <= 10_000   # runaway guard — episode must terminate via `done`
             end

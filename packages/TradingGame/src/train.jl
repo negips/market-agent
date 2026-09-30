@@ -38,6 +38,14 @@ on) using `train_config` as the (repeated, per iteration) training episode.
 - `live_path`: when non-empty, streams this run's current episode (portfolio
   value curve, holdings, recent trades) to that JSON path every `live_every_bars`
   bars — see `live.jl` / `website/tradinggamelive.html`. Omit to disable.
+- `iteration_offset`: added to every iteration number in logging/printing/
+  checkpoint metadata — the loop itself always runs `1:iterations` (i.e.
+  `iterations` means "how many more to run"). Lets a resumed run's iteration
+  numbers continue from where a previous run left off instead of restarting
+  at 1 — same convention as `StockSwingPredictor.train!`'s `epoch_offset`.
+  `best_return` itself is NOT seeded from any prior run (also matching
+  `StockSwingPredictor`): the first post-resume checkpoint write is
+  unconditional, exactly as it is for a fresh run's first improvement.
 
 # Returns
 `(policy, log)` — `policy` is always reloaded to its best-checkpointed weights
@@ -59,6 +67,7 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
                  stop_file::String="",
                  live_path::String="",
                  live_every_bars::Int=5,
+                 iteration_offset::Int=0,
                  embed_dim::Int=64, macro_embed_dim::Int=16, attn_heads::Int=4,
                  critic_hidden::Vector{Int}=[64, 32],
                  rng::AbstractRNG=Random.default_rng())
@@ -86,13 +95,15 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
         "checkpoint_path"    => checkpoint_path,
     )
 
-    @info "Training TradingGame policy: $iterations iterations, $(length(train_config.candidate_universe)) candidates"
+    resume_str = iteration_offset > 0 ? " (resuming from iteration $iteration_offset)" : ""
+    @info "Training TradingGame policy: $iterations iterations, $(length(train_config.candidate_universe)) candidates$resume_str"
     train_start = time()
 
     for iter in 1:iterations
+        abs_iter   = iter + iteration_offset
         iter_start = time()
 
-        start_episode!(live_tracker; iteration=iter, phase="train")
+        start_episode!(live_tracker; iteration=abs_iter, phase="train")
         buffer = collect_rollout(env, policy, train_config;
                                   macro_cache=macro_cache, news_fn=news_fn, rng=rng,
                                   live_cb=make_live_callback(live_tracker))
@@ -115,7 +126,7 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
         val_return, val_value = nothing, nothing
         do_eval = val_config !== nothing && (iter % eval_every == 0 || iter == iterations)
         if do_eval
-            start_episode!(live_tracker; iteration=iter, phase="val")
+            start_episode!(live_tracker; iteration=abs_iter, phase="val")
             eval_buffer = collect_rollout(env, policy, val_config;
                                            macro_cache=macro_cache, news_fn=news_fn,
                                            greedy=true, rng=rng,
@@ -132,19 +143,19 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
             best_return           = candidate_return
             best_state            = deepcopy(Flux.state(cpu(policy)))
             log["best_return"]    = best_return
-            log["best_iteration"] = iter
+            log["best_iteration"] = abs_iter
             if !isempty(checkpoint_path)
                 save_policy(policy, checkpoint_path; embed_dim=embed_dim, macro_embed_dim=macro_embed_dim,
                             attn_heads=attn_heads, critic_hidden=critic_hidden,
                             meta=Dict("checkpoint" => true, "saved_at" => string(now(UTC)),
-                                      "iteration" => iter))
+                                      "iteration" => abs_iter))
             end
         end
 
         iter_secs = time() - iter_start
         eval_str  = val_return === nothing ? "" : @sprintf(" | val %.4f", val_return)
         @printf("Iter %4d | train_return %.4f | value %.0f | loss %.4f%s | %s%s\n",
-                iter, train_return, train_value, stats["loss"], eval_str,
+                abs_iter, train_return, train_value, stats["loss"], eval_str,
                 _fmt_duration(round(Int, iter_secs)), improved ? " ★" : "")
 
         if !isempty(episode_log_path)
@@ -153,7 +164,7 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
             # for `null` first, same convention `_sanitize_json` uses for the full log.
             logged_best = isfinite(best_return) ? best_return : nothing
             open(episode_log_path, "a") do io
-                JSON3.write(io, (iteration=iter, train_return=train_return, train_final_value=train_value,
+                JSON3.write(io, (iteration=abs_iter, train_return=train_return, train_final_value=train_value,
                                  loss=stats["loss"], val_return=val_return, val_final_value=val_value,
                                  best_return=logged_best, improved=improved,
                                  elapsed_secs=round(time() - train_start, digits=1)))
@@ -164,13 +175,13 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
         stop_now_file = isempty(stop_file) ? "" : replace(stop_file, "STOP" => "STOP_NOW")
         if !isempty(stop_now_file) && isfile(stop_now_file)
             rm(stop_now_file)
-            @info "STOP_NOW detected — hard interrupt after iteration $iter (no save)"
+            @info "STOP_NOW detected — hard interrupt after iteration $abs_iter (no save)"
             stop_now_fired = true
             break
         end
         if !isempty(stop_file) && isfile(stop_file)
             rm(stop_file)
-            @info "Stop file detected — clean interrupt after iteration $iter"
+            @info "Stop file detected — clean interrupt after iteration $abs_iter"
             break
         end
     end

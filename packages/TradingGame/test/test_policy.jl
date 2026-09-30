@@ -114,6 +114,18 @@ end
         @test all(isfinite, value)
     end
 
+    @testset "seed makes initial weights reproducible" begin
+        p1 = ActorCriticPolicy(embed_dim=16, macro_embed_dim=8, attn_heads=2, critic_hidden=[16], seed=42)
+        p2 = ActorCriticPolicy(embed_dim=16, macro_embed_dim=8, attn_heads=2, critic_hidden=[16], seed=42)
+        p3 = ActorCriticPolicy(embed_dim=16, macro_embed_dim=8, attn_heads=2, critic_hidden=[16], seed=7)
+
+        @test p1.actor_head.weight        == p2.actor_head.weight
+        @test p1.hourly_encoder.cell.Wi   == p2.hourly_encoder.cell.Wi
+        @test p1.attn.q_proj.weight       == p2.attn.q_proj.weight
+
+        @test p1.actor_head.weight != p3.actor_head.weight
+    end
+
     @testset "Gradients flow through every sub-layer" begin
         env = make_test_env(n_days=30)
         step!(env, RawAction[])

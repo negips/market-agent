@@ -3,11 +3,15 @@
 
 Rule-exact market simulator and hand-rolled PPO training pipeline for the
 trading game defined in `TradingGameRules.txt` (repo root): start with cash,
-buy/sell NSE/BSE stocks, sale proceeds settle into spendable cash after
-`SETTLEMENT_DAYS`, a bought lot cannot be voluntarily sold before
-`MIN_HOLD_DAYS` and is force-sold at `MAX_HOLD_DAYS`, every trade costs
-`FEE_RATE`, decisions happen at the `TRAINING_DECISION_GRANULARITY` cadence, and
-the objective is continuous portfolio-value maximisation.
+buy/sell NSE/BSE stocks in whole-share counts, sale proceeds settle into
+spendable cash after `SETTLEMENT_DAYS`, a bought lot cannot be voluntarily
+sold before `MIN_HOLD_DAYS` and is force-sold at `MAX_HOLD_DAYS`, every trade
+costs `FEE_RATE`, no symbol may exceed `MAX_POSITION_FRACTION` of portfolio
+value (enforced at purchase time only — see `resolve_actions`'s docstring for
+why organic price drift above the cap is not force-trimmed) and no more than
+`N_MAX_HOLDINGS` distinct symbols may be held at once, decisions happen at the
+`TRAINING_DECISION_GRANULARITY` cadence, and the objective is continuous
+portfolio-value maximisation.
 
 ## Stages
 
@@ -81,6 +85,7 @@ include("display.jl")
 export
     # constants
     FEE_RATE, SETTLEMENT_DAYS, MIN_HOLD_DAYS, MAX_HOLD_DAYS, DECISION_INTERVAL_MIN,
+    MAX_POSITION_FRACTION, N_MAX_HOLDINGS,
     DecisionGranularity, HOURLY, MINUTE_15, TRAINING_DECISION_GRANULARITY,
     N_CANDIDATE_STOCKS, MIN_CONFIDENCE_SCORE, GAMMA, GAE_LAMBDA, CLIP_EPS,
     VALUE_LOSS_COEF, ENTROPY_COEF, DECAY_HALFLIFE_HOURS, N_HOURLY_BARS_SHORT,

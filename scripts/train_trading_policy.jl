@@ -9,6 +9,9 @@ Usage:
   julia --project=packages/TradingGame scripts/train_trading_policy.jl
   julia --project=packages/TradingGame scripts/train_trading_policy.jl --iterations 500
   julia --project=packages/TradingGame scripts/train_trading_policy.jl --val-days 40 --live
+  julia --project=packages/TradingGame scripts/train_trading_policy.jl --resume --iterations 100
+  julia --project=packages/TradingGame scripts/train_trading_policy.jl --seed 42
+  julia --project=packages/TradingGame scripts/train_trading_policy.jl --init-from other_run/policy.bson
 
 Prerequisites:
   website/data/inference_cache.bson              (build_cache.jl)
@@ -21,9 +24,35 @@ Outputs (under website/data/trading_game/):
 
 To stop cleanly:   touch website/data/trading_game/STOP        (checkpoint saved)
 To stop hard:      touch website/data/trading_game/STOP_NOW    (no save)
+
+To restart after a STOP: re-run with --resume. This loads policy.bson (the
+last checkpoint) instead of a fresh policy, and continues episode_log.jsonl's
+iteration numbering from where it left off (`--iterations` means "how many
+MORE iterations to run", not a new total) — same convention as
+StockSwingPredictor's scripts/train_model.jl --resume. A STOP_NOW abort has
+no checkpoint newer than the last improvement before it, so --resume after
+one just continues from that same last-good checkpoint (no data lost, some
+unsaved training since then is simply redone).
+
+--init-from PATH is different from --resume: it starts a genuinely FRESH run
+(iteration numbering restarts at 1, episode_log.jsonl is cleared, best_return
+tracking restarts at -Inf — so the first checkpoint write is unconditional,
+same as any fresh run's first improvement) but initialises the policy's
+weights from an existing checkpoint at PATH instead of random init. Useful
+for warm-starting a new run (different window/hyperparameters/universe) from
+weights already trained elsewhere, without inheriting that run's log or
+iteration count. --resume and --init-from are mutually exclusive.
+
+--seed N makes a FRESH policy's initial weights reproducible (via
+Random.seed!, see ActorCriticPolicy's docstring) and also seeds the PPO
+rollout's stochastic action sampling, so two runs with the same --seed (and
+otherwise identical arguments) produce identical training trajectories.
+Ignored by --resume and --init-from's weight loading (the weights come from
+a checkpoint, not fresh init) but still seeds the rollout sampling in both
+cases.
 """
 
-using TradingGame, StockSwingPredictor, Dates, Printf
+using TradingGame, StockSwingPredictor, Dates, Printf, JSON3, Random
 
 const REPO_ROOT   = joinpath(@__DIR__, "..")
 const DATA_DIR    = joinpath(REPO_ROOT, "website", "data", "trading_game")
@@ -38,6 +67,9 @@ function parse_args()
         "eval_every"  => 10,
         "lr"          => 3f-4,
         "live"        => true,
+        "resume"      => false,
+        "seed"        => nothing,
+        "init_from"   => "",
     )
     i = 1
     while i <= length(ARGS)
@@ -54,6 +86,13 @@ Options:
   --eval-every N       Run a held-out episode every N iterations (default: $(opts["eval_every"]))
   --lr N               Adam learning rate (default: $(opts["lr"]))
   --no-live            Disable live_status.json streaming
+  --resume             Load policy.bson and continue iteration numbering from
+                        episode_log.jsonl instead of starting a fresh policy
+  --init-from PATH     Fresh run (iteration 1, cleared log) but weights loaded
+                        from PATH instead of random init. Mutually exclusive
+                        with --resume.
+  --seed N             Reproducible initial weights (fresh/--init-from) and
+                        PPO rollout sampling
 """)
             exit(0)
         elseif a == "--iterations";   opts["iterations"]   = parse(Int, ARGS[i+1]); i += 2
@@ -62,10 +101,31 @@ Options:
         elseif a == "--eval-every";   opts["eval_every"]   = parse(Int, ARGS[i+1]); i += 2
         elseif a == "--lr";           opts["lr"]           = parse(Float32, ARGS[i+1]); i += 2
         elseif a == "--no-live";      opts["live"]         = false; i += 1
+        elseif a == "--resume";       opts["resume"]       = true; i += 1
+        elseif a == "--init-from";    opts["init_from"]    = ARGS[i+1]; i += 2
+        elseif a == "--seed";         opts["seed"]         = parse(Int, ARGS[i+1]); i += 2
         else; i += 1
         end
     end
+    opts["resume"] && !isempty(opts["init_from"]) &&
+        error("--resume and --init-from are mutually exclusive")
     return opts
+end
+
+"""Highest `iteration` field logged in `log_path`, or 0 if it doesn't exist
+yet — same convention as `train_model.jl`'s `_last_completed_epoch`, used so
+`--resume` continues iteration numbering instead of restarting at 1."""
+function _last_completed_iteration(log_path::String)::Int
+    isfile(log_path) || return 0
+    max_iter = 0
+    for line in eachline(log_path)
+        isempty(strip(line)) && continue
+        try
+            max_iter = max(max_iter, Int(JSON3.read(line)[:iteration]))
+        catch
+        end
+    end
+    return max_iter
 end
 
 function main()
@@ -99,15 +159,46 @@ function main()
     val_config   = EpisodeConfig(initial_cash=opts["initial_cash"], start_date=val_start,
                                   end_date=cache_end, candidate_universe=universe)
 
-    env    = TradingGameEnv(cache)
-    policy = ActorCriticPolicy()
+    env = TradingGameEnv(cache)
+
+    checkpoint_path  = joinpath(DATA_DIR, "policy.bson")
+    episode_log_path = joinpath(DATA_DIR, "episode_log.jsonl")
+
+    iteration_offset = 0
+    if opts["resume"]
+        isfile(checkpoint_path) ||
+            error("--resume requested but no checkpoint found at $checkpoint_path")
+        policy, hp, _ = load_policy(checkpoint_path)
+        iteration_offset = _last_completed_iteration(episode_log_path)
+        @info "Resumed policy — last completed iteration: $iteration_offset"
+    elseif !isempty(opts["init_from"])
+        isfile(opts["init_from"]) ||
+            error("--init-from: not found: $(opts["init_from"])")
+        policy, hp, _ = load_policy(opts["init_from"])
+        @info "Fresh run, weights warm-started from $(opts["init_from"])"
+        # Fresh iteration numbering and log, unlike --resume — see the module
+        # docstring's --init-from vs --resume note.
+        isfile(episode_log_path) && rm(episode_log_path)
+    else
+        policy = ActorCriticPolicy(seed=opts["seed"])
+        hp = (embed_dim=64, macro_embed_dim=16, attn_heads=4, critic_hidden=[64, 32])
+        @info "Fresh policy" * (opts["seed"] === nothing ? "" : " (seed=$(opts["seed"]))")
+        # episode_log.jsonl is opened in append mode inside train_policy! (so
+        # --resume can keep history) — a fresh run must clear any stale log.
+        isfile(episode_log_path) && rm(episode_log_path)
+    end
+
+    rng = opts["seed"] === nothing ? Random.default_rng() : MersenneTwister(opts["seed"])
 
     policy, log = train_policy!(policy, env, train_config; val_config=val_config,
-        iterations=opts["iterations"], eval_every=opts["eval_every"], lr=opts["lr"],
-        checkpoint_path=joinpath(DATA_DIR, "policy.bson"),
-        episode_log_path=joinpath(DATA_DIR, "episode_log.jsonl"),
+        iterations=opts["iterations"], eval_every=opts["eval_every"], lr=opts["lr"], rng=rng,
+        checkpoint_path=checkpoint_path,
+        episode_log_path=episode_log_path,
         stop_file=joinpath(DATA_DIR, "STOP"),
-        live_path=opts["live"] ? joinpath(DATA_DIR, "live_status.json") : "")
+        live_path=opts["live"] ? joinpath(DATA_DIR, "live_status.json") : "",
+        iteration_offset=iteration_offset,
+        embed_dim=hp.embed_dim, macro_embed_dim=hp.macro_embed_dim,
+        attn_heads=hp.attn_heads, critic_hidden=hp.critic_hidden)
 
     save_training_log(log, joinpath(DATA_DIR, "training_log.json"))
 

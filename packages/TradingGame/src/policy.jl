@@ -16,7 +16,7 @@ because `StockSwingPredictor` (a dependency) eagerly does `using CUDA, cuDNN`.
 `test/test_policy.jl` can call `CUDA.functional()` directly.
 """
 
-using Flux, BSON, Dates
+using Flux, BSON, Dates, Random
 
 struct ActorCriticPolicy
     hourly_encoder    :: Flux.GRU
@@ -35,9 +35,22 @@ Build a fresh `ActorCriticPolicy`. `embed_dim` is the per-stock embedding
 width used throughout (hourly encoder output, fusion output, attention
 embedding); `macro_embed_dim` is the macro-GRU's output width before it's
 concatenated with the portfolio scalars.
+
+Every weight is Glorot-uniform, every bias zero — Flux's defaults for
+`Dense`/`GRU`/`MultiHeadAttention`, since no `init=` is passed anywhere here.
+Those defaults draw from Julia's *global* RNG, so two calls give different
+initial weights unless you pass `seed`: when given, this calls
+`Random.seed!(seed)` immediately before constructing the layers, making the
+initial weights reproducible. This is a real (if standard) side effect on
+global RNG state, same as calling `Random.seed!` anywhere else — it also
+resets whatever random stream the rest of the program was drawing from.
+Omit `seed` for the previous non-deterministic behaviour.
 """
 function ActorCriticPolicy(; embed_dim::Int=64, macro_embed_dim::Int=16,
-                            attn_heads::Int=4, critic_hidden::Vector{Int}=[64, 32])
+                            attn_heads::Int=4, critic_hidden::Vector{Int}=[64, 32],
+                            seed::Union{Nothing, Int}=nothing)
+    seed !== nothing && Random.seed!(seed)
+
     hourly_encoder    = GRU(N_PRICE_CHANNELS => embed_dim)
     fusion            = Dense(embed_dim + N_NEWS_FEATURES + N_HOLDING_FEATURES => embed_dim, relu)
     macro_encoder     = GRU(N_MACRO_SERIES => macro_embed_dim)
@@ -129,11 +142,18 @@ function save_policy(policy::ActorCriticPolicy, path::String;
     @info "Policy saved → $path"
 end
 
-"""Load an `ActorCriticPolicy` from BSON. Returns `(policy, meta)`."""
+"""Load an `ActorCriticPolicy` from BSON. Returns `(policy, hyperparams, meta)`
+— `hyperparams` is the exact `(embed_dim, macro_embed_dim, attn_heads,
+critic_hidden)` NamedTuple the policy was built with, so a resumed
+`train_policy!` run can pass it straight back in and keep re-saving a
+checkpoint with the same architecture (see that function's docstring for why
+it needs these at all — `ActorCriticPolicy` doesn't carry them as a field)."""
 function load_policy(path::String)
     BSON.@load path state embed_dim macro_embed_dim attn_heads critic_hidden meta
     policy = ActorCriticPolicy(embed_dim=embed_dim, macro_embed_dim=macro_embed_dim,
                                 attn_heads=attn_heads, critic_hidden=critic_hidden)
     Flux.loadmodel!(policy, state)
-    return policy, meta
+    hyperparams = (embed_dim=embed_dim, macro_embed_dim=macro_embed_dim,
+                   attn_heads=attn_heads, critic_hidden=critic_hidden)
+    return policy, hyperparams, meta
 end
