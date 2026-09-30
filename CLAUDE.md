@@ -533,6 +533,7 @@ julia --project=packages/TradingGame scripts/train_trading_policy.jl --iteration
 julia --project=packages/TradingGame scripts/train_trading_policy.jl --resume --iterations 100
 julia --project=packages/TradingGame scripts/train_trading_policy.jl --seed 42
 julia --project=packages/TradingGame scripts/train_trading_policy.jl --init-from other_run/policy.bson
+julia --project=packages/TradingGame scripts/train_trading_policy.jl --device gpu
 ```
 
 Prerequisites: `inference_cache.bson` (`build_cache.jl`) and
@@ -551,6 +552,15 @@ rollout's action sampling. `--init-from PATH` is a *fresh* run (iteration 1,
 cleared log — unlike `--resume`) that warm-starts the policy's weights from an
 existing checkpoint at `PATH` instead of random init; mutually exclusive with
 `--resume`.
+
+`--device gpu` moves the policy to GPU once, up front (falls back to `cpu`
+with a warning if `CUDA.functional()` is false, same as `train_model.jl`).
+`--minibatch` defaults to 256 on `gpu` / 32 on `cpu` when not given
+explicitly, same convention as `train_model.jl`'s batch-size default.
+`collect_rollout`'s one-bar-at-a-time forward passes see much less GPU
+benefit than `ppo_update!`'s minibatched ones (the rollout can't be batched
+across time steps — each bar's action depends on the simulator state left by
+the previous one).
 
 ### Website
 

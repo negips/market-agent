@@ -12,6 +12,7 @@ Usage:
   julia --project=packages/TradingGame scripts/train_trading_policy.jl --resume --iterations 100
   julia --project=packages/TradingGame scripts/train_trading_policy.jl --seed 42
   julia --project=packages/TradingGame scripts/train_trading_policy.jl --init-from other_run/policy.bson
+  julia --project=packages/TradingGame scripts/train_trading_policy.jl --device gpu
 
 Prerequisites:
   website/data/inference_cache.bson              (build_cache.jl)
@@ -50,9 +51,17 @@ otherwise identical arguments) produce identical training trajectories.
 Ignored by --resume and --init-from's weight loading (the weights come from
 a checkpoint, not fresh init) but still seeds the rollout sampling in both
 cases.
+
+--device gpu moves the policy to GPU once, up front — requires
+CUDA.functional() (falls back to cpu with a warning if not, same as
+train_model.jl). --minibatch defaults to 256 on gpu / 32 on cpu when not
+given explicitly (larger batches better amortise transfer/kernel-launch
+overhead) — same convention as train_model.jl's batch-size default. Note
+collect_rollout's one-bar-at-a-time forward passes see much less GPU benefit
+than ppo_update!'s minibatched ones — see ppo.jl's docstrings.
 """
 
-using TradingGame, StockSwingPredictor, Dates, Printf, JSON3, Random
+using TradingGame, StockSwingPredictor, Dates, Printf, JSON3, Random, CUDA
 
 const REPO_ROOT   = joinpath(@__DIR__, "..")
 const DATA_DIR    = joinpath(REPO_ROOT, "website", "data", "trading_game")
@@ -70,6 +79,8 @@ function parse_args()
         "resume"      => false,
         "seed"        => nothing,
         "init_from"   => "",
+        "device"      => "cpu",
+        "minibatch"   => nothing,
     )
     i = 1
     while i <= length(ARGS)
@@ -93,6 +104,9 @@ Options:
                         with --resume.
   --seed N             Reproducible initial weights (fresh/--init-from) and
                         PPO rollout sampling
+  --device NAME        cpu or gpu (default: cpu). gpu requires
+                        CUDA.functional() — falls back to cpu with a warning
+  --minibatch N         PPO minibatch size (default: 256 on gpu, 32 on cpu)
 """)
             exit(0)
         elseif a == "--iterations";   opts["iterations"]   = parse(Int, ARGS[i+1]); i += 2
@@ -104,12 +118,37 @@ Options:
         elseif a == "--resume";       opts["resume"]       = true; i += 1
         elseif a == "--init-from";    opts["init_from"]    = ARGS[i+1]; i += 2
         elseif a == "--seed";         opts["seed"]         = parse(Int, ARGS[i+1]); i += 2
+        elseif a == "--device";       opts["device"]       = ARGS[i+1]; i += 2
+        elseif a == "--minibatch";    opts["minibatch"]    = parse(Int, ARGS[i+1]); i += 2
         else; i += 1
         end
     end
     opts["resume"] && !isempty(opts["init_from"]) &&
         error("--resume and --init-from are mutually exclusive")
+    opts["device"] in ("cpu", "gpu") ||
+        error("Unknown --device '$(opts["device"])'. Expected: cpu, gpu")
     return opts
+end
+
+"""Resolve `--device` to a `:cpu`/`:gpu` symbol, falling back to `:cpu` if gpu
+was requested but no functional CUDA backend is available — same convention
+as `train_model.jl`'s `_resolve_device`."""
+function _resolve_device(requested::String)::Symbol
+    requested == "cpu" && return :cpu
+    if !CUDA.functional()
+        @warn "--device gpu requested but CUDA.functional() is false — falling back to cpu"
+        return :cpu
+    end
+    @info "Training on GPU: $(CUDA.name(CUDA.device()))"
+    return :gpu
+end
+
+"""Resolve `--minibatch` to a concrete size, defaulting to 256 on gpu / 32 on
+cpu when not given explicitly — same convention as `train_model.jl`'s
+`_resolve_batch`."""
+function _resolve_minibatch(requested::Union{Int, Nothing}, device::Symbol)::Int
+    isnothing(requested) || return requested
+    return device === :gpu ? 256 : 32
 end
 
 """Highest `iteration` field logged in `log_path`, or 0 if it doesn't exist
@@ -188,10 +227,13 @@ function main()
         isfile(episode_log_path) && rm(episode_log_path)
     end
 
-    rng = opts["seed"] === nothing ? Random.default_rng() : MersenneTwister(opts["seed"])
+    rng       = opts["seed"] === nothing ? Random.default_rng() : MersenneTwister(opts["seed"])
+    device    = _resolve_device(opts["device"])
+    minibatch = _resolve_minibatch(opts["minibatch"], device)
 
     policy, log = train_policy!(policy, env, train_config; val_config=val_config,
         iterations=opts["iterations"], eval_every=opts["eval_every"], lr=opts["lr"], rng=rng,
+        minibatch_size=minibatch, device=device,
         checkpoint_path=checkpoint_path,
         episode_log_path=episode_log_path,
         stop_file=joinpath(DATA_DIR, "STOP"),
@@ -200,7 +242,7 @@ function main()
         embed_dim=hp.embed_dim, macro_embed_dim=hp.macro_embed_dim,
         attn_heads=hp.attn_heads, critic_hidden=hp.critic_hidden)
 
-    save_training_log(log, joinpath(DATA_DIR, "training_log.json"))
+    save_policy_training_log(log, joinpath(DATA_DIR, "training_log.json"))
 
     @printf("\nDone. %d iterations, best return %.4f (iter %d)\n",
             log["iterations_run"], log["best_return"], log["best_iteration"])

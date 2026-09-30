@@ -116,10 +116,10 @@ export
     RolloutStep, collect_rollout, compute_gae, ppo_update!,
 
     # live
-    LiveTracker, start_episode!, make_live_callback,
+    LiveTracker, start_episode!, make_live_callback, start_update!, make_update_callback,
 
     # train
-    train_policy!, save_training_log,
+    train_policy!, save_policy_training_log,
 
     # universe
     UniverseEntry, build_candidate_universe, save_universe_snapshot, load_universe_snapshot

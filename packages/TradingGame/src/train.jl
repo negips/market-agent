@@ -46,6 +46,11 @@ on) using `train_config` as the (repeated, per iteration) training episode.
   `best_return` itself is NOT seeded from any prior run (also matching
   `StockSwingPredictor`): the first post-resume checkpoint write is
   unconditional, exactly as it is for a fresh run's first improvement.
+- `device`: `:cpu` (default) or `:gpu` — moves `policy` there once, up front
+  (same convention as `StockSwingPredictor.train!`). `collect_rollout`/
+  `ppo_update!` move each batch to match; checkpoints are always written from
+  a CPU copy regardless (`save_policy` does this internally), so `policy.bson`
+  stays portable across devices either way.
 
 # Returns
 `(policy, log)` — `policy` is always reloaded to its best-checkpointed weights
@@ -68,9 +73,11 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
                  live_path::String="",
                  live_every_bars::Int=5,
                  iteration_offset::Int=0,
+                 device::Symbol=:cpu,
                  embed_dim::Int=64, macro_embed_dim::Int=16, attn_heads::Int=4,
                  critic_hidden::Vector{Int}=[64, 32],
                  rng::AbstractRNG=Random.default_rng())
+    policy = _to_device(device)(policy)
     opt_state = Flux.setup(Flux.Adam(lr), policy)
     live_tracker = LiveTracker(path=live_path, every_bars=live_every_bars)
 
@@ -105,15 +112,18 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
 
         start_episode!(live_tracker; iteration=abs_iter, phase="train")
         buffer = collect_rollout(env, policy, train_config;
-                                  macro_cache=macro_cache, news_fn=news_fn, rng=rng,
+                                  macro_cache=macro_cache, news_fn=news_fn, rng=rng, device=device,
                                   live_cb=make_live_callback(live_tracker))
         train_return = sum(s.reward for s in buffer)
         train_value  = portfolio_value(env)   # env sits at the rollout's terminal state
 
+        start_update!(live_tracker; iteration=abs_iter, k_epochs=k_epochs,
+                       total_minibatches=k_epochs * cld(length(buffer), minibatch_size))
         stats = ppo_update!(policy, opt_state, buffer;
-                             k_epochs=k_epochs, minibatch_size=minibatch_size,
+                             k_epochs=k_epochs, minibatch_size=minibatch_size, device=device,
                              clip_eps=CLIP_EPS, value_loss_coef=VALUE_LOSS_COEF,
-                             entropy_coef=ENTROPY_COEF, gamma=GAMMA, gae_lambda=GAE_LAMBDA, rng=rng)
+                             entropy_coef=ENTROPY_COEF, gamma=GAMMA, gae_lambda=GAE_LAMBDA, rng=rng,
+                             verbose=true, progress_cb=make_update_callback(live_tracker, env))
 
         push!(log["train_return"], train_return)
         push!(log["train_final_value"], train_value)
@@ -129,7 +139,7 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
             start_episode!(live_tracker; iteration=abs_iter, phase="val")
             eval_buffer = collect_rollout(env, policy, val_config;
                                            macro_cache=macro_cache, news_fn=news_fn,
-                                           greedy=true, rng=rng,
+                                           greedy=true, rng=rng, device=device,
                                            live_cb=make_live_callback(live_tracker))
             val_return = sum(s.reward for s in eval_buffer)
             val_value  = portfolio_value(env)
@@ -193,8 +203,12 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
 end
 
 """Save the training log as JSON. Replaces Inf/NaN with null (JSON-safe),
-same convention as StockSwingPredictor's `save_training_log`."""
-function save_training_log(log::Dict, path::String)
+same convention as `StockSwingPredictor.save_training_log` — named
+differently (not `save_training_log`) because both packages export a
+function of that name; `using TradingGame, StockSwingPredictor` together
+(exactly the combo `scripts/train_trading_policy.jl` uses) makes the bare
+name ambiguous otherwise, same reason `train!` is `train_policy!` here."""
+function save_policy_training_log(log::Dict, path::String)
     open(path, "w") do io; JSON3.pretty(io, _sanitize_json(log)); end
 end
 

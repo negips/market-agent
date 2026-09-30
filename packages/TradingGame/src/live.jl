@@ -20,25 +20,42 @@ const LIVE_TRADES_CAP      = 100
 iterations (`start_episode!` resets the per-episode fields); `path=""`
 disables writing entirely (`make_live_callback` returns `nothing` for it)."""
 Base.@kwdef mutable struct LiveTracker
-    path         :: String
-    every_bars   :: Int = 5
-    iteration    :: Int = 0
-    phase        :: String = "train"
-    bar_count    :: Int = 0
-    value_curve  :: Vector{Dict{String, Any}} = Dict{String, Any}[]
-    trades       :: Vector{Dict{String, Any}} = Dict{String, Any}[]
-    started_at   :: String = ""
+    path             :: String
+    every_bars       :: Int = 5
+    iteration        :: Int = 0
+    phase            :: String = "train"
+    bar_count        :: Int = 0
+    value_curve      :: Vector{Dict{String, Any}} = Dict{String, Any}[]
+    trades           :: Vector{Dict{String, Any}} = Dict{String, Any}[]
+    started_at       :: String = ""
+    update_progress  :: Union{Nothing, Dict{String, Any}} = nothing
 end
 
 """Call at the start of each `collect_rollout` (before the rollout, not
-inside it) to clear the previous episode's trajectory and tag the new one."""
+inside it) to clear the previous episode's trajectory and tag the new one.
+Also clears `update_progress` — a fresh rollout means the previous
+iteration's PPO update (if any) is done."""
 function start_episode!(tracker::LiveTracker; iteration::Int, phase::String)
     tracker.iteration  = iteration
     tracker.phase      = phase
     tracker.bar_count  = 0
     empty!(tracker.value_curve)
     empty!(tracker.trades)
-    tracker.started_at = string(now(UTC))
+    tracker.started_at    = string(now(UTC))
+    tracker.update_progress = nothing
+    return nothing
+end
+
+"""Call at the start of `ppo_update!` (after the rollout it's training on) to
+tag the tracker as being in the gradient-update phase and reset progress."""
+function start_update!(tracker::LiveTracker; iteration::Int, k_epochs::Int, total_minibatches::Int)
+    tracker.iteration = iteration
+    tracker.phase      = "update"
+    tracker.update_progress = Dict{String, Any}(
+        "epoch" => 0, "k_epochs" => k_epochs,
+        "minibatch" => 0, "total_minibatches" => total_minibatches,
+        "loss" => 0.0,
+    )
     return nothing
 end
 
@@ -77,6 +94,24 @@ function make_live_callback(tracker::LiveTracker)
     end
 end
 
+"""Build the `progress_cb` closure `ppo_update!` (`ppo.jl`) calls after every
+minibatch. `env` is the rollout's terminal state (unchanged during the update
+phase — nothing about the portfolio moves while the network is training on
+already-collected data), reused here only so `_write_live_status` can still
+report it alongside the update progress. Returns `nothing` if `tracker.path`
+is empty, same convention as `make_live_callback`."""
+function make_update_callback(tracker::LiveTracker, env::TradingGameEnv)
+    isempty(tracker.path) && return nothing
+
+    return function (epoch::Int, minibatch::Int, total_minibatches::Int, loss::Real)
+        tracker.update_progress["epoch"]     = epoch
+        tracker.update_progress["minibatch"] = minibatch
+        tracker.update_progress["loss"]      = loss
+        _write_live_status(tracker, env)
+        return nothing
+    end
+end
+
 """Snapshot `env.portfolio.holdings` with current price and unrealised P&L —
 computed here (not stored on `Holding`) since it depends on the current bar."""
 function _holdings_snapshot(env::TradingGameEnv)
@@ -109,6 +144,7 @@ function _write_live_status(tracker::LiveTracker, env::TradingGameEnv)
         "holdings"        => _holdings_snapshot(env),
         "value_curve"     => tracker.value_curve,
         "recent_trades"   => tracker.trades,
+        "update_progress" => tracker.update_progress,
     )
     _write_atomic(tracker.path, status)
     return nothing

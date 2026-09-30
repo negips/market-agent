@@ -34,8 +34,18 @@
     font-size: 10px; text-transform: uppercase; letter-spacing: .05em; font-weight: 700;
     padding: 2px 9px; border-radius: 99px;
   }
-  .phase-train { background: rgba(79,142,247,.15); color: var(--accent); }
-  .phase-val   { background: rgba(61,214,140,.15); color: var(--green); }
+  .phase-train  { background: rgba(79,142,247,.15); color: var(--accent); }
+  .phase-val    { background: rgba(61,214,140,.15); color: var(--green); }
+  .phase-update { background: rgba(245,200,66,.15); color: var(--yellow); }
+
+  .update-bar {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 12px 20px; margin-bottom: 18px; display: flex; align-items: center; gap: 16px;
+  }
+  .update-bar .label { font-size: 12px; color: var(--text-dim); white-space: nowrap; }
+  .update-track { flex: 1; height: 6px; background: var(--surface2); border-radius: 99px; overflow: hidden; }
+  .update-fill { height: 100%; background: var(--yellow); border-radius: 99px; transition: width .3s ease; }
+  .update-bar .pct { font-family: var(--mono); font-size: 12px; color: var(--yellow); width: 40px; text-align: right; }
 
   .placeholder {
     background: var(--surface); border: 1px dashed var(--border); border-radius: var(--radius);
@@ -131,6 +141,7 @@ function revealLayout() {
   shown = true;
   document.getElementById('content').innerHTML = `
     <div class="status-bar" id="status-bar"></div>
+    <div class="update-bar" id="update-bar" style="display:none"></div>
 
     <div class="chart-card">
       <div class="chart-header">
@@ -177,6 +188,9 @@ function revealLayout() {
   `;
 }
 
+const PHASE_LABEL = { train: 'Training', val: 'Held-out eval', update: 'Updating policy' };
+const PHASE_CLASS  = { train: 'phase-train', val: 'phase-val', update: 'phase-update' };
+
 function renderStatus(s) {
   const bar = document.getElementById('status-bar');
   const age = (Date.now() - Date.parse(s.updated_at + 'Z')) / 1000;
@@ -188,7 +202,7 @@ function renderStatus(s) {
       <span class="status-label">${live ? 'Live' : 'Idle'}</span>
       <div class="status-sub">updated ${age < 60 ? Math.round(age) + 's ago' : Math.round(age/60) + 'm ago'}</div>
     </div>
-    <span class="phase-pill ${s.phase === 'val' ? 'phase-val' : 'phase-train'}">${s.phase === 'val' ? 'Held-out eval' : 'Training'}</span>
+    <span class="phase-pill ${PHASE_CLASS[s.phase] || 'phase-train'}">${PHASE_LABEL[s.phase] || s.phase}</span>
     <div class="status-metric"><div class="v">${s.iteration}</div><div class="l">Iteration</div></div>
     <div class="status-metric"><div class="v">${s.current_date}</div><div class="l">Sim. date</div></div>
     <div class="status-metric"><div class="v">${fmtRupee(s.portfolio_value)}</div><div class="l">Portfolio value</div></div>
@@ -196,6 +210,20 @@ function renderStatus(s) {
     <div class="status-metric"><div class="v">${fmtRupee(s.cash)}</div><div class="l">Spendable cash</div></div>
     <div class="status-metric"><div class="v">${fmtRupee(s.reserved_cash)}</div><div class="l">Reserved (settling)</div></div>
   `;
+
+  const updateBar = document.getElementById('update-bar');
+  if (s.phase === 'update' && s.update_progress) {
+    const p = s.update_progress;
+    const pct = p.total_minibatches > 0 ? Math.round(100 * p.minibatch / p.total_minibatches) : 0;
+    updateBar.style.display = 'flex';
+    updateBar.innerHTML = `
+      <div class="label">PPO update · epoch ${p.epoch}/${p.k_epochs} · minibatch ${p.minibatch}/${p.total_minibatches} · loss ${p.loss.toFixed(4)}</div>
+      <div class="update-track"><div class="update-fill" style="width:${pct}%"></div></div>
+      <div class="pct">${pct}%</div>
+    `;
+  } else {
+    updateBar.style.display = 'none';
+  }
 
   document.getElementById('value-chart-sub').textContent =
     `${s.holdings.length} position${s.holdings.length === 1 ? '' : 's'} held · episode started ${s.episode_started_at}Z`;

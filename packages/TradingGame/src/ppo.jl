@@ -14,6 +14,14 @@ joint, cash-constrained action space each step.
 
 using Flux, Random, Statistics
 
+"""Resolve `:cpu`/`:gpu` to Flux's `cpu`/`gpu` transfer functions — same
+convention as `StockSwingPredictor.train!`'s `_to_device`."""
+function _to_device(device::Symbol)
+    device === :cpu && return cpu
+    device === :gpu && return gpu
+    error("Unknown device :$device — expected :cpu or :gpu")
+end
+
 # ── Rollout ───────────────────────────────────────────────────────────────────────
 
 """One decision step's rollout record — everything `ppo_update!` needs to
@@ -55,13 +63,23 @@ the exploration and the matching stochastic log-probability).
 `live_cb`, when given, is called as `live_cb(env, result)` after every `step!`
 — a hook for streaming this episode's progress (portfolio value, holdings,
 trade events) to a live viewer (see `live.jl`); it never affects rollout
-mechanics or training and defaults to a no-op."""
+mechanics or training and defaults to a no-op.
+
+`device` moves each bar's single-observation batch to `:gpu` for the forward
+pass, then brings the (tiny, (3,N)-shaped) logits straight back to `:cpu` for
+sampling — `policy` itself is expected to already live on `device` (moved
+once in `train_policy!`, not per-call here). One bar at a time means the
+transfer overhead here is real (rollout can't be batched across time steps,
+since each bar's action depends on the simulator state left by the previous
+one) — `:gpu` mainly pays off in `ppo_update!`'s minibatched passes, not here."""
 function collect_rollout(env::TradingGameEnv, policy::ActorCriticPolicy, config::EpisodeConfig;
                           macro_cache::Union{Nothing, MacroCache}=nothing,
                           news_fn::Function=_zero_news,
                           greedy::Bool=false,
                           live_cb::Union{Nothing, Function}=nothing,
+                          device::Symbol=:cpu,
                           rng::AbstractRNG=Random.default_rng())::Vector{RolloutStep}
+    to_dev = _to_device(device)
     reset!(env, config)
     buffer = RolloutStep[]
 
@@ -69,8 +87,10 @@ function collect_rollout(env::TradingGameEnv, policy::ActorCriticPolicy, config:
     while !done
         obs   = assemble_observation(env; macro_cache=macro_cache, news_fn=news_fn)
         batch = stack_observations([obs])
-        action_logits, buy_weight_logit, value = policy(
-            batch.hourly, batch.news, batch.holding, batch.macro_ctx, batch.portfolio)
+        hourly, news, holding, macro_ctx, portfolio =
+            to_dev.((batch.hourly, batch.news, batch.holding, batch.macro_ctx, batch.portfolio))
+        action_logits, buy_weight_logit, value = policy(hourly, news, holding, macro_ctx, portfolio)
+        action_logits, buy_weight_logit, value = cpu(action_logits), cpu(buy_weight_logit), cpu(value)
 
         N = length(obs.candidates)
         probs = Flux.softmax(action_logits[:, :, 1]; dims=1)   # (3, N)
@@ -131,6 +151,28 @@ volatility regimes (see the TradingGame module docstring / plan's reward
 section; this supersedes normalising the raw reward, which advantage
 normalisation already subsumes for training-stability purposes).
 
+`device` moves each minibatch (observations, the action mask, and the
+advantage/return/old-logprob slices) to `:gpu` before the forward/backward
+pass — `policy`/`opt_state` are expected to already live on `device` (see
+`train_policy!`). This is the batched pass GPU support is actually for —
+unlike `collect_rollout`'s one-bar-at-a-time calls, minibatches here are as
+large as `minibatch_size`, which is where a GPU's throughput advantage shows
+up (see `packages/TradingGame/docs/tradinggame_scaling.tex` for measured
+memory/throughput at various batch sizes).
+
+This is normally the *silent* half of an iteration from the caller's point of
+view — `collect_rollout` steps the env bar by bar and can report per-bar
+progress, but here there's nothing to report except the minibatch loop
+itself, which for a full-scale run (N candidates × a multi-year window, one
+minibatch per ~32-256 decision steps) can run for minutes with zero output
+otherwise. `verbose=true` prints a `\r`-updating progress line (same
+`\r`-line convention as `StockSwingPredictor.train!`'s batch progress);
+`progress_cb`, if given, is called as `progress_cb(epoch, minibatch,
+total_minibatches, loss)` after every minibatch update — used by
+`train_policy!` to stream progress to `live_status.json` (see `live.jl`).
+Both default to off/nothing so direct/test callers (small buffers, no
+reason to want either) see no behaviour change.
+
 # Returns
 `Dict{String,Float32}` with `"loss"` (mean combined loss across all
 minibatch updates this call) for episode-log diagnostics.
@@ -140,9 +182,16 @@ function ppo_update!(policy::ActorCriticPolicy, opt_state, buffer::Vector{Rollou
                       clip_eps::Float64=CLIP_EPS, value_loss_coef::Float64=VALUE_LOSS_COEF,
                       entropy_coef::Float64=ENTROPY_COEF,
                       gamma::Float64=GAMMA, gae_lambda::Float64=GAE_LAMBDA,
+                      device::Symbol=:cpu,
+                      verbose::Bool=false,
+                      progress_cb::Union{Nothing, Function}=nothing,
                       rng::AbstractRNG=Random.default_rng())::Dict{String, Float32}
+    to_dev = _to_device(device)
     T = length(buffer)
     N = length(buffer[1].obs.candidates)
+    n_batches_per_epoch = cld(T, minibatch_size)
+    total_minibatches    = k_epochs * n_batches_per_epoch
+    progress_every        = max(1, total_minibatches ÷ 50)   # ~50 prints/writes over the whole call, any size
 
     rewards = Float32[s.reward  for s in buffer]
     values  = Float32[s.value   for s in buffer]
@@ -157,24 +206,26 @@ function ppo_update!(policy::ActorCriticPolicy, opt_state, buffer::Vector{Rollou
     total_loss = 0f0
     n_updates  = 0
 
-    for _ in 1:k_epochs
+    for epoch in 1:k_epochs
         order = shuffle(rng, 1:T)
         for start in 1:minibatch_size:T
             idxs = order[start:min(start + minibatch_size - 1, T)]
             B = length(idxs)
             batch = stack_observations(obs_all[idxs])
+            hourly, news, holding, macro_ctx, portfolio =
+                to_dev.((batch.hourly, batch.news, batch.holding, batch.macro_ctx, batch.portfolio))
 
             action_mask = zeros(Float32, 3, N, B)
             for (b, i) in enumerate(idxs), c in 1:N
                 action_mask[action_idx[i][c], c, b] = 1f0
             end
-            adv_b   = advantages[idxs]
-            ret_b   = returns[idxs]
-            oldlp_b = old_logprob[idxs]
+            action_mask = to_dev(action_mask)
+            adv_b   = to_dev(advantages[idxs])
+            ret_b   = to_dev(returns[idxs])
+            oldlp_b = to_dev(old_logprob[idxs])
 
             loss, grads = Flux.withgradient(policy) do m
-                action_logits, _, value = m(
-                    batch.hourly, batch.news, batch.holding, batch.macro_ctx, batch.portfolio)
+                action_logits, _, value = m(hourly, news, holding, macro_ctx, portfolio)
 
                 logp_all = Flux.logsoftmax(action_logits; dims=1)
                 probs    = Flux.softmax(action_logits; dims=1)
@@ -193,8 +244,17 @@ function ppo_update!(policy::ActorCriticPolicy, opt_state, buffer::Vector{Rollou
             Flux.update!(opt_state, policy, grads[1])
             total_loss += loss
             n_updates  += 1
+
+            due = n_updates % progress_every == 0 || n_updates == total_minibatches
+            if due && verbose
+                print("\r  PPO update | epoch $epoch/$k_epochs | minibatch $n_updates/$total_minibatches | " *
+                      "loss $(round(loss, sigdigits=4))    ")
+                flush(stdout)
+            end
+            due && progress_cb !== nothing && progress_cb(epoch, n_updates, total_minibatches, Float64(loss))
         end
     end
+    verbose && print("\r" * " "^88 * "\r")   # clear the progress line
 
     return Dict("loss" => total_loss / n_updates)
 end
