@@ -282,11 +282,12 @@ function renderStatus(s) {
       data: { datasets: [
         { label: 'Portfolio value', data: points, borderColor: '#4f8ef7', borderWidth: 2, pointRadius: 0, tension: .15 },
         { label: 'Initial cash', data: baseline, borderColor: 'rgba(148,163,184,.4)', borderDash: [4,4], borderWidth: 1.5, pointRadius: 0 },
-        { label: 'Buy', data: buyPoints, showLine: false, pointStyle: 'triangle', rotation: 0,
-          pointRadius: 6, pointHoverRadius: 8, backgroundColor: '#3dd68c', borderColor: '#3dd68c',
+        { label: 'Buy', data: buyPoints, showLine: false, pointStyle: 'circle',
+          pointRadius: 3, pointHoverRadius: 5, backgroundColor: '#3dd68c', borderColor: '#3dd68c',
           hidden: !loadShowTrades() },
-        { label: 'Sell', data: sellPoints, showLine: false, pointStyle: 'triangle', rotation: 180,
-          pointRadius: 6, pointHoverRadius: 8, backgroundColor: '#f76f6f', borderColor: '#f76f6f',
+        { label: 'Sell', data: sellPoints, showLine: false, pointStyle: 'crossRot',
+          pointRadius: 4, pointHoverRadius: 6, pointBorderWidth: 2,
+          backgroundColor: '#f76f6f', borderColor: '#f76f6f',
           hidden: !loadShowTrades() },
       ]},
       options: {

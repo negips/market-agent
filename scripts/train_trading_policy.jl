@@ -22,6 +22,7 @@ Outputs (under website/data/trading_game/):
   policy.bson          — best checkpoint (by held-out return)
   episode_log.jsonl     — per-iteration train/val return, streamed
   live_status.json      — current episode's live trajectory, with --live (default on)
+  run_config.json        — effective training-config flags, for --resume (see below)
 
 To stop cleanly:   touch website/data/trading_game/STOP        (checkpoint saved)
 To stop hard:      touch website/data/trading_game/STOP_NOW    (no save)
@@ -59,6 +60,17 @@ given explicitly (larger batches better amortise transfer/kernel-launch
 overhead) — same convention as train_model.jl's batch-size default. Note
 collect_rollout's one-bar-at-a-time forward passes see much less GPU benefit
 than ppo_update!'s minibatched ones — see ppo.jl's docstrings.
+
+Every run writes its effective --initial-cash/--val-days/--eval-every/--lr/
+--seed/--device/--minibatch into run_config.json (alongside policy.bson).
+--resume reads it back and uses those values for any of those flags NOT
+also given explicitly on the resume command line — an explicit flag on the
+command line always wins over the saved value. This is what makes a bare
+`--resume` reproduce the original run's config instead of silently reverting
+to script defaults (e.g. --val-days back to 60, corrupting the train/val
+split against what the checkpoint was actually trained on). Delete
+run_config.json (or pass the flags explicitly) to intentionally change
+config on resume.
 """
 
 using TradingGame, StockSwingPredictor, Dates, Printf, JSON3, Random, CUDA
@@ -67,6 +79,12 @@ const REPO_ROOT   = joinpath(@__DIR__, "..")
 const DATA_DIR    = joinpath(REPO_ROOT, "website", "data", "trading_game")
 const CACHE_FILE  = joinpath(REPO_ROOT, "website", "data", "inference_cache.bson")
 const UNIVERSE_FILE = joinpath(DATA_DIR, "universe_latest.json")
+
+"""Opts persisted to/restored from `run_config.json` on `--resume` — training
+config that must stay consistent across a resumed run, not runtime-only
+flags like `--live`/`--resume`/`--init-from`/`--iterations` (the latter means
+"how many more" each time by design, so it's never something to restore)."""
+const RESUMABLE_KEYS = ("initial_cash", "val_days", "eval_every", "lr", "seed", "device", "minibatch")
 
 function parse_args()
     opts = Dict{String, Any}(
@@ -82,6 +100,7 @@ function parse_args()
         "device"      => "cpu",
         "minibatch"   => nothing,
     )
+    explicit = Set{String}()
     i = 1
     while i <= length(ARGS)
         a = ARGS[i]
@@ -109,17 +128,17 @@ Options:
   --minibatch N         PPO minibatch size (default: 256 on gpu, 32 on cpu)
 """)
             exit(0)
-        elseif a == "--iterations";   opts["iterations"]   = parse(Int, ARGS[i+1]); i += 2
-        elseif a == "--initial-cash"; opts["initial_cash"] = parse(Float64, ARGS[i+1]); i += 2
-        elseif a == "--val-days";     opts["val_days"]     = parse(Int, ARGS[i+1]); i += 2
-        elseif a == "--eval-every";   opts["eval_every"]   = parse(Int, ARGS[i+1]); i += 2
-        elseif a == "--lr";           opts["lr"]           = parse(Float32, ARGS[i+1]); i += 2
+        elseif a == "--iterations";   opts["iterations"]   = parse(Int, ARGS[i+1]); push!(explicit, "iterations"); i += 2
+        elseif a == "--initial-cash"; opts["initial_cash"] = parse(Float64, ARGS[i+1]); push!(explicit, "initial_cash"); i += 2
+        elseif a == "--val-days";     opts["val_days"]     = parse(Int, ARGS[i+1]); push!(explicit, "val_days"); i += 2
+        elseif a == "--eval-every";   opts["eval_every"]   = parse(Int, ARGS[i+1]); push!(explicit, "eval_every"); i += 2
+        elseif a == "--lr";           opts["lr"]           = parse(Float32, ARGS[i+1]); push!(explicit, "lr"); i += 2
         elseif a == "--no-live";      opts["live"]         = false; i += 1
         elseif a == "--resume";       opts["resume"]       = true; i += 1
         elseif a == "--init-from";    opts["init_from"]    = ARGS[i+1]; i += 2
-        elseif a == "--seed";         opts["seed"]         = parse(Int, ARGS[i+1]); i += 2
-        elseif a == "--device";       opts["device"]       = ARGS[i+1]; i += 2
-        elseif a == "--minibatch";    opts["minibatch"]    = parse(Int, ARGS[i+1]); i += 2
+        elseif a == "--seed";         opts["seed"]         = parse(Int, ARGS[i+1]); push!(explicit, "seed"); i += 2
+        elseif a == "--device";       opts["device"]       = ARGS[i+1]; push!(explicit, "device"); i += 2
+        elseif a == "--minibatch";    opts["minibatch"]    = parse(Int, ARGS[i+1]); push!(explicit, "minibatch"); i += 2
         else; i += 1
         end
     end
@@ -127,7 +146,7 @@ Options:
         error("--resume and --init-from are mutually exclusive")
     opts["device"] in ("cpu", "gpu") ||
         error("Unknown --device '$(opts["device"])'. Expected: cpu, gpu")
-    return opts
+    return opts, explicit
 end
 
 """Resolve `--device` to a `:cpu`/`:gpu` symbol, falling back to `:cpu` if gpu
@@ -167,9 +186,51 @@ function _last_completed_iteration(log_path::String)::Int
     return max_iter
 end
 
+"""Write the `RESUMABLE_KEYS` subset of `opts` to `path` as JSON — the
+*requested* values (e.g. `device="gpu"` even if it later falls back to cpu,
+`minibatch=nothing` if left on auto), not resolved/derived ones, so a later
+`--resume` re-derives exactly the same way the original run did."""
+function save_run_config(opts::Dict, path::String)
+    open(path, "w") do io
+        JSON3.pretty(io, Dict(k => opts[k] for k in RESUMABLE_KEYS))
+    end
+end
+
+"""Fill in any `RESUMABLE_KEYS` entry of `opts` NOT in `explicit` from the
+saved `run_config.json` at `path`, so `--resume` reproduces the original
+run's config instead of silently reverting to script defaults. A flag given
+explicitly on this invocation always overrides the saved value. No-op
+(with a warning) if `path` doesn't exist — an old checkpoint predating this
+feature, or one someone moved by hand."""
+function load_run_config!(opts::Dict, explicit::Set{String}, path::String)
+    if !isfile(path)
+        @warn "--resume: no saved run config at $path — using CLI/defaults for any flag not explicitly given"
+        return nothing
+    end
+    saved = JSON3.read(read(path, String))
+    for k in RESUMABLE_KEYS
+        k in explicit && continue
+        haskey(saved, Symbol(k)) || continue
+        v = saved[Symbol(k)]
+        if v === nothing
+            opts[k] = k in ("seed", "minibatch") ? nothing : opts[k]
+        elseif k == "lr"
+            opts[k] = Float32(v)
+        elseif k in ("val_days", "eval_every", "seed", "minibatch")
+            opts[k] = Int(v)
+        else
+            opts[k] = v
+        end
+    end
+    @info "Loaded saved run config from $path for flags not given explicitly"
+    return nothing
+end
+
 function main()
-    opts = parse_args()
+    opts, explicit = parse_args()
     mkpath(DATA_DIR)
+    config_path = joinpath(DATA_DIR, "run_config.json")
+    opts["resume"] && load_run_config!(opts, explicit, config_path)
 
     isfile(CACHE_FILE) || error(
         "Not found: $CACHE_FILE\nRun: julia --project=packages/StockSwingPredictor scripts/build_cache.jl")
@@ -230,6 +291,8 @@ function main()
     rng       = opts["seed"] === nothing ? Random.default_rng() : MersenneTwister(opts["seed"])
     device    = _resolve_device(opts["device"])
     minibatch = _resolve_minibatch(opts["minibatch"], device)
+
+    save_run_config(opts, config_path)
 
     policy, log = train_policy!(policy, env, train_config; val_config=val_config,
         iterations=opts["iterations"], eval_every=opts["eval_every"], lr=opts["lr"], rng=rng,

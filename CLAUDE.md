@@ -539,12 +539,22 @@ julia --project=packages/TradingGame scripts/train_trading_policy.jl --device gp
 Prerequisites: `inference_cache.bson` (`build_cache.jl`) and
 `universe_latest.json` (`build_universe_snapshot.jl`).
 Outputs (under `website/data/trading_game/`): `policy.bson`, `episode_log.jsonl`,
-`live_status.json`. Stop cleanly with `touch website/data/trading_game/STOP`
+`live_status.json`, `run_config.json`. Stop cleanly with `touch website/data/trading_game/STOP`
 (checkpoint saved) or hard-stop with `STOP_NOW` (no save), same convention as
 `train_model.jl`. To restart after either: re-run with `--resume` — loads
 `policy.bson` instead of a fresh policy and continues `episode_log.jsonl`'s
 iteration numbering (`--iterations` then means "how many more", not a new
 total), same `--resume` convention as `train_model.jl`.
+
+Every run writes its effective `--initial-cash`/`--val-days`/`--eval-every`/
+`--lr`/`--seed`/`--device`/`--minibatch` to `run_config.json`. `--resume` reads
+it back and applies those values for any of those flags not *also* given
+explicitly on the resume command line — an explicit flag always wins over the
+saved one. This is what makes a bare `--resume` reproduce the original run's
+config instead of silently reverting to script defaults (e.g. `--val-days`
+snapping back to 60, corrupting the train/val split relative to what the
+checkpoint was actually trained on). Delete `run_config.json`, or pass the
+flags explicitly, to intentionally change config on resume.
 
 `--seed N` makes a fresh policy's initial weights reproducible
 (`ActorCriticPolicy(seed=...)`, via `Random.seed!`) and also seeds the PPO
