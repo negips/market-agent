@@ -60,6 +60,11 @@
   .chart-header { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 6px; }
   .chart-title { font-size: 13px; font-weight: 600; color: var(--text); }
   .chart-sub { font-size: 11.5px; color: var(--muted); }
+  .trade-toggle {
+    display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-dim);
+    cursor: pointer; user-select: none; white-space: nowrap;
+  }
+  .trade-toggle input { accent-color: var(--accent); cursor: pointer; }
   .canvas-wrap { position: relative; height: 260px; margin-top: 14px; }
   .canvas-wrap.small { height: 180px; }
 
@@ -79,7 +84,7 @@
   .trade-buy         { background: rgba(61,214,140,.12); color: var(--green); }
   .trade-sell        { background: rgba(245,200,66,.12); color: var(--yellow); }
   .trade-forced_exit { background: rgba(247,111,111,.12); color: var(--red); }
-  .trade-date { color: var(--muted); font-size: 10.5px; width: 76px; flex-shrink: 0; font-family: var(--mono); }
+  .trade-date { color: var(--muted); font-size: 10.5px; width: 90px; flex-shrink: 0; font-family: var(--mono); }
   .trade-sym { font-weight: 600; flex: 1; }
   .trade-amt { font-family: var(--mono); color: var(--text-dim); font-size: 11.5px; }
 
@@ -118,6 +123,13 @@ const LOG_URL  = 'data/trading_game/episode_log.jsonl';
 let shown = false;
 let valueChart = null, iterChart = null;
 
+function loadShowTrades() {
+  try { return localStorage.getItem('tgLiveShowTrades') !== 'off'; } catch { return true; }
+}
+function saveShowTrades(v) {
+  try { localStorage.setItem('tgLiveShowTrades', v ? 'on' : 'off'); } catch {}
+}
+
 async function fetchJSON(url) {
   const r = await fetch(url + '?t=' + Date.now(), { cache: 'no-store' });
   if (!r.ok) throw new Error('fetch failed: ' + url);
@@ -136,6 +148,13 @@ function fmtRupee(v) {
   return '₹' + Math.round(v).toLocaleString('en-IN');
 }
 
+function fmtTradeStamp(t) {
+  const [datePart, timePart] = (t.t && t.t.includes('T')) ? t.t.split('T') : [t.date, null];
+  const [y, m, d] = datePart.split('-');
+  const dmy = `${d}/${m}/${y.slice(2)}`;
+  return timePart ? `${dmy}-${timePart.slice(0, 5)}` : dmy;
+}
+
 function revealLayout() {
   if (shown) return;
   shown = true;
@@ -146,7 +165,12 @@ function revealLayout() {
     <div class="chart-card">
       <div class="chart-header">
         <div class="chart-title">Current episode — portfolio value</div>
-        <div class="chart-sub" id="value-chart-sub"></div>
+        <div style="display:flex; align-items:center; gap:14px">
+          <div class="chart-sub" id="value-chart-sub"></div>
+          <label class="trade-toggle">
+            <input type="checkbox" id="show-trades-toggle" checked> Show trades
+          </label>
+        </div>
       </div>
       <div class="canvas-wrap"><canvas id="value-chart"></canvas></div>
     </div>
@@ -186,6 +210,16 @@ function revealLayout() {
       <div class="canvas-wrap"><canvas id="iter-chart"></canvas></div>
     </div>
   `;
+
+  const toggle = document.getElementById('show-trades-toggle');
+  toggle.checked = loadShowTrades();
+  toggle.addEventListener('change', () => {
+    saveShowTrades(toggle.checked);
+    if (!valueChart) return;
+    valueChart.setDatasetVisibility(2, toggle.checked);   // Buy
+    valueChart.setDatasetVisibility(3, toggle.checked);   // Sell
+    valueChart.update();
+  });
 }
 
 const PHASE_LABEL = { train: 'Training', val: 'Held-out eval', update: 'Updating policy' };
@@ -230,16 +264,34 @@ function renderStatus(s) {
 
   const points   = s.value_curve.map(p => ({ x: p.t, y: p.value }));
   const baseline = s.value_curve.map(p => ({ x: p.t, y: s.initial_cash }));
+
+  // Trades happen on a decision bar, which always has a matching value_curve
+  // point at the same timestamp (the trade executes, THEN that bar's
+  // portfolio value is marked and recorded) — so every trade maps onto the
+  // line exactly, no interpolation needed. A trade whose bar has already
+  // aged out of value_curve (shouldn't happen at LIVE_VALUE_CURVE_CAP's size,
+  // but defensively) is just dropped rather than plotted at a wrong height.
+  const valueByT = new Map(s.value_curve.map(p => [p.t, p.value]));
+  const toPoint  = (t) => ({ x: t.t, y: valueByT.get(t.t), trade: t });
+  const buyPoints  = s.recent_trades.filter(t => t.kind === 'buy').map(toPoint).filter(p => p.y !== undefined);
+  const sellPoints = s.recent_trades.filter(t => t.kind !== 'buy').map(toPoint).filter(p => p.y !== undefined);
+
   if (!valueChart) {
     valueChart = new Chart(document.getElementById('value-chart'), {
       type: 'line',
       data: { datasets: [
         { label: 'Portfolio value', data: points, borderColor: '#4f8ef7', borderWidth: 2, pointRadius: 0, tension: .15 },
         { label: 'Initial cash', data: baseline, borderColor: 'rgba(148,163,184,.4)', borderDash: [4,4], borderWidth: 1.5, pointRadius: 0 },
+        { label: 'Buy', data: buyPoints, showLine: false, pointStyle: 'triangle', rotation: 0,
+          pointRadius: 6, pointHoverRadius: 8, backgroundColor: '#3dd68c', borderColor: '#3dd68c',
+          hidden: !loadShowTrades() },
+        { label: 'Sell', data: sellPoints, showLine: false, pointStyle: 'triangle', rotation: 180,
+          pointRadius: 6, pointHoverRadius: 8, backgroundColor: '#f76f6f', borderColor: '#f76f6f',
+          hidden: !loadShowTrades() },
       ]},
       options: {
         responsive: true, maintainAspectRatio: false,
-        interaction: { mode: 'index', intersect: false },
+        interaction: { mode: 'nearest', axis: 'x', intersect: false },
         scales: {
           x: {
             type: 'time',
@@ -256,13 +308,21 @@ function renderStatus(s) {
         },
         plugins: {
           legend: { display: true, position: 'top', align: 'end', labels: { boxWidth: 18, boxHeight: 2, color: '#94a3b8', font: { size: 11 } } },
-          tooltip: { callbacks: { label: (item) => `${item.dataset.label}: ${fmtRupee(item.parsed.y)}` } },
+          tooltip: { callbacks: { label: (item) => {
+            if (item.raw && item.raw.trade) {
+              const t = item.raw.trade;
+              return `${t.kind === 'forced_exit' ? 'FORCED EXIT' : t.kind.toUpperCase()} ${t.symbol}: ${t.quantity.toFixed(0)} @ ${fmtRupee(t.price)}`;
+            }
+            return `${item.dataset.label}: ${fmtRupee(item.parsed.y)}`;
+          } } },
         },
       },
     });
   } else {
     valueChart.data.datasets[0].data = points;
     valueChart.data.datasets[1].data = baseline;
+    valueChart.data.datasets[2].data = buyPoints;
+    valueChart.data.datasets[3].data = sellPoints;
     valueChart.update('none');
   }
 
@@ -281,7 +341,7 @@ function renderStatus(s) {
   document.getElementById('trade-feed').innerHTML = trades.length ? trades.map(t => `
     <div class="trade-row">
       <span class="trade-kind trade-${t.kind}">${t.kind === 'forced_exit' ? 'forced' : t.kind}</span>
-      <span class="trade-date">${t.date}</span>
+      <span class="trade-date">${fmtTradeStamp(t)}</span>
       <span class="trade-sym">${esc(t.symbol)}</span>
       <span class="trade-amt">${t.quantity.toFixed(0)} shares @ ${fmtRupee(t.price)}, for ${fmtRupee(t.notional)}</span>
     </div>`).join('') : `<div class="na" style="padding:14px">No trades yet this episode</div>`;

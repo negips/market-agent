@@ -13,8 +13,22 @@ for `nse_companies_latest.json` etc.
 
 using Dates, JSON3
 
-const LIVE_VALUE_CURVE_CAP = 2000   # ~1 full episode at hourly cadence; oldest points drop first
-const LIVE_TRADES_CAP      = 100
+"""Safety ceiling on `LiveTracker.value_curve`, not a display window — a full
+5-year training episode at hourly cadence is ~8,600 bars, so this only exists
+to bound memory/JSON size against a pathological config (e.g. a decades-long
+window), never expected to bind in practice. It must stay well above any real
+episode length: capping it near or below one means the chart's oldest points
+(including the episode's actual start) get evicted mid-run, which is exactly
+the "starting date keeps vanishing" bug this constant used to cause."""
+const LIVE_VALUE_CURVE_CAP = 20_000
+
+"""Same safety-ceiling reasoning as `LIVE_VALUE_CURVE_CAP` — not a display
+window. A 60-candidate joint policy trading over an ~8,600-bar episode can
+easily produce more than a few hundred buy/sell events, and both the "Recent
+decisions" feed and the buy/sell markers on the portfolio-value chart
+(`website/tradinggamelive.html`) read the same `tracker.trades` list, so a
+cap that actually binds silently drops the earliest trades from *both*."""
+const LIVE_TRADES_CAP = 50_000
 
 """Mutable, episode-spanning state for one live-viewer feed. Reused across
 iterations (`start_episode!` resets the per-episode fields); `path=""`

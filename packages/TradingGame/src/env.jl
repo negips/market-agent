@@ -156,6 +156,7 @@ function _execute_sell!(env::TradingGameEnv, h::Holding, date_idx::Int; reason::
         "kind" => reason, "symbol" => h.symbol, "price" => price,
         "quantity" => h.quantity, "notional" => proceeds, "fee" => fee,
         "date" => string(env.current_date),
+        "t"    => string(env.cache.hourly_datetimes[env.current_hour_idx]),
     )
 end
 
@@ -207,9 +208,9 @@ function _apply_actions!(env::TradingGameEnv, resolved::Vector{ResolvedTrade}, d
                 "kind" => "buy", "symbol" => symbol, "price" => price,
                 "quantity" => qty, "notional" => notional, "fee" => fee,
                 "date" => string(env.current_date),
+                "t"    => string(env.cache.hourly_datetimes[env.current_hour_idx]),
             ))
         end
     end
     return events
-    return nothing
 end
