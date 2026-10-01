@@ -582,6 +582,19 @@ call dominate the tiny per-call compute). `--device gpu` therefore only
 accelerates `ppo_update!`'s minibatched passes, where batching actually
 helps.
 
+### training_status.jl
+
+One-shot, read-only snapshot of the current `train_trading_policy.jl` run —
+process status, `run_config.json`, `live_status.json` (iteration, phase,
+portfolio value, PPO update progress), and the last 5 logged iterations from
+`episode_log.jsonl` with their rollout/val/update timing breakdown. No
+arguments, no prompts; prints and exits. Meant for a quick check from outside
+a full session (e.g. Remote Control on the mobile app).
+
+```bash
+julia --project=packages/TradingGame scripts/training_status.jl
+```
+
 ### Website
 
 The `website/` folder is a static multi-page site with a shared dark-theme sidebar.
