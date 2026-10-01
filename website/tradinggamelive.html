@@ -239,6 +239,7 @@ function renderStatus(s) {
     <span class="phase-pill ${PHASE_CLASS[s.phase] || 'phase-train'}">${PHASE_LABEL[s.phase] || s.phase}</span>
     <div class="status-metric"><div class="v">${s.iteration}</div><div class="l">Iteration</div></div>
     <div class="status-metric"><div class="v">${s.current_date}</div><div class="l">Sim. date</div></div>
+    <div class="status-metric"><div class="v">${s.n_candidates ?? '—'}</div><div class="l">Universe</div></div>
     <div class="status-metric"><div class="v">${fmtRupee(s.portfolio_value)}</div><div class="l">Portfolio value</div></div>
     <div class="status-metric"><div class="v ${pnlCls}">${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%</div><div class="l">vs. initial cash</div></div>
     <div class="status-metric"><div class="v">${fmtRupee(s.cash)}</div><div class="l">Spendable cash</div></div>

@@ -556,6 +556,12 @@ snapping back to 60, corrupting the train/val split relative to what the
 checkpoint was actually trained on). Delete `run_config.json`, or pass the
 flags explicitly, to intentionally change config on resume.
 
+`run_config.json` also records `n_candidates` — how many companies
+`universe_latest.json` held for that run (informational only, not restored
+on `--resume`; the candidate universe always comes from `universe_latest.json`
+itself at load time) — a quick way to see what universe size a checkpoint was
+actually trained against.
+
 `--seed N` makes a fresh policy's initial weights reproducible
 (`ActorCriticPolicy(seed=...)`, via `Random.seed!`) and also seeds the PPO
 rollout's action sampling. `--init-from PATH` is a *fresh* run (iteration 1,

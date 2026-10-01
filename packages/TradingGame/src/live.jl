@@ -209,6 +209,7 @@ function _write_live_status(tracker::LiveTracker, env::TradingGameEnv)
         "episode_started_at" => tracker.started_at,
         "updated_at"      => string(now(UTC)),
         "current_date"    => string(env.current_date),
+        "n_candidates"    => length(env.candidate_order),
         "done"            => env.current_hour_idx >= env.end_hour_idx,
         "portfolio_value" => portfolio_value(env),
         "cash"            => env.portfolio.cash,

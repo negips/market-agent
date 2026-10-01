@@ -193,10 +193,18 @@ end
 """Write the `RESUMABLE_KEYS` subset of `opts` to `path` as JSON — the
 *requested* values (e.g. `device="gpu"` even if it later falls back to cpu,
 `minibatch=nothing` if left on auto), not resolved/derived ones, so a later
-`--resume` re-derives exactly the same way the original run did."""
-function save_run_config(opts::Dict, path::String)
+`--resume` re-derives exactly the same way the original run did.
+
+`n_candidates` is informational only (not a `RESUMABLE_KEYS` entry — nothing
+reads it back on `--resume`, since the candidate universe always comes from
+`universe_latest.json` at load time, not from this file): how many companies
+`UNIVERSE_FILE` held for *this* run, so `run_config.json` is a quick way to
+see what universe size a checkpoint was actually trained against without
+cross-referencing `universe_latest.json`'s own `generated_at`/history."""
+function save_run_config(opts::Dict, path::String, n_candidates::Int)
     open(path, "w") do io
-        JSON3.pretty(io, Dict(k => opts[k] for k in RESUMABLE_KEYS))
+        JSON3.pretty(io, merge(Dict(k => opts[k] for k in RESUMABLE_KEYS),
+                                Dict("n_candidates" => n_candidates)))
     end
 end
 
@@ -296,7 +304,7 @@ function main()
     device    = _resolve_device(opts["device"])
     minibatch = _resolve_minibatch(opts["minibatch"], device)
 
-    save_run_config(opts, config_path)
+    save_run_config(opts, config_path, length(universe))
 
     policy, log = train_policy!(policy, env, train_config; val_config=val_config,
         iterations=opts["iterations"], eval_every=opts["eval_every"], lr=opts["lr"], rng=rng,
