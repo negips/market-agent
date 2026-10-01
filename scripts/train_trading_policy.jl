@@ -57,9 +57,13 @@ cases.
 CUDA.functional() (falls back to cpu with a warning if not, same as
 train_model.jl). --minibatch defaults to 256 on gpu / 32 on cpu when not
 given explicitly (larger batches better amortise transfer/kernel-launch
-overhead) — same convention as train_model.jl's batch-size default. Note
-collect_rollout's one-bar-at-a-time forward passes see much less GPU benefit
-than ppo_update!'s minibatched ones — see ppo.jl's docstrings.
+overhead) — same convention as train_model.jl's batch-size default.
+collect_rollout always runs its own forward pass on CPU regardless of
+--device — its one-bar-at-a-time calls measured roughly 10x SLOWER on GPU
+than CPU for this network (host round-trip + 120 individual GRU-step kernel
+launches per call dominate over the tiny per-call compute), so --device gpu
+only accelerates ppo_update!'s minibatched passes, where batching actually
+helps — see ppo.jl's docstrings.
 
 Every run writes its effective --initial-cash/--val-days/--eval-every/--lr/
 --seed/--device/--minibatch into run_config.json (alongside policy.bson).

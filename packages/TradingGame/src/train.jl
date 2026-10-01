@@ -47,10 +47,14 @@ on) using `train_config` as the (repeated, per iteration) training episode.
   `StockSwingPredictor`): the first post-resume checkpoint write is
   unconditional, exactly as it is for a fresh run's first improvement.
 - `device`: `:cpu` (default) or `:gpu` — moves `policy` there once, up front
-  (same convention as `StockSwingPredictor.train!`). `collect_rollout`/
-  `ppo_update!` move each batch to match; checkpoints are always written from
-  a CPU copy regardless (`save_policy` does this internally), so `policy.bson`
-  stays portable across devices either way.
+  (same convention as `StockSwingPredictor.train!`), and `ppo_update!`'s
+  minibatched passes move each batch to match. `collect_rollout` always runs
+  its own forward pass on CPU regardless of `device` — see its docstring;
+  one-bar-at-a-time GPU calls measured roughly 10x slower than CPU for this
+  workload, so GPU is reserved for `ppo_update!` where batching actually
+  helps. Checkpoints are always written from a CPU copy regardless
+  (`save_policy` does this internally), so `policy.bson` stays portable
+  across devices either way.
 
 # Returns
 `(policy, log)` — `policy` is always reloaded to its best-checkpointed weights
@@ -112,7 +116,7 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
 
         start_episode!(live_tracker; iteration=abs_iter, phase="train")
         buffer = collect_rollout(env, policy, train_config;
-                                  macro_cache=macro_cache, news_fn=news_fn, rng=rng, device=device,
+                                  macro_cache=macro_cache, news_fn=news_fn, rng=rng,
                                   live_cb=make_live_callback(live_tracker))
         train_return = sum(s.reward for s in buffer)
         train_value  = portfolio_value(env)   # env sits at the rollout's terminal state
@@ -139,7 +143,7 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
             start_episode!(live_tracker; iteration=abs_iter, phase="val")
             eval_buffer = collect_rollout(env, policy, val_config;
                                            macro_cache=macro_cache, news_fn=news_fn,
-                                           greedy=true, rng=rng, device=device,
+                                           greedy=true, rng=rng,
                                            live_cb=make_live_callback(live_tracker))
             val_return = sum(s.reward for s in eval_buffer)
             val_value  = portfolio_value(env)

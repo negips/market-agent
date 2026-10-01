@@ -65,21 +65,32 @@ the exploration and the matching stochastic log-probability).
 trade events) to a live viewer (see `live.jl`); it never affects rollout
 mechanics or training and defaults to a no-op.
 
-`device` moves each bar's single-observation batch to `:gpu` for the forward
-pass, then brings the (tiny, (3,N)-shaped) logits straight back to `:cpu` for
-sampling — `policy` itself is expected to already live on `device` (moved
-once in `train_policy!`, not per-call here). One bar at a time means the
-transfer overhead here is real (rollout can't be batched across time steps,
-since each bar's action depends on the simulator state left by the previous
-one) — `:gpu` mainly pays off in `ppo_update!`'s minibatched passes, not here."""
+Always runs its forward pass on CPU, regardless of `train_policy!`'s
+`--device` — measured directly (see `packages/TradingGame/docs/` benchmark
+notes): a single-bar (batch=1) forward pass through `hourly_encoder`'s
+120-step GRU costs ~9.5ms on CPU, but the same call on GPU pays a host
+round-trip plus 120 individual kernel launches for a batch this tiny, which
+in practice runs roughly an order of magnitude SLOWER than CPU, not faster —
+confirming what the old docstring here only warned about qualitatively. A
+rollout is ~9,000+ such calls (one per hourly bar), so this is the single
+biggest lever on rollout wall-clock time. If `policy` lives on GPU (trained
+with `--device gpu`), a CPU copy is taken once up front (`cpu(policy)`,
+*outside* the per-bar loop) and reused for the whole rollout — cheap relative
+to ~9,000 avoided host round-trips, and correct: `ActorCriticPolicy`'s `GRU`
+layers are stateless across calls when fed a full sequence each time (no
+`Flux.reset!` needed — verified: calling a `Flux.GRU` twice with the same 3D
+input gives identical output, confirming no hidden state persists between
+calls here), so a fresh CPU snapshot of the current weights behaves
+identically to calling the live GPU-resident `policy` directly. GPU stays
+reserved for `ppo_update!`'s large minibatched passes, where it's the
+workload that actually benefits (see `ppo_update!`'s docstring)."""
 function collect_rollout(env::TradingGameEnv, policy::ActorCriticPolicy, config::EpisodeConfig;
                           macro_cache::Union{Nothing, MacroCache}=nothing,
                           news_fn::Function=_zero_news,
                           greedy::Bool=false,
                           live_cb::Union{Nothing, Function}=nothing,
-                          device::Symbol=:cpu,
                           rng::AbstractRNG=Random.default_rng())::Vector{RolloutStep}
-    to_dev = _to_device(device)
+    policy_cpu = cpu(policy)
     reset!(env, config)
     buffer = RolloutStep[]
 
@@ -87,10 +98,8 @@ function collect_rollout(env::TradingGameEnv, policy::ActorCriticPolicy, config:
     while !done
         obs   = assemble_observation(env; macro_cache=macro_cache, news_fn=news_fn)
         batch = stack_observations([obs])
-        hourly, news, holding, macro_ctx, portfolio =
-            to_dev.((batch.hourly, batch.news, batch.holding, batch.macro_ctx, batch.portfolio))
-        action_logits, buy_weight_logit, value = policy(hourly, news, holding, macro_ctx, portfolio)
-        action_logits, buy_weight_logit, value = cpu(action_logits), cpu(buy_weight_logit), cpu(value)
+        action_logits, buy_weight_logit, value =
+            policy_cpu(batch.hourly, batch.news, batch.holding, batch.macro_ctx, batch.portfolio)
 
         N = length(obs.candidates)
         probs = Flux.softmax(action_logits[:, :, 1]; dims=1)   # (3, N)
