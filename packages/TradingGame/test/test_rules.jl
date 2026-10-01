@@ -293,6 +293,41 @@ end
         end
     end
 
+    @testset "Cash above MAX_CASH_FRACTION costs a reward penalty, not a blocked trade (rule 14)" begin
+        # Never trade: cash stays pinned at 100% of portfolio value all episode,
+        # the extreme case of a rule-14 violation.
+        env = make_test_env(initial_cash=100_000.0)
+        r = step!(env, RawAction[])
+        @test r.info["cash_fraction"] ≈ 1.0
+        @test r.info["cash_ceiling_violated"] == true
+
+        # The penalty is exactly what the formula says: reward is price drift
+        # (here zero, flat first bar's log-return) minus the coefficient times
+        # the excess over the ceiling.
+        expected_excess = 1.0 - MAX_CASH_FRACTION
+        @test r.reward ≈ -CASH_CEILING_PENALTY_COEF * expected_excess atol=1e-6
+
+        # A trade that brings cash to/under the ceiling clears the flag and the
+        # penalty. MAX_POSITION_FRACTION (rule 12) caps each symbol at 15%, so
+        # getting cash under 30% needs several symbols bought at once (>=5 to
+        # cover the >=70% that must be deployed) — a single buy can't do it.
+        symbols = ["S$i" for i in 1:6]
+        cache   = make_test_cache(symbols=symbols)
+        env2    = TradingGameEnv(cache)
+        reset!(env2, EpisodeConfig(initial_cash=100_000.0, start_date=cache.dates[1],
+                                    end_date=cache.dates[end], candidate_universe=symbols))
+        date_idx = env2.cache.date_index[env2.current_date]
+        sym_idxs = [env2.cache.sym_index[s] for s in symbols]
+        r2 = step!(env2, [RawAction(idx, BUY, 1.0) for idx in sym_idxs])
+        @test r2.info["cash_fraction"] < MAX_CASH_FRACTION
+        @test r2.info["cash_ceiling_violated"] == false
+
+        # Rule 14 is explicitly NOT structural: resolve_actions never blocks or
+        # shrinks a trade purely because post-trade cash would still be high —
+        # a HOLD-only episode (tested above) is a legal, if penalized, trajectory.
+        @test length(r2.info["trades"]) >= 1   # the buy above executed unmasked
+    end
+
     @testset "Full historical episode: random and heuristic baselines obey every rule" begin
         policies = [
             env -> random_policy(env; rng=MersenneTwister(1)),

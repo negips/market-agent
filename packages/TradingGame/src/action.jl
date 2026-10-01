@@ -8,6 +8,10 @@ enforced. The rest of `step!` trusts its output unconditionally (see
 `CashConstraintViolation`) — a policy's raw output should never need to
 *learn* these constraints, only choose among the options this masking leaves
 available.
+
+Rule 14 (cash can't exceed `MAX_CASH_FRACTION` of portfolio value) is
+deliberately NOT masked here — it's enforced as a reward penalty in `env.jl`'s
+`step!` instead. See `MAX_CASH_FRACTION`'s docstring in `constants.jl` for why.
 """
 
 """

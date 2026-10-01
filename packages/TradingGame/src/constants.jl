@@ -15,6 +15,26 @@ const DECISION_INTERVAL_MIN = 15              # rule 8: minimum minutes between 
 const MAX_POSITION_FRACTION = 0.15            # rule 12: a single symbol can't exceed this share of portfolio value
 const N_MAX_HOLDINGS        = 20              # rule 13: max distinct symbols held at once
 
+"""Rule 14: spendable cash (excludes reserved cash — see `TradingGameRules.txt`'s
+own distinct "cash"/"reserved cash" categories, rules 4 and 7) can never exceed
+this share of total portfolio value. Unlike rules 12/13, this is enforced as a
+*soft* constraint (a reward penalty, in `env.jl`'s `step!`), not a structural
+mask — the episode starts at 100% cash (before any stock is bought) and
+matured reserved cash lands back in cash passively, so a hard "never" ceiling
+would require inventing an undefined forced-buy rule (which stock, how much)
+with no basis in the rules text. See `step!`'s docstring for the penalty
+formula and `StepResult.info["cash_ceiling_violated"]`."""
+const MAX_CASH_FRACTION = 0.30
+
+"""Weight on the rule-14 soft penalty: `step!` subtracts
+`CASH_CEILING_PENALTY_COEF * max(0, cash/value - MAX_CASH_FRACTION)` from that
+bar's reward. Scaled to the same order as `ENTROPY_COEF` (both are per-bar
+shaping terms layered on a typically-small per-bar log-return reward) — small
+enough not to swamp genuine portfolio-value signal, large enough that sitting
+at 100% cash (excess=0.70) costs a reward of -0.007/bar, a real, learnable
+incentive to deploy capital."""
+const CASH_CEILING_PENALTY_COEF = 0.01
+
 # ── Decision cadence proxy ───────────────────────────────────────────────────────
 
 """

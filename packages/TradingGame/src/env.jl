@@ -68,7 +68,10 @@ structurally, not via a learned no-op).
 Order of operations within a step (see module docs for the full rationale):
 settle matured reserved cash → force-exit stale holdings (rule 9, runs on
 every bar) → apply the voluntary action, if this is a decision bar (rule 8,
-masked per rules 5 and 10 in `resolve_actions`) → mark portfolio value → reward.
+masked per rules 5 and 10 in `resolve_actions`) → mark portfolio value →
+reward, with rule 14's cash-ceiling soft penalty subtracted (see
+`MAX_CASH_FRACTION`/`CASH_CEILING_PENALTY_COEF` in `constants.jl` for why this
+is a reward shaping term rather than a structural mask like rules 12/13).
 """
 function step!(env::TradingGameEnv, raw_actions::JointAction=RawAction[])::StepResult
     env.config === nothing && error("TradingGameEnv.step!: call reset! before step!")
@@ -90,14 +93,26 @@ function step!(env::TradingGameEnv, raw_actions::JointAction=RawAction[])::StepR
 
     value  = portfolio_value(env)
     reward = log(value / prev_value)
-    done   = env.current_hour_idx >= env.end_hour_idx
+
+    # Rule 14 (soft): spendable cash above MAX_CASH_FRACTION of portfolio value
+    # costs a per-bar reward penalty rather than being structurally blocked —
+    # see `MAX_CASH_FRACTION`'s docstring in `constants.jl` for why a hard
+    # ceiling isn't well-defined here (episode starts at 100% cash; matured
+    # reserved cash lands back in cash passively, not via a masked action).
+    cash_fraction = value > 0 ? env.portfolio.cash / value : 0.0
+    cash_excess   = max(0.0, cash_fraction - MAX_CASH_FRACTION)
+    reward -= CASH_CEILING_PENALTY_COEF * cash_excess
+
+    done = env.current_hour_idx >= env.end_hour_idx
 
     info = Dict{String, Any}(
-        "portfolio_value" => value,
-        "forced_exits"    => length(forced),
-        "reserved_settled" => n_settled,
-        "actions_executed" => n_executed,
-        "trades"          => vcat(forced_events, voluntary_events),
+        "portfolio_value"       => value,
+        "cash_fraction"         => cash_fraction,
+        "cash_ceiling_violated" => cash_excess > 0,
+        "forced_exits"          => length(forced),
+        "reserved_settled"      => n_settled,
+        "actions_executed"      => n_executed,
+        "trades"                => vcat(forced_events, voluntary_events),
     )
     return StepResult(reward, done, info)
 end

@@ -38,6 +38,11 @@ on) using `train_config` as the (repeated, per iteration) training episode.
 - `live_path`: when non-empty, streams this run's current episode (portfolio
   value curve, holdings, recent trades) to that JSON path every `live_every_bars`
   bars — see `live.jl` / `website/tradinggamelive.html`. Omit to disable.
+- `val_curve_path`: when non-empty, appends each completed held-out
+  validation episode's full portfolio-value curve and trades to this path
+  (one JSON line per episode, never overwritten — see `save_val_run!`).
+  Only meaningful alongside a non-empty `live_path` (that's what populates
+  the curve/trade buffers `save_val_run!` reads); omit to disable.
 - `iteration_offset`: added to every iteration number in logging/printing/
   checkpoint metadata — the loop itself always runs `1:iterations` (i.e.
   `iterations` means "how many more to run"). Lets a resumed run's iteration
@@ -75,6 +80,7 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
                  episode_log_path::String="",
                  stop_file::String="",
                  live_path::String="",
+                 val_curve_path::String="",
                  live_every_bars::Int=5,
                  iteration_offset::Int=0,
                  device::Symbol=:cpu,
@@ -156,6 +162,7 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
             val_value  = portfolio_value(env)
             push!(log["val_return"], val_return)
             push!(log["val_final_value"], val_value)
+            save_val_run!(live_tracker, val_curve_path; iteration=abs_iter, val_return=val_return, val_value=val_value)
             candidate_return = val_return
         end
 

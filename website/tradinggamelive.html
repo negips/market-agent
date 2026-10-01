@@ -117,17 +117,24 @@ Chart.defaults.color           = '#6b7280';
 Chart.defaults.borderColor     = '#2e3350';
 Chart.defaults.backgroundColor = 'transparent';
 
-const LIVE_URL = 'data/trading_game/live_status.json';
-const LOG_URL  = 'data/trading_game/episode_log.jsonl';
+const LIVE_URL     = 'data/trading_game/live_status.json';
+const LOG_URL      = 'data/trading_game/episode_log.jsonl';
+const VAL_RUNS_URL = 'data/trading_game/val_runs.jsonl';
 
 let shown = false;
-let valueChart = null, iterChart = null;
+let valueChart = null, iterChart = null, valRunsChart = null;
 
 function loadShowTrades() {
   try { return localStorage.getItem('tgLiveShowTrades') !== 'off'; } catch { return true; }
 }
 function saveShowTrades(v) {
   try { localStorage.setItem('tgLiveShowTrades', v ? 'on' : 'off'); } catch {}
+}
+function loadShowValTrades() {
+  try { return localStorage.getItem('tgValShowTrades') !== 'off'; } catch { return true; }
+}
+function saveShowValTrades(v) {
+  try { localStorage.setItem('tgValShowTrades', v ? 'on' : 'off'); } catch {}
 }
 
 async function fetchJSON(url) {
@@ -209,6 +216,19 @@ function revealLayout() {
       </div>
       <div class="canvas-wrap"><canvas id="iter-chart"></canvas></div>
     </div>
+
+    <div class="chart-card">
+      <div class="chart-header">
+        <div class="chart-title">Held-out validation — portfolio value across runs</div>
+        <div style="display:flex; align-items:center; gap:14px">
+          <div class="chart-sub" id="val-chart-sub"></div>
+          <label class="trade-toggle">
+            <input type="checkbox" id="show-val-trades-toggle" checked> Show trades
+          </label>
+        </div>
+      </div>
+      <div class="canvas-wrap"><canvas id="val-chart"></canvas></div>
+    </div>
   `;
 
   const toggle = document.getElementById('show-trades-toggle');
@@ -219,6 +239,19 @@ function revealLayout() {
     valueChart.setDatasetVisibility(2, toggle.checked);   // Buy
     valueChart.setDatasetVisibility(3, toggle.checked);   // Sell
     valueChart.update();
+  });
+
+  const valToggle = document.getElementById('show-val-trades-toggle');
+  valToggle.checked = loadShowValTrades();
+  valToggle.addEventListener('change', () => {
+    saveShowValTrades(valToggle.checked);
+    if (!valRunsChart) return;
+    // Dataset count grows with every new validation run, so Buy/Sell aren't
+    // at a fixed index like the current-episode chart — find them by label.
+    valRunsChart.data.datasets.forEach((ds, i) => {
+      if (ds.label === 'Buy' || ds.label === 'Sell') valRunsChart.setDatasetVisibility(i, valToggle.checked);
+    });
+    valRunsChart.update();
   });
 }
 
@@ -383,6 +416,110 @@ function renderIterChart(rows) {
   }
 }
 
+// A single hue (the same green used for the "val" phase pill), with opacity
+// ramped by recency: the most recent held-out run is bold/opaque, older runs
+// fade out. This is a deliberate choice over a generated categorical palette
+// — the number of runs is open-ended (one more every `eval_every`
+// iterations across a training run that can last days), so there's no fixed
+// series count to assign fixed hues to, and a legend with dozens of entries
+// would be unreadable. The gradient itself reads as "training progress"
+// directly: a visually tightening/rising bundle of lines as iterations
+// improve, a chaotic unchanging smear if they don't.
+function valRunColor(rank, total) {
+  const t = total <= 1 ? 1 : rank / (total - 1);
+  const alpha = 0.15 + 0.75 * t;
+  return `rgba(61,214,140,${alpha.toFixed(2)})`;
+}
+
+function renderValRunsChart(runs) {
+  if (!runs.length) {
+    document.getElementById('val-chart-sub').textContent = 'No held-out evaluation completed yet';
+    return;
+  }
+  document.getElementById('val-chart-sub').textContent =
+    `${runs.length} run${runs.length === 1 ? '' : 's'} · faint = earliest iteration (${runs[0].iteration}), ` +
+    `bold = most recent (${runs[runs.length - 1].iteration})`;
+
+  const lineDatasets = runs.map((run, i) => ({
+    label: `Iter ${run.iteration}`,
+    data: run.value_curve.map(p => ({ x: p.t, y: p.value })),
+    borderColor: valRunColor(i, runs.length),
+    borderWidth: i === runs.length - 1 ? 2.5 : 1.2,
+    pointRadius: 0,
+    tension: .15,
+  }));
+
+  // Trade markers across every plotted run at once, each colored to match
+  // its own line (via per-point backgroundColor) so a marker is traceable
+  // back to its run even without a per-run legend entry.
+  const showVal = loadShowValTrades();
+  const buyPoints = [], sellPoints = [];
+  runs.forEach((run, i) => {
+    const valueByT = new Map(run.value_curve.map(p => [p.t, p.value]));
+    const color = valRunColor(i, runs.length);
+    for (const t of run.trades) {
+      const y = valueByT.get(t.t);
+      if (y === undefined) continue;
+      const pt = { x: t.t, y, trade: t, iteration: run.iteration, color };
+      (t.kind === 'buy' ? buyPoints : sellPoints).push(pt);
+    }
+  });
+
+  const buyDataset = {
+    label: 'Buy', data: buyPoints, showLine: false, pointStyle: 'circle',
+    pointRadius: 3, pointHoverRadius: 5,
+    backgroundColor: (ctx) => ctx.raw?.color || '#3dd68c',
+    borderColor: (ctx) => ctx.raw?.color || '#3dd68c',
+    hidden: !showVal,
+  };
+  const sellDataset = {
+    label: 'Sell', data: sellPoints, showLine: false, pointStyle: 'crossRot',
+    pointRadius: 4, pointHoverRadius: 6, pointBorderWidth: 2,
+    backgroundColor: (ctx) => ctx.raw?.color || '#f76f6f',
+    borderColor: '#f76f6f',
+    hidden: !showVal,
+  };
+
+  if (!valRunsChart) {
+    valRunsChart = new Chart(document.getElementById('val-chart'), {
+      type: 'line',
+      data: { datasets: [...lineDatasets, buyDataset, sellDataset] },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'nearest', axis: 'x', intersect: false },
+        scales: {
+          x: {
+            type: 'time',
+            time: { unit: 'day', tooltipFormat: 'MMM d, HH:mm', displayFormats: { day: 'MMM d' } },
+            title: { display: true, text: 'Held-out window date', color: '#6b7280' },
+            grid: { color: '#1e2338' },
+          },
+          y: { title: { display: true, text: '₹', color: '#6b7280' }, grid: { color: '#2e3350' } },
+        },
+        plugins: {
+          // No legend: dataset count grows unboundedly (one line per
+          // validation run) — see valRunColor's comment for why a
+          // recency-gradient replaces per-series color identity here.
+          legend: { display: false },
+          tooltip: { callbacks: { label: (item) => {
+            if (item.raw && item.raw.trade) {
+              const t = item.raw.trade;
+              return `Iter ${item.raw.iteration} · ${t.kind === 'forced_exit' ? 'FORCED EXIT' : t.kind.toUpperCase()} ` +
+                     `${t.symbol}: ${t.quantity.toFixed(0)} @ ${fmtRupee(t.price)}`;
+            }
+            return `${item.dataset.label}: ${fmtRupee(item.parsed.y)}`;
+          } } },
+        },
+      },
+    });
+  } else {
+    // Dataset count itself changes (a new line per run) — rebuild wholesale
+    // rather than mutating in place like the fixed-dataset-count charts.
+    valRunsChart.data.datasets = [...lineDatasets, buyDataset, sellDataset];
+    valRunsChart.update('none');
+  }
+}
+
 async function pollLive() {
   try {
     const s = await fetchJSON(LIVE_URL);
@@ -402,9 +539,22 @@ async function pollLog() {
   } catch { /* no episode_log.jsonl yet */ }
 }
 
-pollLive(); pollLog();
+async function pollValRuns() {
+  try {
+    const runs = await fetchJSONL(VAL_RUNS_URL);
+    revealLayout();
+    renderValRunsChart(runs);
+  } catch { /* no val_runs.jsonl yet */ }
+}
+
+pollLive(); pollLog(); pollValRuns();
 setInterval(pollLive, 3000);
 setInterval(pollLog, 8000);
+// Held-out runs only land once every eval_every iterations (tens of minutes
+// apart in practice), and the file only grows (every run ever completed is
+// kept — see save_val_run!'s docstring), so there's no reason to poll it as
+// often as the live, per-bar status.
+setInterval(pollValRuns, 20000);
 </script>
 </body>
 </html>

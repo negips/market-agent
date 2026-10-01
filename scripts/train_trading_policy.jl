@@ -22,6 +22,8 @@ Outputs (under website/data/trading_game/):
   policy.bson          — best checkpoint (by held-out return)
   episode_log.jsonl     — per-iteration train/val return, streamed
   live_status.json      — current episode's live trajectory, with --live (default on)
+  val_runs.jsonl         — every held-out episode's full value curve + trades,
+                           one appended line per eval — with --live (default on)
   run_config.json        — effective training-config flags, for --resume (see below)
 
 To stop cleanly:   touch website/data/trading_game/STOP        (checkpoint saved)
@@ -37,9 +39,10 @@ one just continues from that same last-good checkpoint (no data lost, some
 unsaved training since then is simply redone).
 
 --init-from PATH is different from --resume: it starts a genuinely FRESH run
-(iteration numbering restarts at 1, episode_log.jsonl is cleared, best_return
-tracking restarts at -Inf — so the first checkpoint write is unconditional,
-same as any fresh run's first improvement) but initialises the policy's
+(iteration numbering restarts at 1, episode_log.jsonl/val_runs.jsonl are
+cleared, best_return tracking restarts at -Inf — so the first checkpoint
+write is unconditional, same as any fresh run's first improvement) but
+initialises the policy's
 weights from an existing checkpoint at PATH instead of random init. Useful
 for warm-starting a new run (different window/hyperparameters/universe) from
 weights already trained elsewhere, without inheriting that run's log or
@@ -275,6 +278,7 @@ function main()
 
     checkpoint_path  = joinpath(DATA_DIR, "policy.bson")
     episode_log_path = joinpath(DATA_DIR, "episode_log.jsonl")
+    val_curve_path   = joinpath(DATA_DIR, "val_runs.jsonl")
 
     iteration_offset = 0
     if opts["resume"]
@@ -289,15 +293,20 @@ function main()
         policy, hp, _ = load_policy(opts["init_from"])
         @info "Fresh run, weights warm-started from $(opts["init_from"])"
         # Fresh iteration numbering and log, unlike --resume — see the module
-        # docstring's --init-from vs --resume note.
+        # docstring's --init-from vs --resume note. val_runs.jsonl follows the
+        # same lifecycle as episode_log.jsonl — a fresh iteration-1 run means a
+        # fresh held-out-curve history too.
         isfile(episode_log_path) && rm(episode_log_path)
+        isfile(val_curve_path) && rm(val_curve_path)
     else
         policy = ActorCriticPolicy(seed=opts["seed"])
         hp = (embed_dim=64, macro_embed_dim=16, attn_heads=4, critic_hidden=[64, 32])
         @info "Fresh policy" * (opts["seed"] === nothing ? "" : " (seed=$(opts["seed"]))")
-        # episode_log.jsonl is opened in append mode inside train_policy! (so
-        # --resume can keep history) — a fresh run must clear any stale log.
+        # episode_log.jsonl/val_runs.jsonl are both opened in append mode
+        # inside train_policy! (so --resume can keep history) — a fresh run
+        # must clear any stale ones.
         isfile(episode_log_path) && rm(episode_log_path)
+        isfile(val_curve_path) && rm(val_curve_path)
     end
 
     rng       = opts["seed"] === nothing ? Random.default_rng() : MersenneTwister(opts["seed"])
@@ -313,6 +322,7 @@ function main()
         episode_log_path=episode_log_path,
         stop_file=joinpath(DATA_DIR, "STOP"),
         live_path=opts["live"] ? joinpath(DATA_DIR, "live_status.json") : "",
+        val_curve_path=opts["live"] ? val_curve_path : "",
         iteration_offset=iteration_offset,
         embed_dim=hp.embed_dim, macro_embed_dim=hp.macro_embed_dim,
         attn_heads=hp.attn_heads, critic_hidden=hp.critic_hidden)

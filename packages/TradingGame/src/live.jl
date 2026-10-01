@@ -9,6 +9,11 @@ with no backend (`serve.sh` is a plain file server), so "live" here means
 "overwrite a JSON file every few bars, atomically, and let the page re-fetch
 it on a timer" — the same pattern every other page on this site already uses
 for `nse_companies_latest.json` etc.
+
+`save_val_run!` is the one exception to the overwrite pattern: it *appends*
+one JSON line per completed held-out validation episode to a separate file
+(`val_runs.jsonl`), so the website can plot every validation run's curve
+across the whole training process, not just whichever one is currently live.
 """
 
 using Dates, JSON3
@@ -200,6 +205,41 @@ reads from, this only runs when `_write_live_status` itself does (every
 `every_bars` bars, not every bar), so it's cheap and never retained."""
 function _value_curve_json(tracker::LiveTracker)
     return [(t=tracker.curve_t[i], value=tracker.curve_v[i]) for i in 1:tracker.curve_len]
+end
+
+"""Append one completed held-out validation episode's full portfolio-value
+curve and trade list to `path` as a single JSON line. Call once right after a
+val-phase `collect_rollout` finishes (`train.jl`), before the next
+`start_episode!` resets `tracker`'s curve/trade buffers for the following
+phase — `tracker` at that point holds exactly this val episode's data (every
+`start_episode!` call clears both, so there's no cross-episode leakage to
+worry about).
+
+Unlike `live_status.json` (overwritten on every write — it only ever shows
+the *current* episode), this file is pure append: every held-out run this
+training process has ever completed accumulates here, oldest first, never
+overwritten or trimmed — so `tradinggamelive.html` can plot each iteration's
+held-out portfolio-value curve as its own line and compare them across the
+whole run, not just see the latest. No-op if `path` is empty, matching
+`make_live_callback`'s disabled-live convention (and note: if live tracking
+is disabled, `tracker`'s curve/trade buffers were never populated per-bar
+either — see `make_live_callback` — so there would be nothing to save here
+regardless)."""
+function save_val_run!(tracker::LiveTracker, path::String; iteration::Int, val_return::Real, val_value::Real)
+    isempty(path) && return nothing
+    row = (
+        iteration   = iteration,
+        val_return  = val_return,
+        final_value = val_value,
+        started_at  = tracker.started_at,
+        value_curve = _value_curve_json(tracker),
+        trades      = tracker.trades,
+    )
+    open(path, "a") do io
+        JSON3.write(io, row)
+        println(io)
+    end
+    return nothing
 end
 
 function _write_live_status(tracker::LiveTracker, env::TradingGameEnv)

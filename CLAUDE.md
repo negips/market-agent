@@ -539,7 +539,10 @@ julia --project=packages/TradingGame scripts/train_trading_policy.jl --device gp
 Prerequisites: `inference_cache.bson` (`build_cache.jl`) and
 `universe_latest.json` (`build_universe_snapshot.jl`).
 Outputs (under `website/data/trading_game/`): `policy.bson`, `episode_log.jsonl`,
-`live_status.json`, `run_config.json`. Stop cleanly with `touch website/data/trading_game/STOP`
+`live_status.json`, `val_runs.jsonl` (every held-out episode's full portfolio-value
+curve and trades, appended — never overwritten — once per evaluation; plotted as
+one line per run on `tradinggamelive.html`), `run_config.json`. Stop cleanly with
+`touch website/data/trading_game/STOP`
 (checkpoint saved) or hard-stop with `STOP_NOW` (no save), same convention as
 `train_model.jl`. To restart after either: re-run with `--resume` — loads
 `policy.bson` instead of a fresh policy and continues `episode_log.jsonl`'s
