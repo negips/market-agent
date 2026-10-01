@@ -128,6 +128,19 @@ function TradingGameEnv(cache::InferenceCache; news_hour_indices::Set{Int}=Set{I
                     Set{Int}(), Int[], news_hour_indices)
 end
 
+"""One executed trade (forced exit, voluntary sell, or buy) — `StepResult.info["trades"]`
+entries and `LiveTracker.trades` entries, display/logging only, never consulted
+for rule decisions. A `NamedTuple`, not a `Dict{String,Any}`: it's constructed
+on essentially every bar a 60-candidate policy touches a position (measured on
+a real run: several trades per bar is common, not rare), and `Dict{String,Any}`
+is dramatically more expensive per instance — each `Any`-typed value is boxed
+separately, so one Dict costs on the order of 15+ individual heap allocations
+versus one compact allocation for a concretely-typed `NamedTuple`. JSON3
+serializes both to the identical `{"kind":...,"symbol":...}` shape, so this
+is transparent to `website/tradinggamelive.html`, the only external consumer."""
+const TradeEvent = @NamedTuple{kind::String, symbol::String, price::Float64, quantity::Float64,
+                                notional::Float64, fee::Float64, date::String, t::String}
+
 """Result of one `step!` call. `info` carries per-step diagnostics (fees paid,
 forced-exit count, …) for logging — never used for rule decisions."""
 struct StepResult

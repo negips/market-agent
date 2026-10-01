@@ -81,7 +81,7 @@ function step!(env::TradingGameEnv, raw_actions::JointAction=RawAction[])::StepR
     forced, forced_events = _force_exit_stale_holdings!(env, date_idx)
 
     n_executed    = 0
-    voluntary_events = Dict{String, Any}[]
+    voluntary_events = TradeEvent[]
     if is_decision_bar(env)
         resolved = resolve_actions(env, raw_actions, date_idx)
         voluntary_events = _apply_actions!(env, resolved, date_idx)
@@ -144,20 +144,16 @@ end
 """Sell one lot at the current hourly close, crediting proceeds-minus-fee into
 a new `ReservedCashLot` maturing `SETTLEMENT_DAYS` trading days from now (rules
 4, 10, 11). Shared by both forced exits and voluntary sells — rule 11 does not
-distinguish between them. Returns a trade-event `Dict` for `StepResult.info`
+distinguish between them. Returns a `TradeEvent` for `StepResult.info`
 (display/logging only — never consulted for rule decisions)."""
-function _execute_sell!(env::TradingGameEnv, h::Holding, date_idx::Int; reason::String="sell")
+function _execute_sell!(env::TradingGameEnv, h::Holding, date_idx::Int; reason::String="sell")::TradeEvent
     price    = env.cache.hourly_closes[env.current_hour_idx, h.sym_idx]
     proceeds = h.quantity * price
     fee      = FEE_RATE * proceeds
     push!(env.portfolio.reserved,
           ReservedCashLot(proceeds - fee, date_idx + SETTLEMENT_DAYS, h.symbol))
-    return Dict{String, Any}(
-        "kind" => reason, "symbol" => h.symbol, "price" => price,
-        "quantity" => h.quantity, "notional" => proceeds, "fee" => fee,
-        "date" => string(env.current_date),
-        "t"    => string(env.cache.hourly_datetimes[env.current_hour_idx]),
-    )
+    return (kind=reason, symbol=h.symbol, price=price, quantity=h.quantity, notional=proceeds, fee=fee,
+            date=string(env.current_date), t=string(env.cache.hourly_datetimes[env.current_hour_idx]))
 end
 
 """Execute an already-masked set of trades (see `resolve_actions`). Buys are
@@ -165,7 +161,7 @@ checked against available cash defensively — a violation here means the
 masking layer has a bug, not that the policy chose an invalid action. Returns
 the step's trade events (for `StepResult.info["trades"]`, display only)."""
 function _apply_actions!(env::TradingGameEnv, resolved::Vector{ResolvedTrade}, date_idx::Int)
-    events = Dict{String, Any}[]
+    events = TradeEvent[]
     for t in resolved
         if t.kind == SELL
             lots = filter(h -> h.sym_idx == t.sym_idx && date_idx - h.entry_date_idx >= MIN_HOLD_DAYS,
@@ -204,12 +200,8 @@ function _apply_actions!(env::TradingGameEnv, resolved::Vector{ResolvedTrade}, d
                 entry_price    = price,
                 entry_fee      = fee,
             ))
-            push!(events, Dict{String, Any}(
-                "kind" => "buy", "symbol" => symbol, "price" => price,
-                "quantity" => qty, "notional" => notional, "fee" => fee,
-                "date" => string(env.current_date),
-                "t"    => string(env.cache.hourly_datetimes[env.current_hour_idx]),
-            ))
+            push!(events, (kind="buy", symbol=symbol, price=price, quantity=qty, notional=notional, fee=fee,
+                           date=string(env.current_date), t=string(env.cache.hourly_datetimes[env.current_hour_idx])))
         end
     end
     return events

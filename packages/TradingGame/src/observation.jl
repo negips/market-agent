@@ -103,35 +103,50 @@ _zero_news(::TradingGameEnv, ::Int, ::Int) = zeros(Float32, N_NEWS_FEATURES)
 
 """
 One decision step's full observation, for the `N = length(candidates)`
-candidates in `env.candidate_order`.
+candidates in `env.candidate_order`. Parametric over its field array types so
+it can hold either plain `Array`s (the single-step, allocating
+`assemble_observation` path — tests and simple callers) or `SubArray` views
+into a preallocated per-episode tensor (`collect_rollout`'s path — see its
+docstring) without sacrificing concrete, inferrable field types either way.
 """
-struct Observation
-    hourly     :: Array{Float32, 3}   # (N_HOURLY_BARS_SHORT, N_PRICE_CHANNELS, N)
-    macro_ctx  :: Matrix{Float32}     # (N_MACRO_DAYS, N_MACRO_SERIES)
-    news       :: Matrix{Float32}     # (N_NEWS_FEATURES, N)
-    holding    :: Matrix{Float32}     # (N_HOLDING_FEATURES, N)
-    portfolio  :: Vector{Float32}     # (N_PORTFOLIO_SCALARS,)
-    candidates :: Vector{Int}         # sym_idx per column, == env.candidate_order
+struct Observation{H<:AbstractArray{Float32,3}, M<:AbstractMatrix{Float32},
+                    NW<:AbstractMatrix{Float32}, HO<:AbstractMatrix{Float32},
+                    P<:AbstractVector{Float32}}
+    hourly     :: H    # (N_HOURLY_BARS_SHORT, N_PRICE_CHANNELS, N)
+    macro_ctx  :: M    # (N_MACRO_DAYS, N_MACRO_SERIES)
+    news       :: NW   # (N_NEWS_FEATURES, N)
+    holding    :: HO   # (N_HOLDING_FEATURES, N)
+    portfolio  :: P    # (N_PORTFOLIO_SCALARS,)
+    candidates :: Vector{Int}   # sym_idx per column, == env.candidate_order
 end
 
 """
-Assemble the current observation for `env`. `macro_cache`/`news_fn` are
-optional — omitting them yields the documented neutral defaults (all-zero
-macro context / news features), which is exactly what Stage 1/2 rule and shape
-tests use; real training runs pass a `build_macro_cache(...)` result and a
-`news_features.jl` lookup once those exist.
+Write the current observation for `env` into the given output arrays/views
+in place — no allocation beyond whatever `macro_cache`/`news_fn` themselves
+allocate internally (small, `N_MACRO_SERIES`/`N_NEWS_FEATURES`-sized, not
+per-episode-retained). `assemble_observation` (below) is a thin allocating
+wrapper around this for callers that just want one fresh `Observation`;
+`collect_rollout` calls this directly against views into a preallocated
+per-episode tensor instead — see its docstring for why.
+
+Unlike the old single-array `assemble_observation`, callers must zero-init
+`hourly`/`news`/`holding` themselves if reusing a buffer across calls (this
+function only writes the entries it computes — channel 1 of `hourly` is left
+untouched, not zeroed, when `lo < 1`, matching the old implicit-zero
+behaviour only when the buffer started as `zeros`).
 """
-function assemble_observation(env::TradingGameEnv;
-                               macro_cache::Union{Nothing, MacroCache}=nothing,
-                               news_fn::Function=_zero_news)::Observation
-    env.config === nothing && error("assemble_observation: call reset! before observing")
+function assemble_observation!(hourly::AbstractArray{Float32,3}, macro_ctx::AbstractMatrix{Float32},
+                                news::AbstractMatrix{Float32}, holding::AbstractMatrix{Float32},
+                                portfolio::AbstractVector{Float32}, env::TradingGameEnv;
+                                macro_cache::Union{Nothing, MacroCache}=nothing,
+                                news_fn::Function=_zero_news)::Nothing
+    env.config === nothing && error("assemble_observation!: call reset! before observing")
 
     N = length(env.candidate_order)
     t = env.current_hour_idx
     date_idx = env.cache.date_index[env.current_date]
 
     # ── Per-stock hourly sequence ────────────────────────────────────────────
-    hourly = zeros(Float32, N_HOURLY_BARS_SHORT, N_PRICE_CHANNELS, N)
     lo = t - N_HOURLY_BARS_SHORT + 1
     for (col, sym_idx) in enumerate(env.candidate_order)
         if lo >= 1
@@ -142,6 +157,8 @@ function assemble_observation(env::TradingGameEnv;
                 c = raw[i]
                 hourly[i, 1, col] = isnan(c) ? 1f0 : c / anchor
             end
+        else
+            hourly[:, 1, col] .= 0f0
         end
         # channels 2/3 are daily-granularity in InferenceCache (no intraday vol
         # series exists) — broadcast today's value across the hourly window.
@@ -152,7 +169,6 @@ function assemble_observation(env::TradingGameEnv;
     end
 
     # ── News (neutral zero by default) ───────────────────────────────────────
-    news = zeros(Float32, N_NEWS_FEATURES, N)
     for (col, sym_idx) in enumerate(env.candidate_order)
         news[:, col] .= news_fn(env, sym_idx, t)
     end
@@ -179,7 +195,6 @@ function assemble_observation(env::TradingGameEnv;
         remaining = Float32(clamp((MAX_HOLD_DAYS - days_held) / MAX_HOLD_DAYS, 0, 1))
         min_remaining[col] = min(min_remaining[col], remaining)
     end
-    holding = zeros(Float32, N_HOLDING_FEATURES, N)
     for col in 1:N
         holding[1, col] = held[col] ? 1f0 : 0f0
         holding[2, col] = (held[col] && cost_sum[col] > 0) ?
@@ -188,7 +203,7 @@ function assemble_observation(env::TradingGameEnv;
     end
 
     # ── Macro context ─────────────────────────────────────────────────────────
-    macro_ctx = _macro_context(macro_cache, env.current_date)
+    macro_ctx .= _macro_context(macro_cache, env.current_date)
 
     # ── Global portfolio scalars — all O(1)-scale ratios, never raw rupees.
     #    Feeding cash/value directly (routinely 1e5–1e7 ₹) into a Dense layer
@@ -200,8 +215,38 @@ function assemble_observation(env::TradingGameEnv;
     reserved_frac = value > 0 ? Float32(reserved / value) : 0f0
     stocks_frac   = clamp(1f0 - cash_frac - reserved_frac, 0f0, 1f0)
     value_ratio   = Float32(value / env.config.initial_cash)   # 1.0 = breakeven
-    portfolio = Float32[cash_frac, reserved_frac, value_ratio, stocks_frac]
+    portfolio[1] = cash_frac
+    portfolio[2] = reserved_frac
+    portfolio[3] = value_ratio
+    portfolio[4] = stocks_frac
 
+    return nothing
+end
+
+"""
+Assemble the current observation for `env`. `macro_cache`/`news_fn` are
+optional — omitting them yields the documented neutral defaults (all-zero
+macro context / news features), which is exactly what Stage 1/2 rule and shape
+tests use; real training runs pass a `build_macro_cache(...)` result and a
+`news_features.jl` lookup once those exist.
+
+A thin allocating wrapper around `assemble_observation!` — fine for one-off
+calls (tests, REPL exploration), but `collect_rollout` calls `assemble_observation!`
+directly against a preallocated per-episode tensor instead, to avoid one
+fresh heap allocation per field per decision bar over a multi-thousand-bar
+episode (see `collect_rollout`'s docstring)."""
+function assemble_observation(env::TradingGameEnv;
+                               macro_cache::Union{Nothing, MacroCache}=nothing,
+                               news_fn::Function=_zero_news)::Observation
+    env.config === nothing && error("assemble_observation: call reset! before observing")
+    N = length(env.candidate_order)
+    hourly    = zeros(Float32, N_HOURLY_BARS_SHORT, N_PRICE_CHANNELS, N)
+    macro_ctx = zeros(Float32, N_MACRO_DAYS, N_MACRO_SERIES)
+    news      = zeros(Float32, N_NEWS_FEATURES, N)
+    holding   = zeros(Float32, N_HOLDING_FEATURES, N)
+    portfolio = zeros(Float32, N_PORTFOLIO_SCALARS)
+    assemble_observation!(hourly, macro_ctx, news, holding, portfolio, env;
+                           macro_cache=macro_cache, news_fn=news_fn)
     return Observation(hourly, macro_ctx, news, holding, portfolio, copy(env.candidate_order))
 end
 
@@ -213,7 +258,7 @@ share `candidates`) into batched tensors ready for `ActorCriticPolicy`.
 Named tuple `(hourly, news, holding, macro_ctx, portfolio)` with a trailing
 batch dimension `B = length(obs)` on every field.
 """
-function stack_observations(obs::Vector{Observation})
+function stack_observations(obs::Vector{<:Observation})
     B = length(obs)
     B == 0 && error("stack_observations: empty batch")
     N = length(obs[1].candidates)

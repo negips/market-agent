@@ -25,11 +25,14 @@ end
 # ── Rollout ───────────────────────────────────────────────────────────────────────
 
 """One decision step's rollout record — everything `ppo_update!` needs to
-recompute the policy's log-probability under updated weights later."""
-struct RolloutStep
-    obs        :: Observation
-    action_idx :: Vector{Int}      # 1=HOLD, 2=SELL, 3=BUY per candidate (ActionType order)
-    buy_weight :: Vector{Float32}  # sigmoid(buy_weight_logit) per candidate
+recompute the policy's log-probability under updated weights later.
+Parametric for the same reason `Observation` is (see its docstring):
+`collect_rollout` stores views into a preallocated per-episode tensor here,
+not freshly heap-allocated arrays per step."""
+struct RolloutStep{O<:Observation, AI<:AbstractVector{Int}, BW<:AbstractVector{Float32}}
+    obs        :: O
+    action_idx :: AI   # 1=HOLD, 2=SELL, 3=BUY per candidate (ActionType order)
+    buy_weight :: BW   # sigmoid(buy_weight_logit) per candidate
     logprob    :: Float32          # Σ categorical log-prob across candidates, under the OLD policy
     value      :: Float32          # V(s) under the OLD policy
     reward     :: Float32
@@ -83,44 +86,97 @@ input gives identical output, confirming no hidden state persists between
 calls here), so a fresh CPU snapshot of the current weights behaves
 identically to calling the live GPU-resident `policy` directly. GPU stays
 reserved for `ppo_update!`'s large minibatched passes, where it's the
-workload that actually benefits (see `ppo_update!`'s docstring)."""
+workload that actually benefits (see `ppo_update!`'s docstring).
+
+Preallocates the whole episode's observation tensors up front (`T` decision
+bars is known exactly right after `reset!`: `env.end_hour_idx -
+env.current_hour_idx`) instead of letting `assemble_observation` heap-allocate
+a fresh `hourly`/`news`/`holding`/`macro_ctx`/`portfolio` array every single
+bar. This matters because `buffer` must retain every bar's observation for
+the whole episode (`ppo_update!` replays it across `k_epochs`), so those
+per-bar allocations don't die young — they accumulate as live heap for the
+entire rollout. Measured directly on a real run: with per-bar allocation, the
+per-bar rate roughly DOUBLED from the start of a rollout to ~44% through it
+(66ms/bar → ~150ms/bar), consistent with GC-scan cost growing with the ever-
+growing live heap. Preallocating collapses that into a handful of large
+up-front allocations (same total bytes, ~750MB for a full 5-year hourly
+episode, but O(1) *objects* instead of O(T)), so each bar's `Observation`
+is just a cheap `SubArray` view into a slice — no new backing array, no
+growing-GC-pressure effect."""
 function collect_rollout(env::TradingGameEnv, policy::ActorCriticPolicy, config::EpisodeConfig;
                           macro_cache::Union{Nothing, MacroCache}=nothing,
                           news_fn::Function=_zero_news,
                           greedy::Bool=false,
                           live_cb::Union{Nothing, Function}=nothing,
-                          rng::AbstractRNG=Random.default_rng())::Vector{RolloutStep}
+                          rng::AbstractRNG=Random.default_rng())
     policy_cpu = cpu(policy)
     reset!(env, config)
-    buffer = RolloutStep[]
 
+    T = env.end_hour_idx - env.current_hour_idx
+    T <= 0 && error("collect_rollout: episode has no decision bars — check start_date/end_date")
+    N = length(env.candidate_order)
+    candidates = copy(env.candidate_order)   # invariant for the whole episode — one shared copy
+
+    hourly_buf    = Array{Float32}(undef, N_HOURLY_BARS_SHORT, N_PRICE_CHANNELS, N, T)
+    macro_buf     = Array{Float32}(undef, N_MACRO_DAYS, N_MACRO_SERIES, T)
+    news_buf      = Array{Float32}(undef, N_NEWS_FEATURES, N, T)
+    holding_buf   = Array{Float32}(undef, N_HOLDING_FEATURES, N, T)
+    portfolio_buf = Array{Float32}(undef, N_PORTFOLIO_SCALARS, T)
+    action_idx_buf = Array{Int}(undef, N, T)
+    buy_weight_buf = Array{Float32}(undef, N, T)
+
+    # `RolloutStep`/`Observation` are parametric (see their docstrings) — a
+    # bare `Vector{RolloutStep}(undef, T)` would give `buffer` an ABSTRACT
+    # element type (the unparameterized `RolloutStep`), making every later
+    # field access type-unstable and defeating the point of this whole
+    # preallocation. Compute the concrete, fully-parameterized type once from
+    # the buffers' own view types (identical for every `t` — the indexing
+    # *pattern* determines a view's type, not the runtime index value).
+    ObsType  = Observation{typeof(@view hourly_buf[:, :, :, 1]), typeof(@view macro_buf[:, :, 1]),
+                            typeof(@view news_buf[:, :, 1]), typeof(@view holding_buf[:, :, 1]),
+                            typeof(@view portfolio_buf[:, 1])}
+    StepType = RolloutStep{ObsType, typeof(@view action_idx_buf[:, 1]), typeof(@view buy_weight_buf[:, 1])}
+    buffer = Vector{StepType}(undef, T)
+
+    t = 0
     done = false
     while !done
-        obs   = assemble_observation(env; macro_cache=macro_cache, news_fn=news_fn)
+        t += 1
+        hourly_view    = @view hourly_buf[:, :, :, t]
+        macro_view     = @view macro_buf[:, :, t]
+        news_view      = @view news_buf[:, :, t]
+        holding_view   = @view holding_buf[:, :, t]
+        portfolio_view = @view portfolio_buf[:, t]
+        assemble_observation!(hourly_view, macro_view, news_view, holding_view, portfolio_view,
+                               env; macro_cache=macro_cache, news_fn=news_fn)
+        obs = Observation(hourly_view, macro_view, news_view, holding_view, portfolio_view, candidates)
+
         batch = stack_observations([obs])
         action_logits, buy_weight_logit, value =
             policy_cpu(batch.hourly, batch.news, batch.holding, batch.macro_ctx, batch.portfolio)
 
-        N = length(obs.candidates)
         probs = Flux.softmax(action_logits[:, :, 1]; dims=1)   # (3, N)
 
-        action_idx = Vector{Int}(undef, N)
-        logprob    = 0f0
+        action_idx_view = @view action_idx_buf[:, t]
+        logprob = 0f0
         for i in 1:N
-            action_idx[i] = greedy ? argmax(view(probs, :, i)) : _sample_categorical(view(probs, :, i), rng)
-            logprob += log(max(probs[action_idx[i], i], 1f-8))
+            action_idx_view[i] = greedy ? argmax(view(probs, :, i)) : _sample_categorical(view(probs, :, i), rng)
+            logprob += log(max(probs[action_idx_view[i], i], 1f-8))
         end
-        buy_weight = Flux.sigmoid.(buy_weight_logit[:, 1])
+        buy_weight_view = @view buy_weight_buf[:, t]
+        buy_weight_view .= Flux.sigmoid.(buy_weight_logit[:, 1])
 
-        raw = RawAction[RawAction(sym_idx, _ACTION_TYPES[action_idx[i]], buy_weight[i])
+        raw = RawAction[RawAction(sym_idx, _ACTION_TYPES[action_idx_view[i]], buy_weight_view[i])
                          for (i, sym_idx) in enumerate(obs.candidates)]
         result = step!(env, raw)
 
-        push!(buffer, RolloutStep(obs, action_idx, buy_weight, logprob, Float32(value[1]),
-                                   Float32(result.reward), result.done))
+        buffer[t] = RolloutStep(obs, action_idx_view, buy_weight_view, logprob, Float32(value[1]),
+                                 Float32(result.reward), result.done)
         done = result.done
         live_cb !== nothing && live_cb(env, result)
     end
+    t == T || error("collect_rollout: episode ran $t bars, expected exactly $T — " *
+                     "preallocated buffer size assumption violated")
     return buffer
 end
 
@@ -186,7 +242,7 @@ reason to want either) see no behaviour change.
 `Dict{String,Float32}` with `"loss"` (mean combined loss across all
 minibatch updates this call) for episode-log diagnostics.
 """
-function ppo_update!(policy::ActorCriticPolicy, opt_state, buffer::Vector{RolloutStep};
+function ppo_update!(policy::ActorCriticPolicy, opt_state, buffer::Vector{<:RolloutStep};
                       k_epochs::Int=4, minibatch_size::Int=32,
                       clip_eps::Float64=CLIP_EPS, value_loss_coef::Float64=VALUE_LOSS_COEF,
                       entropy_coef::Float64=ENTROPY_COEF,

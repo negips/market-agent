@@ -115,19 +115,23 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
         iter_start = time()
 
         start_episode!(live_tracker; iteration=abs_iter, phase="train")
+        rollout_start = time()
         buffer = collect_rollout(env, policy, train_config;
                                   macro_cache=macro_cache, news_fn=news_fn, rng=rng,
                                   live_cb=make_live_callback(live_tracker))
+        rollout_secs = time() - rollout_start
         train_return = sum(s.reward for s in buffer)
         train_value  = portfolio_value(env)   # env sits at the rollout's terminal state
 
         start_update!(live_tracker; iteration=abs_iter, k_epochs=k_epochs,
                        total_minibatches=k_epochs * cld(length(buffer), minibatch_size))
+        update_start = time()
         stats = ppo_update!(policy, opt_state, buffer;
                              k_epochs=k_epochs, minibatch_size=minibatch_size, device=device,
                              clip_eps=CLIP_EPS, value_loss_coef=VALUE_LOSS_COEF,
                              entropy_coef=ENTROPY_COEF, gamma=GAMMA, gae_lambda=GAE_LAMBDA, rng=rng,
                              verbose=true, progress_cb=make_update_callback(live_tracker, env))
+        update_secs = time() - update_start
 
         push!(log["train_return"], train_return)
         push!(log["train_final_value"], train_value)
@@ -138,13 +142,16 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
         # must not silently fall back to the (noisier, in-sample) train_return.
         candidate_return = val_config === nothing ? train_return : nothing
         val_return, val_value = nothing, nothing
+        val_rollout_secs = 0.0
         do_eval = val_config !== nothing && (iter % eval_every == 0 || iter == iterations)
         if do_eval
             start_episode!(live_tracker; iteration=abs_iter, phase="val")
+            val_rollout_start = time()
             eval_buffer = collect_rollout(env, policy, val_config;
                                            macro_cache=macro_cache, news_fn=news_fn,
                                            greedy=true, rng=rng,
                                            live_cb=make_live_callback(live_tracker))
+            val_rollout_secs = time() - val_rollout_start
             val_return = sum(s.reward for s in eval_buffer)
             val_value  = portfolio_value(env)
             push!(log["val_return"], val_return)
@@ -168,9 +175,11 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
 
         iter_secs = time() - iter_start
         eval_str  = val_return === nothing ? "" : @sprintf(" | val %.4f", val_return)
-        @printf("Iter %4d | train_return %.4f | value %.0f | loss %.4f%s | %s%s\n",
+        @printf("Iter %4d | train_return %.4f | value %.0f | loss %.4f%s | %s (rollout %s, val %s, update %s)%s\n",
                 abs_iter, train_return, train_value, stats["loss"], eval_str,
-                _fmt_duration(round(Int, iter_secs)), improved ? " ★" : "")
+                _fmt_duration(round(Int, iter_secs)), _fmt_duration(round(Int, rollout_secs)),
+                _fmt_duration(round(Int, val_rollout_secs)), _fmt_duration(round(Int, update_secs)),
+                improved ? " ★" : "")
 
         if !isempty(episode_log_path)
             # `best_return` starts at -Inf32 (nothing has improved on yet) — JSON has
@@ -181,6 +190,9 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
                 JSON3.write(io, (iteration=abs_iter, train_return=train_return, train_final_value=train_value,
                                  loss=stats["loss"], val_return=val_return, val_final_value=val_value,
                                  best_return=logged_best, improved=improved,
+                                 rollout_secs=round(rollout_secs, digits=1),
+                                 val_rollout_secs=round(val_rollout_secs, digits=1),
+                                 update_secs=round(update_secs, digits=1),
                                  elapsed_secs=round(time() - train_start, digits=1)))
                 println(io)
             end
