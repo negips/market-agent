@@ -236,8 +236,10 @@ function revealLayout() {
   toggle.addEventListener('change', () => {
     saveShowTrades(toggle.checked);
     if (!valueChart) return;
-    valueChart.setDatasetVisibility(2, toggle.checked);   // Buy
-    valueChart.setDatasetVisibility(3, toggle.checked);   // Sell
+    valueChart.data.datasets.forEach((ds, i) => {
+      if (ds.label === 'Buy' || ds.label === 'Sell' || ds.label === 'Forced exit')
+        valueChart.setDatasetVisibility(i, toggle.checked);
+    });
     valueChart.update();
   });
 
@@ -246,10 +248,11 @@ function revealLayout() {
   valToggle.addEventListener('change', () => {
     saveShowValTrades(valToggle.checked);
     if (!valRunsChart) return;
-    // Dataset count grows with every new validation run, so Buy/Sell aren't
-    // at a fixed index like the current-episode chart — find them by label.
+    // Dataset count grows with every new validation run, so the trade-marker
+    // datasets aren't at a fixed index like the current-episode chart — find them by label.
     valRunsChart.data.datasets.forEach((ds, i) => {
-      if (ds.label === 'Buy' || ds.label === 'Sell') valRunsChart.setDatasetVisibility(i, valToggle.checked);
+      if (ds.label === 'Buy' || ds.label === 'Sell' || ds.label === 'Forced exit')
+        valRunsChart.setDatasetVisibility(i, valToggle.checked);
     });
     valRunsChart.update();
   });
@@ -307,8 +310,14 @@ function renderStatus(s) {
   // but defensively) is just dropped rather than plotted at a wrong height.
   const valueByT = new Map(s.value_curve.map(p => [p.t, p.value]));
   const toPoint  = (t) => ({ x: t.t, y: valueByT.get(t.t), trade: t });
-  const buyPoints  = s.recent_trades.filter(t => t.kind === 'buy').map(toPoint).filter(p => p.y !== undefined);
-  const sellPoints = s.recent_trades.filter(t => t.kind !== 'buy').map(toPoint).filter(p => p.y !== undefined);
+  // Voluntary sells and rule-9 forced exits are both "not a buy" but are
+  // distinct decisions (one chosen by the policy, one structurally
+  // unconditional) — kept as separate marker datasets, not lumped into one
+  // "Sell", matching the "Recent decisions" feed's own buy/sell/forced_exit
+  // color convention (green/yellow/red).
+  const buyPoints    = s.recent_trades.filter(t => t.kind === 'buy').map(toPoint).filter(p => p.y !== undefined);
+  const sellPoints   = s.recent_trades.filter(t => t.kind === 'sell').map(toPoint).filter(p => p.y !== undefined);
+  const forcedPoints = s.recent_trades.filter(t => t.kind === 'forced_exit').map(toPoint).filter(p => p.y !== undefined);
 
   if (!valueChart) {
     valueChart = new Chart(document.getElementById('value-chart'), {
@@ -320,6 +329,10 @@ function renderStatus(s) {
           pointRadius: 3, pointHoverRadius: 5, backgroundColor: '#3dd68c', borderColor: '#3dd68c',
           hidden: !loadShowTrades() },
         { label: 'Sell', data: sellPoints, showLine: false, pointStyle: 'crossRot',
+          pointRadius: 4, pointHoverRadius: 6, pointBorderWidth: 2,
+          backgroundColor: '#f5c842', borderColor: '#f5c842',
+          hidden: !loadShowTrades() },
+        { label: 'Forced exit', data: forcedPoints, showLine: false, pointStyle: 'rectRot',
           pointRadius: 4, pointHoverRadius: 6, pointBorderWidth: 2,
           backgroundColor: '#f76f6f', borderColor: '#f76f6f',
           hidden: !loadShowTrades() },
@@ -358,6 +371,7 @@ function renderStatus(s) {
     valueChart.data.datasets[1].data = baseline;
     valueChart.data.datasets[2].data = buyPoints;
     valueChart.data.datasets[3].data = sellPoints;
+    valueChart.data.datasets[4].data = forcedPoints;
     valueChart.update('none');
   }
 
@@ -451,9 +465,12 @@ function renderValRunsChart(runs) {
 
   // Trade markers across every plotted run at once, each colored to match
   // its own line (via per-point backgroundColor) so a marker is traceable
-  // back to its run even without a per-run legend entry.
+  // back to its run even without a per-run legend entry. Voluntary sells and
+  // rule-9 forced exits are split into separate datasets (not lumped as one
+  // "Sell") — same distinction and color convention (yellow/red) as the
+  // current-episode chart and the "Recent decisions" feed.
   const showVal = loadShowValTrades();
-  const buyPoints = [], sellPoints = [];
+  const buyPoints = [], sellPoints = [], forcedPoints = [];
   runs.forEach((run, i) => {
     const valueByT = new Map(run.value_curve.map(p => [p.t, p.value]));
     const color = valRunColor(i, runs.length);
@@ -461,7 +478,9 @@ function renderValRunsChart(runs) {
       const y = valueByT.get(t.t);
       if (y === undefined) continue;
       const pt = { x: t.t, y, trade: t, iteration: run.iteration, color };
-      (t.kind === 'buy' ? buyPoints : sellPoints).push(pt);
+      if (t.kind === 'buy') buyPoints.push(pt);
+      else if (t.kind === 'sell') sellPoints.push(pt);
+      else forcedPoints.push(pt);
     }
   });
 
@@ -475,6 +494,13 @@ function renderValRunsChart(runs) {
   const sellDataset = {
     label: 'Sell', data: sellPoints, showLine: false, pointStyle: 'crossRot',
     pointRadius: 4, pointHoverRadius: 6, pointBorderWidth: 2,
+    backgroundColor: (ctx) => ctx.raw?.color || '#f5c842',
+    borderColor: '#f5c842',
+    hidden: !showVal,
+  };
+  const forcedDataset = {
+    label: 'Forced exit', data: forcedPoints, showLine: false, pointStyle: 'rectRot',
+    pointRadius: 4, pointHoverRadius: 6, pointBorderWidth: 2,
     backgroundColor: (ctx) => ctx.raw?.color || '#f76f6f',
     borderColor: '#f76f6f',
     hidden: !showVal,
@@ -483,7 +509,7 @@ function renderValRunsChart(runs) {
   if (!valRunsChart) {
     valRunsChart = new Chart(document.getElementById('val-chart'), {
       type: 'line',
-      data: { datasets: [...lineDatasets, buyDataset, sellDataset] },
+      data: { datasets: [...lineDatasets, buyDataset, sellDataset, forcedDataset] },
       options: {
         responsive: true, maintainAspectRatio: false,
         interaction: { mode: 'nearest', axis: 'x', intersect: false },
@@ -515,7 +541,7 @@ function renderValRunsChart(runs) {
   } else {
     // Dataset count itself changes (a new line per run) — rebuild wholesale
     // rather than mutating in place like the fixed-dataset-count charts.
-    valRunsChart.data.datasets = [...lineDatasets, buyDataset, sellDataset];
+    valRunsChart.data.datasets = [...lineDatasets, buyDataset, sellDataset, forcedDataset];
     valRunsChart.update('none');
   }
 }
