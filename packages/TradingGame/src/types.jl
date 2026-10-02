@@ -73,11 +73,20 @@ Base.@kwdef struct ReservedCashLot
     source_symbol      :: String
 end
 
-"""Mutable portfolio state: spendable cash, cash pending settlement, open positions."""
+"""Mutable portfolio state: spendable cash, cash pending settlement, open positions.
+
+`rebuy_cooldown` implements rule 15: `sym_idx => date_idx` the symbol becomes
+eligible to be newly bought again (set by `_execute_sell!` to
+`date_idx + REBUY_COOLDOWN_DAYS` on every sale, forced or voluntary — see
+`REBUY_COOLDOWN_DAYS`'s docstring). A symbol absent from this dict has never
+been sold this episode and is unrestricted. Same `available_date_idx`-style
+"earliest eligible date" convention as `ReservedCashLot`, checked in
+`resolve_actions`."""
 Base.@kwdef mutable struct Portfolio
-    cash     :: Float64
-    reserved :: Vector{ReservedCashLot} = ReservedCashLot[]
-    holdings :: Vector{Holding}         = Holding[]
+    cash           :: Float64
+    reserved       :: Vector{ReservedCashLot} = ReservedCashLot[]
+    holdings       :: Vector{Holding}         = Holding[]
+    rebuy_cooldown :: Dict{Int, Int}          = Dict{Int, Int}()
 end
 
 # ── Episode / environment ─────────────────────────────────────────────────────────

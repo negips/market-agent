@@ -13,7 +13,19 @@ const MIN_HOLD_DAYS         = 1               # rule 10: lock-up before a volunt
 const MAX_HOLD_DAYS         = 10              # rule 9: forced exit after this many trading days
 const DECISION_INTERVAL_MIN = 15              # rule 8: minimum minutes between decisions
 const MAX_POSITION_FRACTION = 0.15            # rule 12: a single symbol can't exceed this share of portfolio value
-const N_MAX_HOLDINGS        = 20              # rule 13: max distinct symbols held at once
+
+"""Rule 13: the ceiling on distinct symbols held at once, N_MAX, is defined as
+a fraction of the candidate universe size N (not a fixed constant) — see
+`n_max_holdings`. `N_MAX_HOLDINGS_FRACTION` is the `0.25` from the rule text
+itself."""
+const N_MAX_HOLDINGS_FRACTION = 0.25
+
+"""Rule 13's N_MAX for a universe of `n_candidates` symbols: `round(0.25 *
+n_candidates)`, floored at 1 so a tiny universe (e.g. a 3-symbol test fixture)
+still allows at least one position — the rule text doesn't specify a rounding
+convention or a minimum, and zero would make the game unplayable, which
+contradicts every other rule's premise that stocks can be held at all."""
+n_max_holdings(n_candidates::Int) = max(1, round(Int, N_MAX_HOLDINGS_FRACTION * n_candidates))
 
 """Rule 14: spendable cash (excludes reserved cash — see `TradingGameRules.txt`'s
 own distinct "cash"/"reserved cash" categories, rules 4 and 7) can never exceed
@@ -34,6 +46,17 @@ enough not to swamp genuine portfolio-value signal, large enough that sitting
 at 100% cash (excess=0.70) costs a reward of -0.007/bar, a real, learnable
 incentive to deploy capital."""
 const CASH_CEILING_PENALTY_COEF = 0.01
+
+"""Rule 15: once a symbol is sold (voluntarily or via the rule-9 forced exit —
+the rule text doesn't distinguish, and `_execute_sell!` already treats both
+uniformly for rule 11's fee, so this follows the same precedent), it can't be
+newly bought again for this many trading days. Structural (masked in
+`resolve_actions`, like rules 5/10/12/13), not a reward penalty like rule 14
+— there's no "episode start" edge case here that makes a hard ceiling
+ill-defined the way rule 14's cash constraint had. Only blocks *opening a new
+position*; adding to a symbol that's still currently held (a separate,
+not-yet-sold lot) is unaffected — see `resolve_actions`'s docstring."""
+const REBUY_COOLDOWN_DAYS = 5
 
 # ── Decision cadence proxy ───────────────────────────────────────────────────────
 

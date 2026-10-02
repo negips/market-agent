@@ -220,7 +220,14 @@ end
     end
 
     @testset "Position size capped at MAX_POSITION_FRACTION of portfolio value (rule 12)" begin
-        env = make_test_env(initial_cash=100_000.0)
+        # 8 symbols (not make_test_env's default 3) so n_max_holdings(8)=2 —
+        # this test needs room for 2 simultaneously-held distinct symbols,
+        # which the default 3-symbol fixture's n_max_holdings(3)=1 no longer allows.
+        symbols = ["S$i" for i in 1:8]
+        cache   = make_test_cache(symbols=symbols)
+        env     = TradingGameEnv(cache)
+        reset!(env, EpisodeConfig(initial_cash=100_000.0, start_date=cache.dates[1],
+                                   end_date=cache.dates[end], candidate_universe=symbols))
         sym_idx  = first(env.candidate_sym_idx)
         price    = env.cache.hourly_closes[env.current_hour_idx, sym_idx]
         date_idx = env.cache.date_index[env.current_date]
@@ -246,32 +253,106 @@ end
         @test length(resolved3) == 1
     end
 
-    @testset "At most N_MAX_HOLDINGS distinct symbols held at once (rule 13)" begin
-        symbols = ["S$i" for i in 1:25]
+    @testset "At most n_max_holdings(N) distinct symbols held at once (rule 13)" begin
+        # n_max_holdings(40) = round(0.25*40) = 10, exact — no rounding
+        # ambiguity, and large enough that each accepted buy's equal-weight
+        # share (1/10 = 10%) stays under MAX_POSITION_FRACTION's 15% cap, so
+        # rule 12 doesn't also clip these positions and eat the headroom the
+        # later "adding to an already-held symbol" check needs.
+        symbols = ["S$i" for i in 1:40]
+        n_max   = n_max_holdings(length(symbols))
+        @test n_max == 10
         cache   = make_test_cache(symbols=symbols)
         env     = TradingGameEnv(cache)
         reset!(env, EpisodeConfig(initial_cash=10_000_000.0, start_date=cache.dates[1],
                                    end_date=cache.dates[end], candidate_universe=symbols))
         date_idx = env.cache.date_index[env.current_date]
 
-        # 21 simultaneous new-symbol buys, equal weight — cash and the 15% cap are
-        # both slack here (each gets ~1/21 of a large cash pile), isolating rule 13.
-        first21 = [env.cache.sym_index[s] for s in symbols[1:21]]
-        resolved = resolve_actions(env, [RawAction(idx, BUY, 1.0) for idx in first21], date_idx)
+        # n_max+1 simultaneous new-symbol buys, equal weight. Only n_max of
+        # them pass rule 13's mask, so cash splits n_max ways (not n_max+1)
+        # among the accepted ones — see the comment above for why that still
+        # stays under the 15% cap here.
+        requested = [env.cache.sym_index[s] for s in symbols[1:n_max+1]]
+        resolved = resolve_actions(env, [RawAction(idx, BUY, 1.0) for idx in requested], date_idx)
         bought = Set(t.sym_idx for t in resolved if t.kind == BUY)
-        @test length(bought) == N_MAX_HOLDINGS   # the 21st is masked out
+        @test length(bought) == n_max   # the (n_max+1)th is masked out
 
         TradingGame._apply_actions!(env, resolved, date_idx)
-        @test length(Set(h.sym_idx for h in env.portfolio.holdings)) == N_MAX_HOLDINGS
+        @test length(Set(h.sym_idx for h in env.portfolio.holdings)) == n_max
 
         # Adding to an already-held symbol is still allowed at the cap...
         resolved2 = resolve_actions(env, [RawAction(first(bought), BUY, 1.0)], date_idx)
         @test any(t.kind == BUY for t in resolved2)
 
-        # ...but opening a brand-new (21st) position is not.
-        unheld_idx = env.cache.sym_index[symbols[22]]
+        # ...but opening a brand-new ((n_max+1)th) position is not.
+        unheld_idx = env.cache.sym_index[symbols[n_max+2]]
         resolved3 = resolve_actions(env, [RawAction(unheld_idx, BUY, 1.0)], date_idx)
         @test isempty(resolved3)
+    end
+
+    @testset "n_max_holdings scales with universe size and floors at 1 (rule 13)" begin
+        @test n_max_holdings(100) == 25    # the live run's actual universe size
+        @test n_max_holdings(60)  == 15    # N_CANDIDATE_STOCKS default
+        @test n_max_holdings(20)  == 5
+        @test n_max_holdings(3)   == 1     # would round to 0.75→1 anyway, but the floor guarantees it
+        @test n_max_holdings(1)   == 1
+    end
+
+    @testset "A sold symbol can't be newly bought again for REBUY_COOLDOWN_DAYS (rule 15)" begin
+        env = make_test_env(initial_cash=1_000_000.0)
+        sym_idx  = first(env.candidate_sym_idx)
+        date_idx = env.cache.date_index[env.current_date]
+
+        # Buy, wait out the 1-day lock-up, then voluntarily sell.
+        TradingGame._apply_actions!(env, resolve_actions(env, [RawAction(sym_idx, BUY, 1.0)], date_idx), date_idx)
+        sell_date_idx = date_idx + MIN_HOLD_DAYS
+        TradingGame._apply_actions!(env, resolve_actions(env, [RawAction(sym_idx, SELL, 0.0)], sell_date_idx), sell_date_idx)
+        @test isempty(env.portfolio.holdings)
+        @test env.portfolio.rebuy_cooldown[sym_idx] == sell_date_idx + REBUY_COOLDOWN_DAYS
+
+        # Still inside the cooldown: masked to HOLD.
+        resolved_early = resolve_actions(env, [RawAction(sym_idx, BUY, 1.0)], sell_date_idx + REBUY_COOLDOWN_DAYS - 1)
+        @test isempty(resolved_early)
+
+        # Exactly at the cooldown's end: eligible again.
+        resolved_ok = resolve_actions(env, [RawAction(sym_idx, BUY, 1.0)], sell_date_idx + REBUY_COOLDOWN_DAYS)
+        @test length(resolved_ok) == 1 && resolved_ok[1].kind == BUY
+
+        # A forced exit starts the same cooldown — shared code path, no special-casing.
+        env2 = make_test_env(initial_cash=1_000_000.0)
+        sym_idx2  = first(env2.candidate_sym_idx)
+        date_idx2 = env2.cache.date_index[env2.current_date]
+        TradingGame._apply_actions!(env2, resolve_actions(env2, [RawAction(sym_idx2, BUY, 1.0)], date_idx2), date_idx2)
+        forced_date_idx = date_idx2 + MAX_HOLD_DAYS
+        TradingGame._force_exit_stale_holdings!(env2, forced_date_idx)
+        @test env2.portfolio.rebuy_cooldown[sym_idx2] == forced_date_idx + REBUY_COOLDOWN_DAYS
+
+        # Cooldown only blocks opening a NEW position — adding to a symbol
+        # that still has a separate, currently-held (not-yet-sold) lot is
+        # unaffected. Needs an 8-symbol universe (n_max_holdings(8)=2) and a
+        # competing decoy buy: a *lone* buy request always normalises to 100%
+        # share (see resolve_actions — weight only matters relative to other
+        # simultaneous buys), which would immediately hit MAX_POSITION_FRACTION
+        # and leave no headroom to test a follow-up add.
+        symbols3 = ["S$i" for i in 1:8]
+        cache3   = make_test_cache(symbols=symbols3)
+        env3     = TradingGameEnv(cache3)
+        reset!(env3, EpisodeConfig(initial_cash=1_000_000.0, start_date=cache3.dates[1],
+                                    end_date=cache3.dates[end], candidate_universe=symbols3))
+        date_idx3 = env3.cache.date_index[env3.current_date]
+        sym_idx3  = env3.cache.sym_index["S1"]
+        decoy_idx = env3.cache.sym_index["S2"]
+        # sym_idx3 gets only 10% of cash share (well under the 15% cap),
+        # leaving headroom for a follow-up add.
+        TradingGame._apply_actions!(env3,
+            resolve_actions(env3, [RawAction(sym_idx3, BUY, 0.1), RawAction(decoy_idx, BUY, 0.9)], date_idx3),
+            date_idx3)
+        @test sym_idx3 in Set(h.sym_idx for h in env3.portfolio.holdings)
+        # Manually seed a (hypothetical) cooldown on this still-held symbol —
+        # adding to the existing lot must not be blocked by it.
+        env3.portfolio.rebuy_cooldown[sym_idx3] = date_idx3 + 999
+        resolved_add = resolve_actions(env3, [RawAction(sym_idx3, BUY, 1.0)], date_idx3)
+        @test any(t.kind == BUY && t.sym_idx == sym_idx3 for t in resolved_add)
     end
 
     @testset "Under flat prices, portfolio value is fee-drag-only: non-increasing, never negative" begin
@@ -311,13 +392,17 @@ end
         # penalty. MAX_POSITION_FRACTION (rule 12) caps each symbol at 15%, so
         # getting cash under 30% needs several symbols bought at once (>=5 to
         # cover the >=70% that must be deployed) — a single buy can't do it.
-        symbols = ["S$i" for i in 1:6]
+        # The universe needs n_max_holdings(N) >= 6 too (rule 13), or fewer
+        # than 6 of these buys would even be accepted; 24 symbols gives
+        # exactly 6, just enough for all of them.
+        symbols = ["S$i" for i in 1:24]
+        buy_symbols = symbols[1:6]
         cache   = make_test_cache(symbols=symbols)
         env2    = TradingGameEnv(cache)
         reset!(env2, EpisodeConfig(initial_cash=100_000.0, start_date=cache.dates[1],
                                     end_date=cache.dates[end], candidate_universe=symbols))
         date_idx = env2.cache.date_index[env2.current_date]
-        sym_idxs = [env2.cache.sym_index[s] for s in symbols]
+        sym_idxs = [env2.cache.sym_index[s] for s in buy_symbols]
         r2 = step!(env2, [RawAction(idx, BUY, 1.0) for idx in sym_idxs])
         @test r2.info["cash_fraction"] < MAX_CASH_FRACTION
         @test r2.info["cash_ceiling_violated"] == false
@@ -348,12 +433,13 @@ end
                     @test date_idx - h.entry_date_idx < MAX_HOLD_DAYS
                 end
 
-                # N_MAX_HOLDINGS is a true invariant (rule 13 masks every buy that would
-                # exceed it). MAX_POSITION_FRACTION (rule 12) is purchase-time-only by
-                # design — price drift after a buy can legitimately carry a position
+                # n_max_holdings(N) is a true invariant (rule 13 masks every buy that
+                # would exceed it). MAX_POSITION_FRACTION (rule 12) is purchase-time-only
+                # by design — price drift after a buy can legitimately carry a position
                 # above 15%, so it's NOT asserted here; see the dedicated rule-12 testset
                 # below for what IS guaranteed (the cap binds at the moment of purchase).
-                @test length(Set(h.sym_idx for h in env.portfolio.holdings)) <= N_MAX_HOLDINGS
+                @test length(Set(h.sym_idx for h in env.portfolio.holdings)) <=
+                      n_max_holdings(length(env.candidate_sym_idx))
 
                 @test steps <= 10_000   # runaway guard — episode must terminate via `done`
             end

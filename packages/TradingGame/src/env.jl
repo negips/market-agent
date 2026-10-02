@@ -23,6 +23,7 @@ function reset!(env::TradingGameEnv, config::EpisodeConfig)
     env.portfolio.cash = config.initial_cash
     empty!(env.portfolio.reserved)
     empty!(env.portfolio.holdings)
+    empty!(env.portfolio.rebuy_cooldown)
 
     start_hour = find_hourly_end(env.cache, DateTime(config.start_date, Time(9, 15)))
     start_hour == 0 && error(
@@ -158,8 +159,10 @@ end
 
 """Sell one lot at the current hourly close, crediting proceeds-minus-fee into
 a new `ReservedCashLot` maturing `SETTLEMENT_DAYS` trading days from now (rules
-4, 10, 11). Shared by both forced exits and voluntary sells — rule 11 does not
-distinguish between them. Returns a `TradeEvent` for `StepResult.info`
+4, 10, 11), and starting that symbol's rule-15 rebuy cooldown
+(`REBUY_COOLDOWN_DAYS` trading days). Shared by both forced exits and
+voluntary sells — rule 11 does not distinguish between them, and neither does
+rule 15's cooldown. Returns a `TradeEvent` for `StepResult.info`
 (display/logging only — never consulted for rule decisions)."""
 function _execute_sell!(env::TradingGameEnv, h::Holding, date_idx::Int; reason::String="sell")::TradeEvent
     price    = env.cache.hourly_closes[env.current_hour_idx, h.sym_idx]
@@ -167,6 +170,7 @@ function _execute_sell!(env::TradingGameEnv, h::Holding, date_idx::Int; reason::
     fee      = FEE_RATE * proceeds
     push!(env.portfolio.reserved,
           ReservedCashLot(proceeds - fee, date_idx + SETTLEMENT_DAYS, h.symbol))
+    env.portfolio.rebuy_cooldown[h.sym_idx] = date_idx + REBUY_COOLDOWN_DAYS
     return (kind=reason, symbol=h.symbol, price=price, quantity=h.quantity, notional=proceeds, fee=fee,
             date=string(env.current_date), t=string(env.cache.hourly_datetimes[env.current_hour_idx]))
 end
