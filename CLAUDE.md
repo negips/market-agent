@@ -406,10 +406,17 @@ julia --project=packages/EarningsCalendar scripts/generate_earnings_watchlist.jl
 Incrementally updates all existing OHLCV CSVs with bars added since the last run.
 Reads the last date from each CSV and fetches only the gap to yesterday — much
 faster than `collect_nse_ohlcv.jl` / `collect_bse_ohlcv.jl` for routine maintenance. Appends rows in-place.
+Updates both NSE and BSE by default; pass `--nse-only` or `--bse-only` to restrict
+to one exchange (mutually exclusive). Macro instrument CSVs update once regardless
+of exchange selection.
 
 ```bash
-# Run every trading day after kite_login.js (no arguments needed)
+# Run every trading day after kite_login.js (no arguments needed — updates NSE + BSE)
 julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl
+
+# Restrict to a single exchange
+julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --nse-only
+julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --bse-only
 
 # Preview what would be fetched without hitting the API
 julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --dry-run

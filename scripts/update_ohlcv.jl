@@ -1,8 +1,9 @@
 """
 update_ohlcv.jl
 
-Incrementally update all OHLCV CSVs in website/data/ohlcv/nse/ (and optionally
-ohlcv/bse/) with bars added since the last collection run.
+Incrementally update all OHLCV CSVs in website/data/ohlcv/nse/ AND
+website/data/ohlcv/bse/ (both by default — pass --nse-only or --bse-only to
+restrict to one exchange) with bars added since the last collection run.
 
 For each existing CSV, reads the last date/datetime in the file and fetches
 only the gap since then. Symbols already current are skipped. Appends new
@@ -14,11 +15,13 @@ have a 200-day retention window.
 
 Prerequisites:
   - sidecar/kite_session.json present         (node sidecar/kite_login.js)
-  - website/data/ohlcv/nse/ populated         (run collect_nse_ohlcv.jl first)
-  - website/data/ohlcv/bse/ populated         (run collect_bse_ohlcv.jl, needs --include-bse)
+  - website/data/ohlcv/nse/ populated         (run collect_nse_ohlcv.jl first, unless --bse-only)
+  - website/data/ohlcv/bse/ populated         (run collect_bse_ohlcv.jl first, unless --nse-only)
 
 Usage:
   julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl
+  julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --nse-only
+  julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --bse-only
   julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --daily-only
   julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --hourly-only
   julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --5min-only
@@ -459,19 +462,23 @@ Usage:
   julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl [FLAGS]
 
 Flags:
-  --symbol SYM    Update only this one symbol (applied to both NSE and BSE if --include-bse).
+  --symbol SYM    Update only this one symbol (applied to whichever exchange(s) run).
+  --nse-only      Update NSE only (default: both NSE and BSE). Mutually exclusive with --bse-only.
+  --bse-only      Update BSE only (default: both NSE and BSE). Mutually exclusive with --nse-only.
   --daily-only    Update only daily bars.
   --hourly-only   Update only hourly (60-min) bars.
   --5min-only     Update only 5-minute bars.
   --15min-only    Update only 15-minute bars.
   --skip-5min     Skip the 5-minute pass (overrides --5min-only if both given).
   --skip-15min    Skip the 15-minute pass (overrides --15min-only if both given).
-  --include-bse   Also update BSE CSVs in website/data/ohlcv/bse/ (run collect_bse_ohlcv.jl first).
   --dry-run       Report what would be fetched without making any API calls.
 
 Reads each existing *_daily.csv / *_hourly.csv / *_5min.csv / *_15min.csv in
-website/data/ohlcv/nse/ (and ohlcv/bse/ if --include-bse), finds the last
-date, and fetches only the gap to yesterday. New rows are appended in-place.
+website/data/ohlcv/nse/ AND website/data/ohlcv/bse/ (both by default — pass
+--nse-only or --bse-only to update a single exchange), finds the last date,
+and fetches only the gap to yesterday. New rows are appended in-place. Macro
+instrument CSVs (website/data/ohlcv/macro/) are updated once regardless of
+exchange selection, during the 5-min/15-min passes.
 
 NOTE: 5-min bars have a 100-day retention window; 15-min bars have a
 200-day retention window — run this daily or data will be permanently lost.
@@ -485,8 +492,13 @@ NOTE: 5-min bars have a 100-day retention window; 15-min bars have a
     fifteenmin_only = "--15min-only"   in ARGS
     skip_5min       = "--skip-5min"    in ARGS
     skip_15min      = "--skip-15min"   in ARGS
-    include_bse     = "--include-bse"  in ARGS
+    nse_only        = "--nse-only"     in ARGS
+    bse_only        = "--bse-only"     in ARGS
     dry_run         = "--dry-run"      in ARGS
+
+    nse_only && bse_only && error("--nse-only and --bse-only are mutually exclusive.")
+    run_nse = !bse_only   # both exchanges run by default
+    run_bse = !nse_only
 
     any_only  = daily_only || hourly_only || fivemin_only || fifteenmin_only
     run_daily  = !any_only || daily_only
@@ -502,38 +514,13 @@ NOTE: 5-min bars have a 100-day retention window; 15-min bars have a
 
     dry_run && @info "[DRY RUN] No API calls will be made."
 
-    # ── Discover existing symbols ─────────────────────────────────────────────
-    isdir(NSE_OHLCV_DIR) || error("NSE OHLCV directory not found: $NSE_OHLCV_DIR\n" *
-                                   "Run collect_nse_ohlcv.jl first.")
-
-    daily_syms    = [replace(f, "_daily.csv"  => "")
-                     for f in readdir(NSE_OHLCV_DIR) if endswith(f, "_daily.csv")]
-    hourly_syms   = [replace(f, "_hourly.csv" => "")
-                     for f in readdir(NSE_OHLCV_DIR) if endswith(f, "_hourly.csv")]
-    fivemin_syms  = [replace(f, "_5min.csv"   => "")
-                     for f in readdir(NSE_OHLCV_DIR) if endswith(f, "_5min.csv")]
-    fifteenmin_syms = [replace(f, "_15min.csv" => "")
-                       for f in readdir(NSE_OHLCV_DIR) if endswith(f, "_15min.csv")]
-
-    if !isnothing(sym_filter)
-        daily_syms      = filter(==(sym_filter), daily_syms)
-        hourly_syms     = filter(==(sym_filter), hourly_syms)
-        fivemin_syms    = filter(==(sym_filter), fivemin_syms)
-        fifteenmin_syms = filter(==(sym_filter), fifteenmin_syms)
-        isempty(daily_syms) && isempty(hourly_syms) &&
-        isempty(fivemin_syms) && isempty(fifteenmin_syms) &&
-            error("No existing CSV found for symbol '$sym_filter' in $NSE_OHLCV_DIR")
-        @info "Filtering to symbol: $sym_filter"
-    end
-
-    @info "Found $(length(daily_syms)) daily, $(length(hourly_syms)) hourly, $(length(fivemin_syms)) 5-min, $(length(fifteenmin_syms)) 15-min CSVs"
     @info "Updating to: $yest"
 
-    # ── Load session + instruments (skipped in dry-run) ───────────────────────
+    # ── Load session (skipped in dry-run) ─────────────────────────────────────
     session = dry_run ? (api_key="", access_token="") :
                         load_kite_session(REPO_ROOT)
 
-    nse_token_map = if dry_run
+    nse_token_map = if !run_nse || dry_run
         Dict{String, Int}()
     else
         @info "Loading NSE instrument list from Kite…"
@@ -543,7 +530,7 @@ NOTE: 5-min bars have a 100-day retention window; 15-min bars have a
         t
     end
 
-    bse_token_map = if !include_bse || dry_run
+    bse_token_map = if !run_bse || dry_run
         Dict{String, Int}()
     else
         @info "Loading BSE instrument list from Kite…"
@@ -554,81 +541,109 @@ NOTE: 5-min bars have a 100-day retention window; 15-min bars have a
     end
 
     # ── NSE update ────────────────────────────────────────────────────────────
-    @info "═══ NSE ═══"
+    if run_nse
+        isdir(NSE_OHLCV_DIR) || error("NSE OHLCV directory not found: $NSE_OHLCV_DIR\n" *
+                                       "Run collect_nse_ohlcv.jl first (or pass --bse-only).")
 
-    if run_daily
-        @info "── Daily bars ──"
-        update_daily!(daily_syms, nse_token_map, session, yest; dry_run)
-    end
-
-    if run_hourly
-        @info "── Hourly bars ──"
-        update_hourly!(hourly_syms, nse_token_map, session, yest; dry_run)
-    end
-
-    if run_5min
-        @info "── 5-min bars (equity) ──"
-        update_5min!(fivemin_syms, nse_token_map, session, yest; dry_run)
-
-        @info "── 5-min bars (macro) ──"
-        update_macro_5min!(session, yest; dry_run)
-    end
-
-    if run_15min
-        @info "── 15-min bars (equity) ──"
-        update_15min!(fifteenmin_syms, nse_token_map, session, yest; dry_run)
-
-        @info "── 15-min bars (macro) ──"
-        update_macro_15min!(session, yest; dry_run)
-    end
-
-    # ── BSE update (optional) ─────────────────────────────────────────────────
-    if include_bse && isdir(BSE_OHLCV_DIR)
-        @info "═══ BSE ═══"
-
-        bse_daily_syms = [replace(f, "_daily.csv"  => "")
-                          for f in readdir(BSE_OHLCV_DIR) if endswith(f, "_daily.csv")]
-        bse_hourly_syms = [replace(f, "_hourly.csv" => "")
-                           for f in readdir(BSE_OHLCV_DIR) if endswith(f, "_hourly.csv")]
-        bse_5min_syms  = [replace(f, "_5min.csv"   => "")
-                          for f in readdir(BSE_OHLCV_DIR) if endswith(f, "_5min.csv")]
-        bse_15min_syms = [replace(f, "_15min.csv"  => "")
-                          for f in readdir(BSE_OHLCV_DIR) if endswith(f, "_15min.csv")]
+        daily_syms    = [replace(f, "_daily.csv"  => "")
+                         for f in readdir(NSE_OHLCV_DIR) if endswith(f, "_daily.csv")]
+        hourly_syms   = [replace(f, "_hourly.csv" => "")
+                         for f in readdir(NSE_OHLCV_DIR) if endswith(f, "_hourly.csv")]
+        fivemin_syms  = [replace(f, "_5min.csv"   => "")
+                         for f in readdir(NSE_OHLCV_DIR) if endswith(f, "_5min.csv")]
+        fifteenmin_syms = [replace(f, "_15min.csv" => "")
+                           for f in readdir(NSE_OHLCV_DIR) if endswith(f, "_15min.csv")]
 
         if !isnothing(sym_filter)
-            bse_daily_syms  = filter(==(sym_filter), bse_daily_syms)
-            bse_hourly_syms = filter(==(sym_filter), bse_hourly_syms)
-            bse_5min_syms   = filter(==(sym_filter), bse_5min_syms)
-            bse_15min_syms  = filter(==(sym_filter), bse_15min_syms)
+            daily_syms      = filter(==(sym_filter), daily_syms)
+            hourly_syms     = filter(==(sym_filter), hourly_syms)
+            fivemin_syms    = filter(==(sym_filter), fivemin_syms)
+            fifteenmin_syms = filter(==(sym_filter), fifteenmin_syms)
+            isempty(daily_syms) && isempty(hourly_syms) &&
+            isempty(fivemin_syms) && isempty(fifteenmin_syms) &&
+                error("No existing CSV found for symbol '$sym_filter' in $NSE_OHLCV_DIR")
+            @info "Filtering to symbol: $sym_filter"
         end
 
-        @info "Found $(length(bse_daily_syms)) BSE daily, $(length(bse_hourly_syms)) hourly, $(length(bse_5min_syms)) 5-min, $(length(bse_15min_syms)) 15-min CSVs"
+        @info "Found $(length(daily_syms)) NSE daily, $(length(hourly_syms)) hourly, $(length(fivemin_syms)) 5-min, $(length(fifteenmin_syms)) 15-min CSVs"
+        @info "═══ NSE ═══"
 
         if run_daily
-            @info "── BSE Daily bars ──"
-            update_daily!(bse_daily_syms, bse_token_map, session, yest;
-                          dry_run, out_dir=BSE_OHLCV_DIR)
+            @info "── Daily bars ──"
+            update_daily!(daily_syms, nse_token_map, session, yest; dry_run)
         end
 
         if run_hourly
-            @info "── BSE Hourly bars ──"
-            update_hourly!(bse_hourly_syms, bse_token_map, session, yest;
-                           dry_run, out_dir=BSE_OHLCV_DIR)
+            @info "── Hourly bars ──"
+            update_hourly!(hourly_syms, nse_token_map, session, yest; dry_run)
         end
 
         if run_5min
-            @info "── BSE 5-min bars ──"
-            update_5min!(bse_5min_syms, bse_token_map, session, yest;
-                         dry_run, out_dir=BSE_OHLCV_DIR)
+            @info "── 5-min bars ──"
+            update_5min!(fivemin_syms, nse_token_map, session, yest; dry_run)
         end
 
         if run_15min
-            @info "── BSE 15-min bars ──"
-            update_15min!(bse_15min_syms, bse_token_map, session, yest;
-                          dry_run, out_dir=BSE_OHLCV_DIR)
+            @info "── 15-min bars ──"
+            update_15min!(fifteenmin_syms, nse_token_map, session, yest; dry_run)
         end
-    elseif include_bse
-        @warn "BSE directory not found ($BSE_OHLCV_DIR) — run collect_bse_ohlcv.jl first."
+    end
+
+    # ── BSE update ────────────────────────────────────────────────────────────
+    if run_bse
+        if isdir(BSE_OHLCV_DIR)
+            bse_daily_syms = [replace(f, "_daily.csv"  => "")
+                              for f in readdir(BSE_OHLCV_DIR) if endswith(f, "_daily.csv")]
+            bse_hourly_syms = [replace(f, "_hourly.csv" => "")
+                               for f in readdir(BSE_OHLCV_DIR) if endswith(f, "_hourly.csv")]
+            bse_5min_syms  = [replace(f, "_5min.csv"   => "")
+                              for f in readdir(BSE_OHLCV_DIR) if endswith(f, "_5min.csv")]
+            bse_15min_syms = [replace(f, "_15min.csv"  => "")
+                              for f in readdir(BSE_OHLCV_DIR) if endswith(f, "_15min.csv")]
+
+            if !isnothing(sym_filter)
+                bse_daily_syms  = filter(==(sym_filter), bse_daily_syms)
+                bse_hourly_syms = filter(==(sym_filter), bse_hourly_syms)
+                bse_5min_syms   = filter(==(sym_filter), bse_5min_syms)
+                bse_15min_syms  = filter(==(sym_filter), bse_15min_syms)
+            end
+
+            @info "Found $(length(bse_daily_syms)) BSE daily, $(length(bse_hourly_syms)) hourly, $(length(bse_5min_syms)) 5-min, $(length(bse_15min_syms)) 15-min CSVs"
+            @info "═══ BSE ═══"
+
+            if run_daily
+                @info "── Daily bars ──"
+                update_daily!(bse_daily_syms, bse_token_map, session, yest;
+                              dry_run, out_dir=BSE_OHLCV_DIR)
+            end
+
+            if run_hourly
+                @info "── Hourly bars ──"
+                update_hourly!(bse_hourly_syms, bse_token_map, session, yest;
+                               dry_run, out_dir=BSE_OHLCV_DIR)
+            end
+
+            if run_5min
+                @info "── 5-min bars ──"
+                update_5min!(bse_5min_syms, bse_token_map, session, yest;
+                             dry_run, out_dir=BSE_OHLCV_DIR)
+            end
+
+            if run_15min
+                @info "── 15-min bars ──"
+                update_15min!(bse_15min_syms, bse_token_map, session, yest;
+                              dry_run, out_dir=BSE_OHLCV_DIR)
+            end
+        else
+            @warn "BSE directory not found ($BSE_OHLCV_DIR) — run collect_bse_ohlcv.jl first (or pass --nse-only)."
+        end
+    end
+
+    # ── Macro update (exchange-independent — runs regardless of --nse-only/--bse-only) ──
+    if run_5min || run_15min
+        @info "═══ Macro ═══"
+        run_5min  && (@info "── 5-min bars ──";  update_macro_5min!(session, yest; dry_run))
+        run_15min && (@info "── 15-min bars ──"; update_macro_15min!(session, yest; dry_run))
     end
 end
 
