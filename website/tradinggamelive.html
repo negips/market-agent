@@ -66,7 +66,12 @@
   }
   .trade-toggle input { accent-color: var(--accent); cursor: pointer; }
   .canvas-wrap { position: relative; height: 260px; margin-top: 14px; }
-  .canvas-wrap.small { height: 180px; }
+  .canvas-wrap.small { height: 180px; margin-top: 2px; }
+
+  .subplot-label {
+    font-size: 10px; font-weight: 600; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .05em; margin-top: 18px;
+  }
 
   .val-run-toggles {
     display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
@@ -144,7 +149,7 @@ const LOG_URL      = 'data/trading_game/episode_log.jsonl';
 const VAL_RUNS_URL = 'data/trading_game/val_runs.jsonl';
 
 let shown = false;
-let valueChart = null, iterChart = null, valRunsChart = null;
+let valueChart = null, iterChart = null, valRunsChart = null, valRunsSplitChart = null;
 let lastValRuns = [];   // most recent renderValRunsChart(runs) argument — re-rendered on a toggle click, no re-fetch needed
 
 function loadShowTrades() {
@@ -194,6 +199,22 @@ function fmtTradeStamp(t) {
   const [y, m, d] = datePart.split('-');
   const dmy = `${d}/${m}/${y.slice(2)}`;
   return timePart ? `${dmy}-${timePart.slice(0, 5)}` : dmy;
+}
+
+// Shared row template for both the "Current episode" and "Final holdings —
+// latest validation run" tables — same shape either way (symbol, quantity,
+// entry/current price, days held, unrealized P&L), see `_holdings_snapshot`
+// in live.jl.
+function holdingsRowsHtml(holdings) {
+  return holdings.length ? holdings.map(h => `
+    <tr>
+      <td><span class="symbol-chip">${esc(h.symbol)}</span></td>
+      <td class="num">${h.quantity.toFixed(2)}</td>
+      <td class="num">${fmtRupee(h.entry_price)}</td>
+      <td class="num">${fmtRupee(h.current_price)}</td>
+      <td class="num">${h.days_held}</td>
+      <td class="num ${h.unrealized_pnl >= 0 ? 'pnl-pos' : 'pnl-neg'}">${fmtRupee(h.unrealized_pnl)} (${h.unrealized_pnl_pct >= 0 ? '+' : ''}${h.unrealized_pnl_pct.toFixed(2)}%)</td>
+    </tr>`).join('') : `<tr><td colspan="6" class="na" style="padding:14px">All cash — no open positions</td></tr>`;
 }
 
 function revealLayout() {
@@ -262,7 +283,27 @@ function revealLayout() {
         </div>
       </div>
       <div class="val-run-toggles" id="val-run-toggles"></div>
+      <div class="subplot-label">Portfolio value</div>
       <div class="canvas-wrap"><canvas id="val-chart"></canvas></div>
+      <div class="subplot-label">Portfolio split — stock vs cash</div>
+      <div class="canvas-wrap small"><canvas id="val-split-chart"></canvas></div>
+    </div>
+
+    <div class="chart-card">
+      <div class="chart-header">
+        <div class="chart-title">Final holdings — latest validation run</div>
+        <div class="chart-sub" id="val-holdings-sub"></div>
+      </div>
+      <div class="tbl-wrap" style="margin-top:12px">
+        <table class="data-table">
+          <thead><tr>
+            <th class="no-sort">Symbol</th><th class="no-sort">Qty</th>
+            <th class="no-sort">Entry</th><th class="no-sort">Current</th>
+            <th class="no-sort">Days held</th><th class="no-sort">Unrealized P&amp;L</th>
+          </tr></thead>
+          <tbody id="val-holdings-body"></tbody>
+        </table>
+      </div>
     </div>
   `;
 
@@ -439,15 +480,7 @@ function renderStatus(s) {
   }
 
   document.getElementById('holdings-sub').textContent = `Marked at ${s.current_date}`;
-  document.getElementById('holdings-body').innerHTML = s.holdings.length ? s.holdings.map(h => `
-    <tr>
-      <td><span class="symbol-chip">${esc(h.symbol)}</span></td>
-      <td class="num">${h.quantity.toFixed(2)}</td>
-      <td class="num">${fmtRupee(h.entry_price)}</td>
-      <td class="num">${fmtRupee(h.current_price)}</td>
-      <td class="num">${h.days_held}</td>
-      <td class="num ${h.unrealized_pnl >= 0 ? 'pnl-pos' : 'pnl-neg'}">${fmtRupee(h.unrealized_pnl)} (${h.unrealized_pnl_pct >= 0 ? '+' : ''}${h.unrealized_pnl_pct.toFixed(2)}%)</td>
-    </tr>`).join('') : `<tr><td colspan="6" class="na" style="padding:14px">All cash — no open positions</td></tr>`;
+  document.getElementById('holdings-body').innerHTML = holdingsRowsHtml(s.holdings);
 
   const trades = [...s.recent_trades].reverse();
   document.getElementById('trade-feed').innerHTML = trades.length ? trades.map(t => `
@@ -535,8 +568,21 @@ function renderValRunsChart(runs) {
   if (!runs.length) {
     document.getElementById('val-chart-sub').textContent = 'No held-out evaluation completed yet';
     document.getElementById('val-run-toggles').innerHTML = '';
+    document.getElementById('val-holdings-sub').textContent = '';
+    document.getElementById('val-holdings-body').innerHTML = '';
     return;
   }
+
+  // Always the most recently completed run, regardless of which runs are
+  // toggled on/off in the chart above — the chip toggles control chart
+  // visibility only, not which run this table describes.
+  const latestRun = runs[runs.length - 1];
+  document.getElementById('val-holdings-sub').textContent =
+    `Iter ${latestRun.iteration} · final value ${fmtRupee(latestRun.final_value)} · ` +
+    `return ${latestRun.val_return >= 0 ? '+' : ''}${(latestRun.val_return * 100).toFixed(2)}%`;
+  document.getElementById('val-holdings-body').innerHTML = latestRun.final_holdings
+    ? holdingsRowsHtml(latestRun.final_holdings)
+    : `<tr><td colspan="6" class="na" style="padding:14px">Not recorded for this run (written before this table was added)</td></tr>`;
   document.getElementById('val-chart-sub').textContent =
     `${runs.length} run${runs.length === 1 ? '' : 's'} · each run its own color ` +
     `(cycles after ${VAL_RUN_PALETTE.length}) · faint = earliest iteration (${runs[0].iteration}), ` +
@@ -560,31 +606,30 @@ function renderValRunsChart(runs) {
       </label>`;
     }).join('');
 
-  // Each run gets 3 lines — portfolio value (thick solid), stock value
-  // (regular solid), cash incl. reserved (dashed) — all drawn in the SAME
-  // color (valRunColor's recency gradient), so the 3 lines belonging to one
-  // validation run read as a single unit distinguishable only by shape, and
-  // that unit is still traceable back to its iteration by color/opacity, the
-  // same recency convention the rest of this chart already uses. A run
-  // unchecked in the toggle bar above is marked `hidden` here rather than
-  // dropped from the array, so Chart.js's own dataset bookkeeping stays
-  // consistent run to run.
-  const lineDatasets = [];
+  // One line per run on the top (portfolio-value) chart, two on the bottom
+  // (stock/cash split) chart — same color per run (valRunColor's cycling
+  // palette) on both, so a run reads as the same visual identity across the
+  // two linked charts even though its lines live in separate Chart.js
+  // instances. A run unchecked in the toggle bar above is marked `hidden`
+  // here rather than dropped from the array, so Chart.js's own dataset
+  // bookkeeping stays consistent run to run.
+  const portfolioDatasets = [];
+  const splitDatasets = [];
   runs.forEach((run, i) => {
     const color  = valRunColor(i, runs.length);
     const isLast = i === runs.length - 1;
     const hidden = hiddenValRuns.has(run.iteration);
-    lineDatasets.push({
+    portfolioDatasets.push({
       label: `Iter ${run.iteration} — portfolio value`,
       data: run.value_curve.map(p => ({ x: p.t, y: p.value })),
       borderColor: color, borderWidth: isLast ? 3 : 1.6, pointRadius: 0, tension: .15, hidden,
     });
-    lineDatasets.push({
+    splitDatasets.push({
       label: `Iter ${run.iteration} — stock value`,
       data: run.value_curve.map(p => ({ x: p.t, y: p.stocks_value })),
       borderColor: color, borderWidth: isLast ? 1.9 : 1, pointRadius: 0, tension: .15, hidden,
     });
-    lineDatasets.push({
+    splitDatasets.push({
       label: `Iter ${run.iteration} — cash (incl. reserved)`,
       data: run.value_curve.map(p => ({ x: p.t, y: p.cash_value })),
       borderColor: color, borderDash: [6, 3], borderWidth: isLast ? 1.6 : .9, pointRadius: 0, tension: .15, hidden,
@@ -635,10 +680,14 @@ function renderValRunsChart(runs) {
     hidden: !showVal,
   };
 
+  // Same linked-pair pattern as the current-episode section: the top chart
+  // (portfolio value + trade markers) hides its own x-axis labels/title and
+  // borrows the bottom chart's (stock/cash split), directly beneath it, so
+  // the two read as one panel sharing a single time axis.
   if (!valRunsChart) {
     valRunsChart = new Chart(document.getElementById('val-chart'), {
       type: 'line',
-      data: { datasets: [...lineDatasets, buyDataset, sellDataset, forcedDataset] },
+      data: { datasets: [...portfolioDatasets, buyDataset, sellDataset, forcedDataset] },
       options: {
         responsive: true, maintainAspectRatio: false,
         interaction: { mode: 'nearest', axis: 'x', intersect: false },
@@ -646,15 +695,16 @@ function renderValRunsChart(runs) {
           x: {
             type: 'time',
             time: { unit: 'day', tooltipFormat: 'MMM d, HH:mm', displayFormats: { day: 'MMM d' } },
-            title: { display: true, text: 'Held-out window date', color: '#6b7280' },
+            title: { display: false },
+            ticks: { display: false },
             grid: { color: '#1e2338' },
           },
           y: { title: { display: true, text: '₹', color: '#6b7280' }, grid: { color: '#2e3350' } },
         },
         plugins: {
           // No legend: dataset count grows unboundedly (one line per
-          // validation run) — see valRunColor's comment for why a
-          // recency-gradient replaces per-series color identity here.
+          // validation run) — see valRunColor's comment for why a cycling
+          // categorical palette plus the chip bar replaces a legend here.
           legend: { display: false },
           tooltip: { callbacks: { label: (item) => {
             if (item.raw && item.raw.trade) {
@@ -670,8 +720,35 @@ function renderValRunsChart(runs) {
   } else {
     // Dataset count itself changes (a new line per run) — rebuild wholesale
     // rather than mutating in place like the fixed-dataset-count charts.
-    valRunsChart.data.datasets = [...lineDatasets, buyDataset, sellDataset, forcedDataset];
+    valRunsChart.data.datasets = [...portfolioDatasets, buyDataset, sellDataset, forcedDataset];
     valRunsChart.update('none');
+  }
+
+  if (!valRunsSplitChart) {
+    valRunsSplitChart = new Chart(document.getElementById('val-split-chart'), {
+      type: 'line',
+      data: { datasets: splitDatasets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'nearest', axis: 'x', intersect: false },
+        scales: {
+          x: {
+            type: 'time',
+            time: { unit: 'day', tooltipFormat: 'MMM d, HH:mm', displayFormats: { day: 'MMM d' } },
+            title: { display: true, text: 'Held-out window date', color: '#6b7280' },
+            grid: { color: '#1e2338' },
+          },
+          y: { title: { display: true, text: '₹', color: '#6b7280' }, grid: { color: '#2e3350' } },
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: (item) => `${item.dataset.label}: ${fmtRupee(item.parsed.y)}` } },
+        },
+      },
+    });
+  } else {
+    valRunsSplitChart.data.datasets = splitDatasets;
+    valRunsSplitChart.update('none');
   }
 }
 

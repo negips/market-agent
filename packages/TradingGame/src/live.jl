@@ -220,12 +220,16 @@ function _value_curve_json(tracker::LiveTracker)
 end
 
 """Append one completed held-out validation episode's full portfolio-value
-curve and trade list to `path` as a single JSON line. Call once right after a
-val-phase `collect_rollout` finishes (`train.jl`), before the next
-`start_episode!` resets `tracker`'s curve/trade buffers for the following
-phase — `tracker` at that point holds exactly this val episode's data (every
-`start_episode!` call clears both, so there's no cross-episode leakage to
-worry about).
+curve, trade list, and final holdings snapshot to `path` as a single JSON
+line. Call once right after a val-phase `collect_rollout` finishes
+(`train.jl`), before the next `start_episode!` resets `tracker`'s curve/trade
+buffers for the following phase — `tracker` at that point holds exactly this
+val episode's data (every `start_episode!` call clears both, so there's no
+cross-episode leakage to worry about). `env` must likewise still be at the
+val rollout's terminal state (true right after `collect_rollout` returns,
+before anything else touches it) — `final_holdings` is `_holdings_snapshot(env)`
+taken at that moment, the same shape `live_status.json`'s `"holdings"` field
+uses, so `tradinggamelive.html` can render both with one shared row template.
 
 Unlike `live_status.json` (overwritten on every write — it only ever shows
 the *current* episode), this file is pure append: every held-out run this
@@ -237,15 +241,17 @@ whole run, not just see the latest. No-op if `path` is empty, matching
 is disabled, `tracker`'s curve/trade buffers were never populated per-bar
 either — see `make_live_callback` — so there would be nothing to save here
 regardless)."""
-function save_val_run!(tracker::LiveTracker, path::String; iteration::Int, val_return::Real, val_value::Real)
+function save_val_run!(tracker::LiveTracker, path::String, env::TradingGameEnv;
+                        iteration::Int, val_return::Real, val_value::Real)
     isempty(path) && return nothing
     row = (
-        iteration   = iteration,
-        val_return  = val_return,
-        final_value = val_value,
-        started_at  = tracker.started_at,
-        value_curve = _value_curve_json(tracker),
-        trades      = tracker.trades,
+        iteration      = iteration,
+        val_return     = val_return,
+        final_value    = val_value,
+        started_at     = tracker.started_at,
+        value_curve    = _value_curve_json(tracker),
+        trades         = tracker.trades,
+        final_holdings = _holdings_snapshot(env),
     )
     open(path, "a") do io
         JSON3.write(io, row)

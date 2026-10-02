@@ -172,7 +172,7 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
             val_value  = portfolio_value(env)
             push!(log["val_return"], val_return)
             push!(log["val_final_value"], val_value)
-            save_val_run!(live_tracker, val_curve_path; iteration=abs_iter, val_return=val_return, val_value=val_value)
+            save_val_run!(live_tracker, val_curve_path, env; iteration=abs_iter, val_return=val_return, val_value=val_value)
             candidate_return = val_return
         end
 

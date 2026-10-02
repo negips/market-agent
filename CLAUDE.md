@@ -94,7 +94,10 @@ market-agent/
 │   ├── monitor_news.jl                   # real-time BSE + RSS news monitor daemon
 │   ├── build_cache.jl                    # build inference_cache.bson from all OHLCV CSVs (run each morning)
 │   ├── build_dataset.jl                  # sliding-window dataset assembly; --pred-hours 35|70
-│   └── train_model.jl                    # train SwingPredictor (v1/v2/v3); auto-selects dataset
+│   ├── train_model.jl                    # train SwingPredictor (v1/v2/v3); auto-selects dataset
+│   ├── build_universe_snapshot.jl        # TradingGame candidate universe (confidence + market-cap filtered)
+│   ├── train_trading_policy.jl           # drives TradingGame.train_policy! — see website/tradinggamelive.html
+│   └── training_status.jl                # one-shot read-only snapshot of a running train_trading_policy.jl
 │
 │   ├── data/                           # generated artifacts (gitignored)
 │   │   ├── nse_companies_latest.json   # latest snapshot (read by companies.html)
@@ -547,9 +550,12 @@ julia --project=packages/TradingGame scripts/train_trading_policy.jl --entropy 0
 Prerequisites: `inference_cache.bson` (`build_cache.jl`) and
 `universe_latest.json` (`build_universe_snapshot.jl`).
 Outputs (under `website/data/trading_game/`): `policy.bson`, `episode_log.jsonl`,
-`live_status.json`, `val_runs.jsonl` (every held-out episode's full portfolio-value
-curve and trades, appended — never overwritten — once per evaluation; plotted as
-one line per run on `tradinggamelive.html`), `run_config.json`. Stop cleanly with
+`live_status.json`, `val_runs.jsonl` (every held-out episode's full portfolio value/
+stock value/cash value curves, trades, and final holdings snapshot, appended —
+never overwritten — once per evaluation; `tradinggamelive.html` plots each run as
+its own color with a show/hide toggle, portfolio value as a thick line and
+stock/cash as a separate linked sub-chart below it, plus a table of the latest
+run's final positions), `run_config.json`. Stop cleanly with
 `touch website/data/trading_game/STOP`
 (checkpoint saved) or hard-stop with `STOP_NOW` (no save), same convention as
 `train_model.jl`. To restart after either: re-run with `--resume` — loads
@@ -628,6 +634,7 @@ Serve from the repo root so `data/` is accessible:
 | Watchlist | `website/watchlist.html` | `website/data/earnings_watchlist_latest.json` |
 | Companies | `website/companies.html` | `website/data/nse_companies_latest.json` |
 | Setup     | `website/setup.html`     | localStorage (checklist state) |
+| Trading game | `website/tradinggamelive.html` | `website/data/trading_game/live_status.json`, `val_runs.jsonl` |
 
 ## Data sources
 
@@ -653,6 +660,15 @@ SignalDatabase
       ↓
 Self-improvement loop        ← analyze outcomes, retrain parameters
 ```
+
+`TradingGame` branches off `StockSwingPredictor` (its `InferenceCache`/macro data)
+and `CompanyConfidence` (its candidate-universe pre-filter) as a parallel RL
+training track, not a downstream stage of the swing-prediction pipeline above —
+see the dependency table and `TradingGame`'s module docstring. Unlike the rest of
+this diagram it's actively in progress, not planned: simulator, PPO training loop,
+and live training/validation visualization (`tradinggamelive.html`) all exist and
+run today; only the historical news-signal backfill (`news_features.jl`) remains
+unstarted.
 
 ## Environment variables
 
