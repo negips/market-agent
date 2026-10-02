@@ -31,6 +31,13 @@ function reset!(env::TradingGameEnv, config::EpisodeConfig)
     env.current_hour_idx = start_hour
     env.current_date     = Date(env.cache.hourly_datetimes[start_hour])
 
+    env.reward_window_start_date_idx = env.cache.date_index[env.current_date]
+    env.reward_window_start_value    = config.initial_cash
+
+    env.daily_value_base_date_idx = env.reward_window_start_date_idx
+    empty!(env.daily_values)
+    push!(env.daily_values, config.initial_cash)
+
     end_hour = find_hourly_end(env.cache, DateTime(config.end_date, Time(15, 30)))
     end_hour == 0 && error(
         "TradingGameEnv.reset!: no hourly bars at or before episode end $(config.end_date)")
@@ -48,16 +55,25 @@ function reset!(env::TradingGameEnv, config::EpisodeConfig)
     return nothing
 end
 
-"""Total portfolio value: stock value (mark-to-market at the current hourly
-close) + spendable cash + reserved cash (rules 2 and 7, the same formula)."""
-function portfolio_value(env::TradingGameEnv)::Float64
+"""Decomposes total portfolio value into its two components — stock value
+(mark-to-market at the current hourly close) and cash value (spendable cash
+plus reserved/settling cash, rules 4 and 7) — so callers that need the
+breakdown (e.g. `step!`'s info dict, consumed by `live.jl` for the website's
+stock-value/cash-value chart lines) don't duplicate the holdings loop
+`portfolio_value` already does."""
+function portfolio_breakdown(env::TradingGameEnv)::NamedTuple{(:value, :stocks_value, :cash_value), Tuple{Float64, Float64, Float64}}
     stocks = 0.0
     for h in env.portfolio.holdings
         stocks += h.quantity * env.cache.hourly_closes[env.current_hour_idx, h.sym_idx]
     end
     reserved = isempty(env.portfolio.reserved) ? 0.0 : sum(l.amount for l in env.portfolio.reserved)
-    return stocks + env.portfolio.cash + reserved
+    cash = env.portfolio.cash + reserved
+    return (value=stocks + cash, stocks_value=stocks, cash_value=cash)
 end
+
+"""Total portfolio value: stock value (mark-to-market at the current hourly
+close) + spendable cash + reserved cash (rules 2 and 7, the same formula)."""
+portfolio_value(env::TradingGameEnv)::Float64 = portfolio_breakdown(env).value
 
 # ── Step ──────────────────────────────────────────────────────────────────────────
 
@@ -70,13 +86,15 @@ Order of operations within a step (see module docs for the full rationale):
 settle matured reserved cash → force-exit stale holdings (rule 9, runs on
 every bar) → apply the voluntary action, if this is a decision bar (rule 8,
 masked per rules 5 and 10 in `resolve_actions`) → mark portfolio value →
-reward, with rule 14's cash-ceiling soft penalty subtracted (see
-`MAX_CASH_FRACTION`/`CASH_CEILING_PENALTY_COEF` in `constants.jl` for why this
-is a reward shaping term rather than a structural mask like rules 12/13).
+reward. The reward's log-return term is computed by `_log_return_reward!`
+according to `TRAINING_REWARD_MODE` (`SPARSE_WINDOW` or `ROLLING_WINDOW` —
+see `constants.jl`), with rule 14's cash-ceiling soft penalty subtracted on
+top every single bar regardless of reward mode (see
+`MAX_CASH_FRACTION`/`CASH_CEILING_PENALTY_COEF` — an independent, differently-
+cadenced reward shaping term, not a structural mask like rules 12/13).
 """
 function step!(env::TradingGameEnv, raw_actions::JointAction=RawAction[])::StepResult
     env.config === nothing && error("TradingGameEnv.step!: call reset! before step!")
-    prev_value = portfolio_value(env)
 
     _advance_clock!(env)
     date_idx = env.cache.date_index[env.current_date]
@@ -92,22 +110,26 @@ function step!(env::TradingGameEnv, raw_actions::JointAction=RawAction[])::StepR
         n_executed = length(resolved)
     end
 
-    value  = portfolio_value(env)
-    reward = log(value / prev_value)
+    breakdown = portfolio_breakdown(env)
+    value = breakdown.value
+    done  = env.current_hour_idx >= env.end_hour_idx
+
+    reward = _log_return_reward!(env, date_idx, value, done)
 
     # Rule 14 (soft): spendable cash above MAX_CASH_FRACTION of portfolio value
     # costs a per-bar reward penalty rather than being structurally blocked —
     # see `MAX_CASH_FRACTION`'s docstring in `constants.jl` for why a hard
     # ceiling isn't well-defined here (episode starts at 100% cash; matured
     # reserved cash lands back in cash passively, not via a masked action).
+    # Independent of the log-return term's cadence above — always every bar.
     cash_fraction = value > 0 ? env.portfolio.cash / value : 0.0
     cash_excess   = max(0.0, cash_fraction - MAX_CASH_FRACTION)
     reward -= CASH_CEILING_PENALTY_COEF * cash_excess
 
-    done = env.current_hour_idx >= env.end_hour_idx
-
     info = Dict{String, Any}(
         "portfolio_value"       => value,
+        "stocks_value"          => breakdown.stocks_value,
+        "cash_value"            => breakdown.cash_value,
         "cash_fraction"         => cash_fraction,
         "cash_ceiling_violated" => cash_excess > 0,
         "forced_exits"          => length(forced),
@@ -116,6 +138,46 @@ function step!(env::TradingGameEnv, raw_actions::JointAction=RawAction[])::StepR
         "trades"                => vcat(forced_events, voluntary_events),
     )
     return StepResult(reward, done, info)
+end
+
+"""Compute this bar's reward log-return term and advance whatever state
+`mode` needs for next time — see `RewardMode`'s docstring in `constants.jl`
+for the formula/tradeoffs of each mode. Called once per `step!`, after
+`value`/`done` are known. Does NOT include rule 14's cash-ceiling penalty —
+that's added by the caller, unconditionally, on top of whatever this
+returns. `mode` defaults to the module-wide `TRAINING_REWARD_MODE`; exposed
+as an explicit argument (rather than reading the constant directly) purely
+so tests can exercise both branches without redefining a `const` at
+runtime, which Julia doesn't support safely — `step!` itself never passes it
+explicitly, so changing modes for a real run is still just the one-line
+`TRAINING_REWARD_MODE` edit in `constants.jl`."""
+function _log_return_reward!(env::TradingGameEnv, date_idx::Int, value::Float64, done::Bool;
+                              mode::RewardMode=TRAINING_REWARD_MODE)::Float64
+    if mode == SPARSE_WINDOW
+        # 0 until REWARD_INTERVAL_DAYS trading days have passed since the last
+        # checkpoint, then the FULL window's return in one lump sum. The final
+        # bar force-flushes a shorter trailing window so the episode-total
+        # reward still telescopes exactly to log(V_final/V_initial) — nothing
+        # is silently dropped, it's just reported in ~weekly chunks.
+        if done || date_idx - env.reward_window_start_date_idx >= REWARD_INTERVAL_DAYS
+            reward = log(value / env.reward_window_start_value)
+            env.reward_window_start_date_idx = date_idx
+            env.reward_window_start_value    = value
+            return reward
+        end
+        return 0.0
+    else   # ROLLING_WINDOW
+        # Record today's value once, the first time this trading day is seen
+        # — daily_values ends up with exactly one entry per trading day, in
+        # strictly consecutive date_idx order (the simulator never skips a
+        # trading day), which is what makes the O(1) index lookup below valid.
+        today_offset = date_idx - env.daily_value_base_date_idx + 1
+        today_offset > length(env.daily_values) && push!(env.daily_values, value)
+
+        lookback_offset = today_offset - REWARD_INTERVAL_DAYS
+        lookback_offset < 1 && return 0.0   # not enough history yet (episode's first REWARD_INTERVAL_DAYS trading days)
+        return log(value / env.daily_values[lookback_offset])
+    end
 end
 
 """Whether the current bar accepts a voluntary action. Always `true` under the

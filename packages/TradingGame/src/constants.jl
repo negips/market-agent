@@ -7,10 +7,10 @@ Every numeric value here traces back to a specific numbered rule in
 
 # ── Rule-derived constants ──────────────────────────────────────────────────────
 
-const FEE_RATE              = 0.005          # rule 11: 0.5% of transaction value, both legs
+const FEE_RATE              = 0.005           # rule 11: 0.5% of transaction value, both legs
 const SETTLEMENT_DAYS       = 2               # rule 4: reserved-cash → cash delay, in trading days
 const MIN_HOLD_DAYS         = 1               # rule 10: lock-up before a voluntary sale
-const MAX_HOLD_DAYS         = 10              # rule 9: forced exit after this many trading days
+const MAX_HOLD_DAYS         = 14              # rule 9: forced exit after this many trading days
 const DECISION_INTERVAL_MIN = 15              # rule 8: minimum minutes between decisions
 const MAX_POSITION_FRACTION = 0.15            # rule 12: a single symbol can't exceed this share of portfolio value
 
@@ -39,12 +39,14 @@ formula and `StepResult.info["cash_ceiling_violated"]`."""
 const MAX_CASH_FRACTION = 0.30
 
 """Weight on the rule-14 soft penalty: `step!` subtracts
-`CASH_CEILING_PENALTY_COEF * max(0, cash/value - MAX_CASH_FRACTION)` from that
-bar's reward. Scaled to the same order as `ENTROPY_COEF` (both are per-bar
-shaping terms layered on a typically-small per-bar log-return reward) — small
-enough not to swamp genuine portfolio-value signal, large enough that sitting
-at 100% cash (excess=0.70) costs a reward of -0.007/bar, a real, learnable
-incentive to deploy capital."""
+`CASH_CEILING_PENALTY_COEF * max(0, cash/value - MAX_CASH_FRACTION)` from
+*every* bar's reward — unlike the log-return term (see `TRAINING_REWARD_MODE`
+and `REWARD_INTERVAL_DAYS`, neither of which this penalty depends on), this
+penalty is never windowed, under either reward mode. Scaled to the same
+order as `ENTROPY_COEF` — small enough not to swamp a reward window's
+genuine portfolio-value signal, large enough that sitting at 100% cash
+(excess=0.70) costs -0.007/bar, a real, learnable incentive to deploy
+capital even between reward windows."""
 const CASH_CEILING_PENALTY_COEF = 0.01
 
 """Rule 15: once a symbol is sold (voluntarily or via the rule-9 forced exit —
@@ -56,7 +58,46 @@ newly bought again for this many trading days. Structural (masked in
 ill-defined the way rule 14's cash constraint had. Only blocks *opening a new
 position*; adding to a symbol that's still currently held (a separate,
 not-yet-sold lot) is unaffected — see `resolve_actions`'s docstring."""
-const REBUY_COOLDOWN_DAYS = 5
+const REBUY_COOLDOWN_DAYS = 7
+
+"""
+Which algorithm computes the reward's log-return term each bar — see `step!`
+for the implementation of both. Switching modes only changes the RL reward
+*signal*; it never affects rule 8's decision cadence (buy/sell decisions
+still happen every hourly bar either way) or rule 14's cash-ceiling penalty
+(independent of reward mode, always applied every single bar).
+
+- `SPARSE_WINDOW`: the log-return term is 0 every bar except once every
+  `REWARD_INTERVAL_DAYS` trading days, when the FULL window's return is
+  reported as one lump sum: `log(value_now / value_at_window_start)`. The
+  final bar of an episode also force-flushes a shorter trailing window, so
+  an episode's total reward telescopes *exactly* to `log(V_final/V_initial)`
+  — nothing is silently dropped, it's just reported in ~weekly (or however
+  long `REWARD_INTERVAL_DAYS` is) chunks instead of hourly ones.
+
+- `ROLLING_WINDOW`: every bar's log-return term is the trailing
+  `REWARD_INTERVAL_DAYS`-day return, `log(value_now / value_N_days_ago)` (0
+  until that much history exists, early in an episode). Reward is dense —
+  never 0 once past the warm-up — but consecutive bars' rewards overlap
+  heavily (a 14-day window shares 13 of its days with the next bar's
+  window), and the episode-total reward no longer telescopes to a simple
+  final/initial ratio: summing it out algebraically gives
+  `log((V_{T-N+1}·...·V_T) / (V_1·...·V_N))`, a ratio of the products of the
+  last N and first N daily values, not `log(V_final/V_initial)` — so
+  `train_return`/`val_return` stop being directly readable as "the
+  portfolio's total return" the way they are under `SPARSE_WINDOW`; check
+  `portfolio_value(env)` directly instead.
+"""
+@enum RewardMode SPARSE_WINDOW ROLLING_WINDOW
+
+const TRAINING_REWARD_MODE = SPARSE_WINDOW
+
+"""The reward window length, in trading days, for whichever `TRAINING_REWARD_MODE`
+is active — "once every N days" for `SPARSE_WINDOW`, "trailing N-day return"
+for `ROLLING_WINDOW`. Shared between both modes so switching modes is a
+one-line change (`TRAINING_REWARD_MODE`) without also having to re-tune a
+separate window-length constant per mode."""
+const REWARD_INTERVAL_DAYS = 7
 
 # ── Decision cadence proxy ───────────────────────────────────────────────────────
 

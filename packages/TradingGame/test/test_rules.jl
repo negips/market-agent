@@ -413,6 +413,103 @@ end
         @test length(r2.info["trades"]) >= 1   # the buy above executed unmasked
     end
 
+    @testset "Reward's log-return term is windowed to REWARD_INTERVAL_DAYS, not every bar" begin
+        # Same 24-symbol/6-buy headroom trick as the rule-14 testset above —
+        # deploying ~90% of cash keeps cash_fraction under MAX_CASH_FRACTION
+        # for the rest of the episode, so rule 14's per-bar penalty stays
+        # exactly 0 throughout and doesn't confound the log-return assertions.
+        # Buy symbols 2..7, not 1..6: make_test_cache's drift = 0.002*j-0.003
+        # is negative for S1 only — skipping it means every held position's
+        # value only ever grows, so cash_fraction only shrinks further below
+        # 30% over the episode (never drifts back up and re-triggers rule 14).
+        # n_days is kept under MAX_HOLD_DAYS (whatever it's currently set to
+        # in constants.jl) so no rule-9 forced exit fires mid-test — one would
+        # settle into spendable cash 2 days later and spike cash_fraction,
+        # the same confound as the positive-drift fix above but from a
+        # different source. Still comfortably covers 2 reward windows.
+        symbols = ["S$i" for i in 1:24]
+        buy_symbols = symbols[2:7]
+        n_days = min(2 * REWARD_INTERVAL_DAYS - 1, MAX_HOLD_DAYS - 1)
+        cache = make_test_cache(symbols=symbols, n_days=n_days)
+        env = TradingGameEnv(cache)
+        reset!(env, EpisodeConfig(initial_cash=100_000.0, start_date=cache.dates[1],
+                                   end_date=cache.dates[end], candidate_universe=symbols))
+        sym_idxs = [env.cache.sym_index[s] for s in buy_symbols]
+
+        r1 = step!(env, [RawAction(idx, BUY, 1.0) for idx in sym_idxs])
+        @test r1.info["cash_ceiling_violated"] == false
+        @test r1.reward == 0.0   # first bar is the same trading day as reset — window hasn't closed yet
+
+        total_reward = r1.reward
+        nonzero_bars = r1.reward != 0.0 ? 1 : 0
+        done = r1.done
+        while !done
+            r = step!(env, RawAction[])   # hold only — isolates the windowing behavior
+            @test r.info["cash_ceiling_violated"] == false
+            total_reward += r.reward
+            r.reward != 0.0 && (nonzero_bars += 1)
+            done = r.done
+        end
+
+        # Telescoping: with the cash-ceiling penalty pinned at 0 throughout,
+        # the sum of every bar's reward (mostly 0s, occasional lump sums at
+        # window closes, one final force-flush) must equal exactly the
+        # episode's total log-return — nothing silently dropped by windowing.
+        @test total_reward ≈ log(portfolio_value(env) / 100_000.0) atol=1e-6
+
+        # Genuinely sparse, not secretly still every-bar: a 25-trading-day
+        # episode at REWARD_INTERVAL_DAYS=7 should produce roughly 3-4 window
+        # closes plus one final flush, far fewer than the ~175 hourly bars.
+        @test nonzero_bars < 10
+    end
+
+    @testset "ROLLING_WINDOW reward mode: trailing REWARD_INTERVAL_DAYS-day return every bar" begin
+        # TRAINING_REWARD_MODE is a `const` — Julia doesn't support safely
+        # redefining one at runtime, so this exercises the ROLLING_WINDOW
+        # branch directly via _log_return_reward!'s `mode` override instead
+        # of actually switching the constant. It reads env.daily_values
+        # (mutated only by this call, never by step! itself, which always
+        # uses the default SPARSE_WINDOW path internally and only touches
+        # the separate reward_window_start_* fields) — so calling this
+        # alongside a normal step! loop is safe, not a double-mutation.
+        env = make_test_env(initial_cash=100_000.0, n_days=20)
+        date_idx = env.cache.date_index[env.current_date]
+
+        # Independent "one value per trading day" tracker, to cross-check
+        # against what the production code's own daily_values should contain.
+        my_daily_values  = [100_000.0]
+        my_base_date_idx = date_idx
+
+        rng = MersenneTwister(3)
+        done = false
+        checked_zero_phase = false
+        checked_nonzero_phase = false
+        while !done
+            r = step!(env, random_policy(env; rng=rng))
+            date_idx = env.cache.date_index[env.current_date]
+            value    = r.info["portfolio_value"]
+            done     = r.done
+
+            offset = date_idx - my_base_date_idx + 1
+            offset > length(my_daily_values) && push!(my_daily_values, value)
+
+            rolling_reward = TradingGame._log_return_reward!(env, date_idx, value, done; mode=ROLLING_WINDOW)
+
+            lookback = offset - REWARD_INTERVAL_DAYS
+            if lookback < 1
+                @test rolling_reward == 0.0
+                checked_zero_phase = true
+            else
+                @test rolling_reward ≈ log(value / my_daily_values[lookback]) atol=1e-9
+                checked_nonzero_phase = true
+            end
+        end
+        # Confirms the episode actually ran long enough to exercise BOTH the
+        # warm-up (not-enough-history) phase and the real rolling-return phase.
+        @test checked_zero_phase
+        @test checked_nonzero_phase
+    end
+
     @testset "Full historical episode: random and heuristic baselines obey every rule" begin
         policies = [
             env -> random_policy(env; rng=MersenneTwister(1)),

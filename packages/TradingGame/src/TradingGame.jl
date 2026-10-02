@@ -15,7 +15,12 @@ not exceed `MAX_CASH_FRACTION` of portfolio value (rule 14, enforced as a
 reward penalty rather than a mask — see `MAX_CASH_FRACTION`'s docstring), a
 sold symbol can't be newly bought again for `REBUY_COOLDOWN_DAYS` trading days
 (rule 15), decisions happen at the `TRAINING_DECISION_GRANULARITY` cadence,
-and the objective is continuous portfolio-value maximisation.
+reward is reported every `REWARD_INTERVAL_DAYS` trading days rather than
+every bar, via either of two switchable algorithms (`TRAINING_REWARD_MODE`
+— `SPARSE_WINDOW` or `ROLLING_WINDOW`, see their docstring for the formula/
+tradeoffs of each; decision cadence is unaffected either way), and the
+objective is to maximise the total value of the portfolio, evaluated every
+`REWARD_INTERVAL_DAYS` days (rule 16).
 
 ## Stages
 
@@ -45,7 +50,8 @@ reset!(env, EpisodeConfig(
 ))
 
 result = step!(env, heuristic_policy(env))   # or random_policy(env), or your own JointAction
-result.reward         # log-return of portfolio value this step
+result.reward         # usually 0 — nonzero only once every REWARD_INTERVAL_DAYS trading days
+                       # (plus rule 14's small per-bar cash-ceiling penalty, every step)
 portfolio_value(env)
 ```
 
@@ -91,6 +97,7 @@ export
     FEE_RATE, SETTLEMENT_DAYS, MIN_HOLD_DAYS, MAX_HOLD_DAYS, DECISION_INTERVAL_MIN,
     MAX_POSITION_FRACTION, N_MAX_HOLDINGS_FRACTION, n_max_holdings,
     MAX_CASH_FRACTION, CASH_CEILING_PENALTY_COEF, REBUY_COOLDOWN_DAYS,
+    RewardMode, SPARSE_WINDOW, ROLLING_WINDOW, TRAINING_REWARD_MODE, REWARD_INTERVAL_DAYS,
     DecisionGranularity, HOURLY, MINUTE_15, TRAINING_DECISION_GRANULARITY,
     N_CANDIDATE_STOCKS, MIN_CONFIDENCE_SCORE, GAMMA, GAE_LAMBDA, CLIP_EPS,
     VALUE_LOSS_COEF, ENTROPY_COEF, DECAY_HALFLIFE_HOURS, N_HOURLY_BARS_SHORT,
@@ -106,7 +113,7 @@ export
     resolve_actions,
 
     # env
-    reset!, step!, portfolio_value, is_decision_bar,
+    reset!, step!, portfolio_value, portfolio_breakdown, is_decision_bar,
 
     # baseline_policy
     random_policy, heuristic_policy,

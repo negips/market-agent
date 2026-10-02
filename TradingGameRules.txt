@@ -2,16 +2,16 @@
 1. The player starts with a portfolio which contains a certain amount of cash. This fixed by a parameter which can be programmed.
 2. The value of portfolio at the beginning is given by the initial value of cash.
 3. The player is allowed buy and sell stocks on the BSE or NSE stock exchanges.
-4. Cash is used up whenever stocks are bought and cash is received whenever stocks are sold. Whenever stocks are sold the value of the stocks sold goes into a category called "reserved cash". This has the same value as regular cash except that it cannot be used to buy stocks. After a delay of 2 days, the reserve cash is converted into cash.
+4. Cash is used up whenever stocks are bought and cash is received whenever stocks are sold. Whenever stocks are sold the value of the stocks sold goes into a category called "reserved cash". This has the same value as regular cash except that it cannot be used to buy stocks. After a delay of SETTLEMENT_DAYS days, the reserve cash is converted into cash.
 5. The number of stocks that can be purchased are limited by the amount of cash that is available in the portfolio.
 6. The number of stocks sold/bought can only be whole number counts. There can't be any fractional stocks traded.
 7. The total value of the portfolio is equal to the total value of the stocks (which is continuously changing) + the amount of cash + the amount of reserve cash.
 8. Purchase/selling decisions can only be made when the stock exchanges are open and, once every 15 minutes or, immediately after a news item has been released.
-9. A particular purchased stock can be held for a maximum of 10 days. After 10 days the player will be forced to sell the stock.
-10. Stocks bought can not be sold again for 1 day.
-11. All transactions involving buying and selling of stocks costs 0.5% of the total transaction value as fees. In case of stock purchase this gets deducted from the available cash. In case of stock sale this gets deducted from the cash received from the sale of the stocks.
-12. A particular stock holding can not exceed 15% of the total portfolio value.
+9. A particular purchased stock can be held for a maximum of MAX_HELD_DAYS days. After that the player will be forced to sell the stock.
+10. Stocks bought can not be sold again for MIN_HOLD_DAYS day.
+11. All transactions involving buying and selling of stocks costs FEE_RATE of the total transaction value as fees. In case of stock purchase this gets deducted from the available cash. In case of stock sale this gets deducted from the cash received from the sale of the stocks.
+12. A particular stock holding can not exceed MAX_POSITION_FRACTION of the total portfolio value.
 13. There is a ceiling in the total number of stocks that can be held in the portfolio. We will indicate that by N_MAX which is a parameter that can be set. For now we will set it to N_MAX=0.25*N, where N is the size of the stock universe.
-14. Cash held in the portfolio can never exceed 30% of the total portfolio value.
-15. Once a stock is sold, the same stock can not be bought again for 5 days.
-16. The objective of the game is to continuously maximize the total value of the portfolio.
+14. Cash held in the portfolio can never exceed MAX_CASH_FRACTION of the total portfolio value.
+15. Once a stock is sold, the same stock can not be bought again for REBUY_COOLDOWN_DAYS days.
+16. The objective of the game is to maximize the total value of the portfolio, evaluated every REWARD_INTERVAL_DAYS days.

@@ -119,6 +119,22 @@ and `candidate_order` (the same symbols as a `Vector`, in `config.candidate_univ
 order) are two views of the same episode-fixed universe — `candidate_order` is
 what `observation.jl` uses so a given tensor column always refers to the same
 stock for the whole episode.
+
+`reward_window_start_date_idx`/`reward_window_start_value` track the current
+~`REWARD_INTERVAL_DAYS`-trading-day reward window under
+`TRAINING_REWARD_MODE == SPARSE_WINDOW` (see `constants.jl`): the trading-day
+index and portfolio value as of the last reward checkpoint, reset by `reset!`
+to the episode start and advanced by `step!` every time a window closes.
+
+`daily_value_base_date_idx`/`daily_values` are the equivalent state for
+`TRAINING_REWARD_MODE == ROLLING_WINDOW`: one portfolio-value snapshot per
+distinct trading day since episode start, appended in strictly consecutive
+order (the simulator never skips a trading day), which is what makes O(1)
+lookup of "the value N trading days ago" possible —
+`daily_values[date_idx - daily_value_base_date_idx + 1 - REWARD_INTERVAL_DAYS]`
+— rather than needing a search. Maintained by `step!` regardless of which
+mode is actually active (negligible cost: at most one entry per trading day,
+so even a 5-year episode is only ~1,250 entries).
 """
 mutable struct TradingGameEnv
     cache             :: InferenceCache
@@ -130,11 +146,15 @@ mutable struct TradingGameEnv
     candidate_sym_idx :: Set{Int}
     candidate_order   :: Vector{Int}
     news_hour_indices :: Set{Int}
+    reward_window_start_date_idx :: Int
+    reward_window_start_value    :: Float64
+    daily_value_base_date_idx    :: Int
+    daily_values                 :: Vector{Float64}
 end
 
 function TradingGameEnv(cache::InferenceCache; news_hour_indices::Set{Int}=Set{Int}())
     TradingGameEnv(cache, Portfolio(cash=0.0), nothing, 0, Date(1900, 1, 1), 0,
-                    Set{Int}(), Int[], news_hour_indices)
+                    Set{Int}(), Int[], news_hour_indices, 0, 0.0, 0, Float64[])
 end
 
 """One executed trade (forced exit, voluntary sell, or buy) — `StepResult.info["trades"]`

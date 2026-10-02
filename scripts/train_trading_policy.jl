@@ -183,6 +183,55 @@ function _resolve_minibatch(requested::Union{Int, Nothing}, device::Symbol)::Int
     return device === :gpu ? 256 : 32
 end
 
+_fmt_money(v) = "₹" * replace(@sprintf("%.0f", v), r"(\d)(?=(\d{3})+(?!\d))" => s"\1,")
+
+"""Print this run's effective hyperparameters and the rule-derived constants
+from `constants.jl`. The latter are NOT saved to `run_config.json` (only
+CLI-exposed flags are — see `RESUMABLE_KEYS`) and have no flag of their own,
+so if they're hand-edited directly in `constants.jl` between runs (rather
+than through a CLI flag), this printout is the only record of what was
+actually in effect for a given run — check it before relying on a comparison
+across runs. Called once, after every opt has been fully resolved
+(`--resume`-restored values applied, `device`/`minibatch` auto-resolved)."""
+function _print_training_params(opts::Dict, device::Symbol, minibatch::Int, n_candidates::Int,
+                                 train_start::Date, train_end::Date, val_start::Date, val_end::Date)
+    n_max = n_max_holdings(n_candidates)
+    println("═"^64)
+    println("Training parameters")
+    println("═"^64)
+    println("Run config:")
+    @printf("  %-22s %d\n",  "iterations:",   opts["iterations"])
+    @printf("  %-22s %s\n",  "device:",       device)
+    @printf("  %-22s %d\n",  "minibatch:",    minibatch)
+    @printf("  %-22s %s\n",  "lr:",           opts["lr"])
+    @printf("  %-22s %s\n",  "entropy_coef:", opts["entropy_coef"])
+    @printf("  %-22s %d\n",  "eval_every:",   opts["eval_every"])
+    @printf("  %-22s %d\n",  "val_days:",     opts["val_days"])
+    @printf("  %-22s %s\n",  "initial_cash:", _fmt_money(opts["initial_cash"]))
+    @printf("  %-22s %s\n",  "seed:",         something(opts["seed"], "none"))
+    @printf("  %-22s %s\n",  "resume:",       opts["resume"])
+    @printf("  %-22s %s\n",  "init_from:",    isempty(opts["init_from"]) ? "none" : opts["init_from"])
+    @printf("  %-22s %d\n",  "n_candidates:", n_candidates)
+    println("  train window:          $train_start .. $train_end")
+    println("  val window:            $val_start .. $val_end")
+    println()
+    println("Rule-derived constants (constants.jl):")
+    @printf("  %-26s %s\n",     "FEE_RATE:",                  FEE_RATE)
+    @printf("  %-26s %s\n",     "SETTLEMENT_DAYS:",           SETTLEMENT_DAYS)
+    @printf("  %-26s %s\n",     "MIN_HOLD_DAYS:",             MIN_HOLD_DAYS)
+    @printf("  %-26s %s\n",     "MAX_HOLD_DAYS:",             MAX_HOLD_DAYS)
+    @printf("  %-26s %s\n",     "MAX_POSITION_FRACTION:",     MAX_POSITION_FRACTION)
+    @printf("  %-26s %s (→ N_MAX = %d for this universe)\n",
+                                 "N_MAX_HOLDINGS_FRACTION:",  N_MAX_HOLDINGS_FRACTION, n_max)
+    @printf("  %-26s %s\n",     "MAX_CASH_FRACTION:",         MAX_CASH_FRACTION)
+    @printf("  %-26s %s\n",     "CASH_CEILING_PENALTY_COEF:", CASH_CEILING_PENALTY_COEF)
+    @printf("  %-26s %s\n",     "REBUY_COOLDOWN_DAYS:",       REBUY_COOLDOWN_DAYS)
+    @printf("  %-26s %s / %s\n","GAMMA / GAE_LAMBDA:",        GAMMA, GAE_LAMBDA)
+    @printf("  %-26s %s\n",     "CLIP_EPS:",                  CLIP_EPS)
+    @printf("  %-26s %s\n",     "VALUE_LOSS_COEF:",           VALUE_LOSS_COEF)
+    println("═"^64)
+end
+
 """Highest `iteration` field logged in `log_path`, or 0 if it doesn't exist
 yet — same convention as `train_model.jl`'s `_last_completed_epoch`, used so
 `--resume` continues iteration numbering instead of restarting at 1."""
@@ -322,6 +371,7 @@ function main()
     minibatch = _resolve_minibatch(opts["minibatch"], device)
 
     save_run_config(opts, config_path, length(universe))
+    _print_training_params(opts, device, minibatch, length(universe), train_start, train_end, val_start, cache_end)
 
     policy, log = train_policy!(policy, env, train_config; val_config=val_config,
         iterations=opts["iterations"], eval_every=opts["eval_every"], lr=opts["lr"],
