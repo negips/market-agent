@@ -168,7 +168,7 @@ function collect_rollout(env::TradingGameEnv, policy::ActorCriticPolicy, config:
 
         raw = RawAction[RawAction(sym_idx, _ACTION_TYPES[action_idx_view[i]], buy_weight_view[i])
                          for (i, sym_idx) in enumerate(obs.candidates)]
-        result = step!(env, raw)
+        result = step!(env, raw; rng=rng)
 
         buffer[t] = RolloutStep(obs, action_idx_view, buy_weight_view, logprob, Float32(value[1]),
                                  Float32(result.reward), result.done)

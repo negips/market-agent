@@ -8,7 +8,7 @@ item" is currently a no-op (news can't fire *more* often than every bar). The
 `MINUTE_15` cache.
 """
 
-using Dates
+using Dates, Random
 using StockSwingPredictor: find_hourly_end, find_date
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────────────
@@ -92,8 +92,15 @@ see `constants.jl`), with rule 14's cash-ceiling soft penalty subtracted on
 top every single bar regardless of reward mode (see
 `MAX_CASH_FRACTION`/`CASH_CEILING_PENALTY_COEF` — an independent, differently-
 cadenced reward shaping term, not a structural mask like rules 12/13).
+
+`rng` is forwarded unchanged to `resolve_actions`, which draws from it only
+when rule 13's holdings cap binds on this bar (see that function's
+docstring) — irrelevant to every other bar, so the default
+`Random.default_rng()` is fine outside of `collect_rollout`, which forwards
+its own `rng` here instead so a given seed covers the whole rollout.
 """
-function step!(env::TradingGameEnv, raw_actions::JointAction=RawAction[])::StepResult
+function step!(env::TradingGameEnv, raw_actions::JointAction=RawAction[];
+                rng::AbstractRNG=Random.default_rng())::StepResult
     env.config === nothing && error("TradingGameEnv.step!: call reset! before step!")
 
     _advance_clock!(env)
@@ -105,7 +112,7 @@ function step!(env::TradingGameEnv, raw_actions::JointAction=RawAction[])::StepR
     n_executed    = 0
     voluntary_events = TradeEvent[]
     if is_decision_bar(env)
-        resolved = resolve_actions(env, raw_actions, date_idx)
+        resolved = resolve_actions(env, raw_actions, date_idx; rng=rng)
         voluntary_events = _apply_actions!(env, resolved, date_idx)
         n_executed = length(resolved)
     end
