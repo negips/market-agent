@@ -68,6 +68,28 @@
   .canvas-wrap { position: relative; height: 260px; margin-top: 14px; }
   .canvas-wrap.small { height: 180px; }
 
+  .val-run-toggles {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+    margin-top: 12px; max-height: 64px; overflow-y: auto;
+  }
+  .val-run-chip {
+    display: flex; align-items: center; gap: 5px;
+    font-size: 10.5px; color: var(--text-dim); white-space: nowrap;
+    background: var(--surface2); border: 1px solid var(--border); border-radius: 99px;
+    padding: 3px 9px 3px 7px; cursor: pointer; user-select: none;
+  }
+  .val-run-chip input { display: none; }
+  .val-run-chip .chip-dot {
+    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+    border: 1px solid rgba(255,255,255,.2);
+  }
+  .val-run-chip.chip-off { opacity: .4; text-decoration: line-through; }
+  .val-run-bulk {
+    font-size: 10.5px; color: var(--accent); cursor: pointer;
+    background: none; border: none; padding: 3px 2px; text-decoration: underline;
+    text-underline-offset: 2px; white-space: nowrap;
+  }
+
   .two-col { display: grid; grid-template-columns: 1.3fr 1fr; gap: 18px; align-items: start; }
   @media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
 
@@ -123,6 +145,7 @@ const VAL_RUNS_URL = 'data/trading_game/val_runs.jsonl';
 
 let shown = false;
 let valueChart = null, iterChart = null, valRunsChart = null;
+let lastValRuns = [];   // most recent renderValRunsChart(runs) argument — re-rendered on a toggle click, no re-fetch needed
 
 function loadShowTrades() {
   try { return localStorage.getItem('tgLiveShowTrades') !== 'off'; } catch { return true; }
@@ -136,6 +159,17 @@ function loadShowValTrades() {
 function saveShowValTrades(v) {
   try { localStorage.setItem('tgValShowTrades', v ? 'on' : 'off'); } catch {}
 }
+// Which validation-run iterations are hidden from the held-out chart, by the
+// user's own choice (per-run toggle chips) — not a recency/count-based
+// default, so it's keyed by iteration number and persisted across reloads.
+function loadHiddenValRuns() {
+  try { return new Set(JSON.parse(localStorage.getItem('tgValHiddenRuns') || '[]')); }
+  catch { return new Set(); }
+}
+function saveHiddenValRuns(set) {
+  try { localStorage.setItem('tgValHiddenRuns', JSON.stringify([...set])); } catch {}
+}
+let hiddenValRuns = loadHiddenValRuns();
 
 async function fetchJSON(url) {
   const r = await fetch(url + '?t=' + Date.now(), { cache: 'no-store' });
@@ -227,6 +261,7 @@ function revealLayout() {
           </label>
         </div>
       </div>
+      <div class="val-run-toggles" id="val-run-toggles"></div>
       <div class="canvas-wrap"><canvas id="val-chart"></canvas></div>
     </div>
   `;
@@ -255,6 +290,28 @@ function revealLayout() {
         valRunsChart.setDatasetVisibility(i, valToggle.checked);
     });
     valRunsChart.update();
+  });
+
+  // Per-run show/hide toggles. The chip bar's innerHTML is rebuilt on every
+  // renderValRunsChart call (new runs land every eval_every iterations), so
+  // this listener is attached once here, delegated, rather than re-bound per
+  // render.
+  document.getElementById('val-run-toggles').addEventListener('click', (e) => {
+    const bulk = e.target.closest('[data-bulk]');
+    if (bulk) {
+      if (bulk.dataset.bulk === 'none') hiddenValRuns = new Set(lastValRuns.map(r => r.iteration));
+      else hiddenValRuns.clear();
+      saveHiddenValRuns(hiddenValRuns);
+      renderValRunsChart(lastValRuns);
+      return;
+    }
+    const chip = e.target.closest('[data-iter]');
+    if (!chip) return;
+    const iter = Number(chip.dataset.iter);
+    if (hiddenValRuns.has(iter)) hiddenValRuns.delete(iter);
+    else hiddenValRuns.add(iter);
+    saveHiddenValRuns(hiddenValRuns);
+    renderValRunsChart(lastValRuns);
   });
 }
 
@@ -299,8 +356,10 @@ function renderStatus(s) {
   document.getElementById('value-chart-sub').textContent =
     `${s.holdings.length} position${s.holdings.length === 1 ? '' : 's'} held · episode started ${s.episode_started_at}Z`;
 
-  const points   = s.value_curve.map(p => ({ x: p.t, y: p.value }));
-  const baseline = s.value_curve.map(p => ({ x: p.t, y: s.initial_cash }));
+  const points      = s.value_curve.map(p => ({ x: p.t, y: p.value }));
+  const stockPoints = s.value_curve.map(p => ({ x: p.t, y: p.stocks_value }));
+  const cashPoints  = s.value_curve.map(p => ({ x: p.t, y: p.cash_value }));
+  const baseline    = s.value_curve.map(p => ({ x: p.t, y: s.initial_cash }));
 
   // Trades happen on a decision bar, which always has a matching value_curve
   // point at the same timestamp (the trade executes, THEN that bar's
@@ -323,7 +382,9 @@ function renderStatus(s) {
     valueChart = new Chart(document.getElementById('value-chart'), {
       type: 'line',
       data: { datasets: [
-        { label: 'Portfolio value', data: points, borderColor: '#4f8ef7', borderWidth: 2, pointRadius: 0, tension: .15 },
+        { label: 'Portfolio value', data: points, borderColor: '#4f8ef7', borderWidth: 3, pointRadius: 0, tension: .15 },
+        { label: 'Stock value', data: stockPoints, borderColor: 'rgba(79,142,247,.65)', borderWidth: 1.75, pointRadius: 0, tension: .15 },
+        { label: 'Cash (incl. reserved)', data: cashPoints, borderColor: 'rgba(79,142,247,.5)', borderDash: [6,3], borderWidth: 1.5, pointRadius: 0, tension: .15 },
         { label: 'Initial cash', data: baseline, borderColor: 'rgba(148,163,184,.4)', borderDash: [4,4], borderWidth: 1.5, pointRadius: 0 },
         { label: 'Buy', data: buyPoints, showLine: false, pointStyle: 'circle',
           pointRadius: 3, pointHoverRadius: 5, backgroundColor: '#3dd68c', borderColor: '#3dd68c',
@@ -368,10 +429,12 @@ function renderStatus(s) {
     });
   } else {
     valueChart.data.datasets[0].data = points;
-    valueChart.data.datasets[1].data = baseline;
-    valueChart.data.datasets[2].data = buyPoints;
-    valueChart.data.datasets[3].data = sellPoints;
-    valueChart.data.datasets[4].data = forcedPoints;
+    valueChart.data.datasets[1].data = stockPoints;
+    valueChart.data.datasets[2].data = cashPoints;
+    valueChart.data.datasets[3].data = baseline;
+    valueChart.data.datasets[4].data = buyPoints;
+    valueChart.data.datasets[5].data = sellPoints;
+    valueChart.data.datasets[6].data = forcedPoints;
     valueChart.update('none');
   }
 
@@ -430,48 +493,114 @@ function renderIterChart(rows) {
   }
 }
 
-// A single hue (the same green used for the "val" phase pill), with opacity
-// ramped by recency: the most recent held-out run is bold/opaque, older runs
-// fade out. This is a deliberate choice over a generated categorical palette
-// — the number of runs is open-ended (one more every `eval_every`
-// iterations across a training run that can last days), so there's no fixed
-// series count to assign fixed hues to, and a legend with dozens of entries
-// would be unreadable. The gradient itself reads as "training progress"
-// directly: a visually tightening/rising bundle of lines as iterations
-// improve, a chaotic unchanging smear if they don't.
+// 8-hue CVD-safe categorical order (dataviz skill's default palette, dark-
+// surface steps), cycling once more validation runs accumulate than colors
+// — every run gets a genuinely distinct hue instead of the old single-green
+// gradient, which read as "every line is the same color" once there were
+// more than a couple of runs on screen. The per-run toggle chips (see
+// `renderValRunsChart`) are what make color collisions past the 8th run
+// tolerable: the chip legend always names which iteration a hue belongs to,
+// and a colliding pair can just be isolated by hiding everything else.
+const VAL_RUN_PALETTE = [
+  '#3987e5', // blue
+  '#d9823f', // orange
+  '#1fc08a', // aqua
+  '#d9a62a', // yellow
+  '#d55181', // magenta
+  '#39c95c', // green
+  '#9085e9', // violet
+  '#e66767', // red
+];
+
+function valRunHue(rank) {
+  return VAL_RUN_PALETTE[rank % VAL_RUN_PALETTE.length];
+}
+
+function hexToRgba(hex, alpha) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha.toFixed(2)})`;
+}
+
+// Hue identifies the run; a small recency dip on top (older runs slightly
+// more transparent than the most recent) keeps "which run is newest" legible
+// at a glance without it being the only thing distinguishing two lines.
 function valRunColor(rank, total) {
   const t = total <= 1 ? 1 : rank / (total - 1);
-  const alpha = 0.15 + 0.75 * t;
-  return `rgba(61,214,140,${alpha.toFixed(2)})`;
+  const alpha = 0.55 + 0.45 * t;
+  return hexToRgba(valRunHue(rank), alpha);
 }
 
 function renderValRunsChart(runs) {
+  lastValRuns = runs;
   if (!runs.length) {
     document.getElementById('val-chart-sub').textContent = 'No held-out evaluation completed yet';
+    document.getElementById('val-run-toggles').innerHTML = '';
     return;
   }
   document.getElementById('val-chart-sub').textContent =
-    `${runs.length} run${runs.length === 1 ? '' : 's'} · faint = earliest iteration (${runs[0].iteration}), ` +
+    `${runs.length} run${runs.length === 1 ? '' : 's'} · each run its own color ` +
+    `(cycles after ${VAL_RUN_PALETTE.length}) · faint = earliest iteration (${runs[0].iteration}), ` +
     `bold = most recent (${runs[runs.length - 1].iteration})`;
 
-  const lineDatasets = runs.map((run, i) => ({
-    label: `Iter ${run.iteration}`,
-    data: run.value_curve.map(p => ({ x: p.t, y: p.value })),
-    borderColor: valRunColor(i, runs.length),
-    borderWidth: i === runs.length - 1 ? 2.5 : 1.2,
-    pointRadius: 0,
-    tension: .15,
-  }));
+  // One chip per run — unchecking it hides that run's 3 lines (and its trade
+  // markers, below) without affecting any other run. Stale hidden iterations
+  // (a run that's aged out of val_runs.jsonl — doesn't happen today since
+  // that file is append-only forever, but defensively) are dropped here so
+  // the saved set never grows unboundedly.
+  hiddenValRuns = new Set([...hiddenValRuns].filter(it => runs.some(r => r.iteration === it)));
+  document.getElementById('val-run-toggles').innerHTML =
+    `<button type="button" class="val-run-bulk" data-bulk="all">Show all</button>` +
+    `<button type="button" class="val-run-bulk" data-bulk="none">Hide all</button>` +
+    runs.map((run, i) => {
+      const off = hiddenValRuns.has(run.iteration);
+      return `<label class="val-run-chip ${off ? 'chip-off' : ''}" data-iter="${run.iteration}">
+        <input type="checkbox" ${off ? '' : 'checked'}>
+        <span class="chip-dot" style="background:${valRunHue(i)}"></span>
+        Iter ${run.iteration}
+      </label>`;
+    }).join('');
 
-  // Trade markers across every plotted run at once, each colored to match
-  // its own line (via per-point backgroundColor) so a marker is traceable
-  // back to its run even without a per-run legend entry. Voluntary sells and
-  // rule-9 forced exits are split into separate datasets (not lumped as one
-  // "Sell") — same distinction and color convention (yellow/red) as the
-  // current-episode chart and the "Recent decisions" feed.
+  // Each run gets 3 lines — portfolio value (thick solid), stock value
+  // (regular solid), cash incl. reserved (dashed) — all drawn in the SAME
+  // color (valRunColor's recency gradient), so the 3 lines belonging to one
+  // validation run read as a single unit distinguishable only by shape, and
+  // that unit is still traceable back to its iteration by color/opacity, the
+  // same recency convention the rest of this chart already uses. A run
+  // unchecked in the toggle bar above is marked `hidden` here rather than
+  // dropped from the array, so Chart.js's own dataset bookkeeping stays
+  // consistent run to run.
+  const lineDatasets = [];
+  runs.forEach((run, i) => {
+    const color  = valRunColor(i, runs.length);
+    const isLast = i === runs.length - 1;
+    const hidden = hiddenValRuns.has(run.iteration);
+    lineDatasets.push({
+      label: `Iter ${run.iteration} — portfolio value`,
+      data: run.value_curve.map(p => ({ x: p.t, y: p.value })),
+      borderColor: color, borderWidth: isLast ? 3 : 1.6, pointRadius: 0, tension: .15, hidden,
+    });
+    lineDatasets.push({
+      label: `Iter ${run.iteration} — stock value`,
+      data: run.value_curve.map(p => ({ x: p.t, y: p.stocks_value })),
+      borderColor: color, borderWidth: isLast ? 1.9 : 1, pointRadius: 0, tension: .15, hidden,
+    });
+    lineDatasets.push({
+      label: `Iter ${run.iteration} — cash (incl. reserved)`,
+      data: run.value_curve.map(p => ({ x: p.t, y: p.cash_value })),
+      borderColor: color, borderDash: [6, 3], borderWidth: isLast ? 1.6 : .9, pointRadius: 0, tension: .15, hidden,
+    });
+  });
+
+  // Trade markers across every plotted (non-hidden) run at once, each
+  // colored to match its own line (via per-point backgroundColor) so a
+  // marker is traceable back to its run even without a per-run legend entry.
+  // Voluntary sells and rule-9 forced exits are split into separate datasets
+  // (not lumped as one "Sell") — same distinction and color convention
+  // (yellow/red) as the current-episode chart and the "Recent decisions" feed.
   const showVal = loadShowValTrades();
   const buyPoints = [], sellPoints = [], forcedPoints = [];
   runs.forEach((run, i) => {
+    if (hiddenValRuns.has(run.iteration)) return;
     const valueByT = new Map(run.value_curve.map(p => [p.t, p.value]));
     const color = valRunColor(i, runs.length);
     for (const t of run.trades) {

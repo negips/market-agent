@@ -50,9 +50,10 @@ const LIVE_TRADES_CAP = 50_000
 iterations (`start_episode!` resets the per-episode fields); `path=""`
 disables writing entirely (`make_live_callback` returns `nothing` for it).
 
-`curve_t`/`curve_v` are preallocated to `LIVE_VALUE_CURVE_CAP` once, up
-front, and `curve_len` tracks how many leading entries are live for the
-current episode (`curve_t[1:curve_len]`/`curve_v[1:curve_len]`) — see
+`curve_t`/`curve_v`/`curve_stocks`/`curve_cash` are preallocated to
+`LIVE_VALUE_CURVE_CAP` once, up front, and `curve_len` tracks how many
+leading entries are live for the current episode
+(`curve_t[1:curve_len]`/`curve_v[1:curve_len]`/etc.) — see
 `make_live_callback`'s docstring for why this had to be allocation-free per
 entry. `trades` stays a plain growing `Vector{TradeEvent}` (push!/popfirst!,
 not preallocated) — trade events turned out NOT to be rare (several per bar
@@ -71,6 +72,8 @@ Base.@kwdef mutable struct LiveTracker
     bar_count        :: Int = 0
     curve_t          :: Vector{String}  = fill("", LIVE_VALUE_CURVE_CAP)
     curve_v          :: Vector{Float64} = zeros(Float64, LIVE_VALUE_CURVE_CAP)
+    curve_stocks     :: Vector{Float64} = zeros(Float64, LIVE_VALUE_CURVE_CAP)
+    curve_cash       :: Vector{Float64} = zeros(Float64, LIVE_VALUE_CURVE_CAP)
     curve_len        :: Int = 0
     trades           :: Vector{TradeEvent} = TradeEvent[]
     started_at       :: String = ""
@@ -140,6 +143,8 @@ function make_live_callback(tracker::LiveTracker)
             tracker.curve_len += 1
             tracker.curve_t[tracker.curve_len] = string(env.cache.hourly_datetimes[env.current_hour_idx])
             tracker.curve_v[tracker.curve_len] = result.info["portfolio_value"]
+            tracker.curve_stocks[tracker.curve_len] = result.info["stocks_value"]
+            tracker.curve_cash[tracker.curve_len]   = result.info["cash_value"]
         end
 
         for ev in result.info["trades"]
@@ -198,13 +203,20 @@ function _holdings_snapshot(env::TradingGameEnv)
     end for h in env.portfolio.holdings]
 end
 
-"""Build the `[{"t":..., "value":...}, ...]`-shaped array `_write_live_status`
-serializes, from `tracker`'s preallocated `curve_t`/`curve_v`. Allocates a
-fresh (small, short-lived) array on each call — unlike the per-bar write this
-reads from, this only runs when `_write_live_status` itself does (every
-`every_bars` bars, not every bar), so it's cheap and never retained."""
+"""Build the `[{"t":..., "value":..., "stocks_value":..., "cash_value":...},
+...]`-shaped array `_write_live_status`/`save_val_run!` serialize, from
+`tracker`'s preallocated `curve_t`/`curve_v`/`curve_stocks`/`curve_cash`.
+`stocks_value` + `cash_value` always sum to `value` — split out so
+`tradinggamelive.html` can plot each as its own line (thick portfolio-value
+line, regular stock-value line, dashed cash line, per the chart's design).
+Allocates a fresh (small, short-lived) array on each call — unlike the
+per-bar write this reads from, this only runs when `_write_live_status`
+itself does (every `every_bars` bars, not every bar), so it's cheap and never
+retained."""
 function _value_curve_json(tracker::LiveTracker)
-    return [(t=tracker.curve_t[i], value=tracker.curve_v[i]) for i in 1:tracker.curve_len]
+    return [(t=tracker.curve_t[i], value=tracker.curve_v[i],
+             stocks_value=tracker.curve_stocks[i], cash_value=tracker.curve_cash[i])
+            for i in 1:tracker.curve_len]
 end
 
 """Append one completed held-out validation episode's full portfolio-value
