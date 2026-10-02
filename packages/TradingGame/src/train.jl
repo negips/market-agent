@@ -19,6 +19,7 @@ const DEFAULT_K_EPOCHS        = 4
 const DEFAULT_MINIBATCH       = 32
 const DEFAULT_LR              = 3f-4
 const DEFAULT_EVAL_EVERY      = 10
+const DEFAULT_ENTROPY_COEF    = ENTROPY_COEF
 
 """
 Train `policy` against `env` (already wrapping the `InferenceCache` to train
@@ -32,6 +33,14 @@ on) using `train_config` as the (repeated, per iteration) training episode.
   whatever `policy` was actually constructed with — `ActorCriticPolicy`
   doesn't carry its own hyperparameters as a field, so `train_policy!` needs them
   again here purely to write a reloadable checkpoint (see `save_policy`).
+- `entropy_coef`: weight on `ppo_update!`'s entropy bonus — higher keeps the
+  policy's action distribution more spread out for longer (less eager to
+  collapse onto a single preferred action per candidate), at the cost of
+  noisier/more exploratory rollouts. Defaults to the same `ENTROPY_COEF` used
+  everywhere else in this module (`constants.jl`); exposed as its own
+  parameter (rather than hardcoding `ENTROPY_COEF` at the `ppo_update!` call
+  site) purely so `scripts/train_trading_policy.jl` can expose an `--entropy`
+  CLI flag for experimentation without editing source.
 - `stop_file`: `touch <stop_file>` for a clean stop (checkpoint saved) after
   the current iteration; `touch <stop_file with STOP replaced by STOP_NOW>`
   for a hard stop (no save), exactly matching `train_model.jl`.
@@ -73,6 +82,7 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
                  k_epochs::Int=DEFAULT_K_EPOCHS,
                  minibatch_size::Int=DEFAULT_MINIBATCH,
                  lr::Float32=DEFAULT_LR,
+                 entropy_coef::Float64=DEFAULT_ENTROPY_COEF,
                  eval_every::Int=DEFAULT_EVAL_EVERY,
                  macro_cache::Union{Nothing, MacroCache}=nothing,
                  news_fn::Function=_zero_news,
@@ -135,7 +145,7 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
         stats = ppo_update!(policy, opt_state, buffer;
                              k_epochs=k_epochs, minibatch_size=minibatch_size, device=device,
                              clip_eps=CLIP_EPS, value_loss_coef=VALUE_LOSS_COEF,
-                             entropy_coef=ENTROPY_COEF, gamma=GAMMA, gae_lambda=GAE_LAMBDA, rng=rng,
+                             entropy_coef=entropy_coef, gamma=GAMMA, gae_lambda=GAE_LAMBDA, rng=rng,
                              verbose=true, progress_cb=make_update_callback(live_tracker, env))
         update_secs = time() - update_start
 

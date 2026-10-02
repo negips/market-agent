@@ -128,6 +128,7 @@ function main()
         @printf("  %-14s %s\n", "n_candidates:", string(get(cfg, :n_candidates, "?")))
         @printf("  %-14s %s\n", "initial_cash:", _fmt_rupee(get(cfg, :initial_cash, nothing)))
         @printf("  %-14s %s\n", "lr:", string(get(cfg, :lr, "?")))
+        @printf("  %-14s %s\n", "entropy_coef:", string(get(cfg, :entropy_coef, "?")))
         @printf("  %-14s %s\n", "seed:", something(get(cfg, :seed, nothing), "none"))
     else
         println("  ", _colorize("no run_config.json found — no run has started yet", :dim))

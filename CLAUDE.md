@@ -534,6 +534,7 @@ julia --project=packages/TradingGame scripts/train_trading_policy.jl --resume --
 julia --project=packages/TradingGame scripts/train_trading_policy.jl --seed 42
 julia --project=packages/TradingGame scripts/train_trading_policy.jl --init-from other_run/policy.bson
 julia --project=packages/TradingGame scripts/train_trading_policy.jl --device gpu
+julia --project=packages/TradingGame scripts/train_trading_policy.jl --entropy 0.02
 ```
 
 Prerequisites: `inference_cache.bson` (`build_cache.jl`) and
@@ -550,7 +551,8 @@ iteration numbering (`--iterations` then means "how many more", not a new
 total), same `--resume` convention as `train_model.jl`.
 
 Every run writes its effective `--initial-cash`/`--val-days`/`--eval-every`/
-`--lr`/`--seed`/`--device`/`--minibatch` to `run_config.json`. `--resume` reads
+`--lr`/`--entropy`/`--seed`/`--device`/`--minibatch` to `run_config.json`.
+`--resume` reads
 it back and applies those values for any of those flags not *also* given
 explicitly on the resume command line — an explicit flag always wins over the
 saved one. This is what makes a bare `--resume` reproduce the original run's
@@ -571,6 +573,11 @@ rollout's action sampling. `--init-from PATH` is a *fresh* run (iteration 1,
 cleared log — unlike `--resume`) that warm-starts the policy's weights from an
 existing checkpoint at `PATH` instead of random init; mutually exclusive with
 `--resume`.
+
+`--entropy N` (default `0.01`, `TradingGame.ENTROPY_COEF`) weights PPO's
+entropy bonus — higher keeps the policy's per-candidate action distribution
+spread out for longer before it collapses onto a single preferred action,
+at the cost of noisier rollouts.
 
 `--device gpu` moves the policy to GPU once, up front (falls back to `cpu`
 with a warning if `CUDA.functional()` is false, same as `train_model.jl`).

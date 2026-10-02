@@ -69,7 +69,8 @@ only accelerates ppo_update!'s minibatched passes, where batching actually
 helps — see ppo.jl's docstrings.
 
 Every run writes its effective --initial-cash/--val-days/--eval-every/--lr/
---seed/--device/--minibatch into run_config.json (alongside policy.bson).
+--entropy/--seed/--device/--minibatch into run_config.json (alongside
+policy.bson).
 --resume reads it back and uses those values for any of those flags NOT
 also given explicitly on the resume command line — an explicit flag on the
 command line always wins over the saved value. This is what makes a bare
@@ -91,7 +92,7 @@ const UNIVERSE_FILE = joinpath(DATA_DIR, "universe_latest.json")
 config that must stay consistent across a resumed run, not runtime-only
 flags like `--live`/`--resume`/`--init-from`/`--iterations` (the latter means
 "how many more" each time by design, so it's never something to restore)."""
-const RESUMABLE_KEYS = ("initial_cash", "val_days", "eval_every", "lr", "seed", "device", "minibatch")
+const RESUMABLE_KEYS = ("initial_cash", "val_days", "eval_every", "lr", "entropy_coef", "seed", "device", "minibatch")
 
 function parse_args()
     opts = Dict{String, Any}(
@@ -100,6 +101,7 @@ function parse_args()
         "val_days"    => 60,
         "eval_every"  => 10,
         "lr"          => 3f-4,
+        "entropy_coef" => ENTROPY_COEF,
         "live"        => true,
         "resume"      => false,
         "seed"        => nothing,
@@ -122,6 +124,9 @@ Options:
   --val-days N        Held-out tail length in calendar days (default: $(opts["val_days"]))
   --eval-every N       Run a held-out episode every N iterations (default: $(opts["eval_every"]))
   --lr N               Adam learning rate (default: $(opts["lr"]))
+  --entropy N           PPO entropy bonus weight — higher keeps the policy's
+                        action distribution spread out for longer, at the
+                        cost of noisier rollouts (default: $(opts["entropy_coef"]))
   --no-live            Disable live_status.json streaming
   --resume             Load policy.bson and continue iteration numbering from
                         episode_log.jsonl instead of starting a fresh policy
@@ -140,6 +145,7 @@ Options:
         elseif a == "--val-days";     opts["val_days"]     = parse(Int, ARGS[i+1]); push!(explicit, "val_days"); i += 2
         elseif a == "--eval-every";   opts["eval_every"]   = parse(Int, ARGS[i+1]); push!(explicit, "eval_every"); i += 2
         elseif a == "--lr";           opts["lr"]           = parse(Float32, ARGS[i+1]); push!(explicit, "lr"); i += 2
+        elseif a == "--entropy";      opts["entropy_coef"] = parse(Float64, ARGS[i+1]); push!(explicit, "entropy_coef"); i += 2
         elseif a == "--no-live";      opts["live"]         = false; i += 1
         elseif a == "--resume";       opts["resume"]       = true; i += 1
         elseif a == "--init-from";    opts["init_from"]    = ARGS[i+1]; i += 2
@@ -231,6 +237,8 @@ function load_run_config!(opts::Dict, explicit::Set{String}, path::String)
             opts[k] = k in ("seed", "minibatch") ? nothing : opts[k]
         elseif k == "lr"
             opts[k] = Float32(v)
+        elseif k == "entropy_coef"
+            opts[k] = Float64(v)
         elseif k in ("val_days", "eval_every", "seed", "minibatch")
             opts[k] = Int(v)
         else
@@ -316,7 +324,8 @@ function main()
     save_run_config(opts, config_path, length(universe))
 
     policy, log = train_policy!(policy, env, train_config; val_config=val_config,
-        iterations=opts["iterations"], eval_every=opts["eval_every"], lr=opts["lr"], rng=rng,
+        iterations=opts["iterations"], eval_every=opts["eval_every"], lr=opts["lr"],
+        entropy_coef=opts["entropy_coef"], rng=rng,
         minibatch_size=minibatch, device=device,
         checkpoint_path=checkpoint_path,
         episode_log_path=episode_log_path,
