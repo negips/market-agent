@@ -117,6 +117,18 @@
 
   .pnl-pos { color: var(--green); }
   .pnl-neg { color: var(--red); }
+
+  .param-section-label {
+    font-size: 11px; font-weight: 600; color: var(--text-dim);
+    margin: 16px 0 2px;
+  }
+  .param-section-label:first-child { margin-top: 0; }
+  .param-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 10px 18px;
+  }
+  .param-item .l { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .param-item .v { font-size: 13px; font-family: var(--mono); color: var(--text); margin-top: 2px; }
 </style>
 </head>
 <body>
@@ -144,9 +156,10 @@ Chart.defaults.color           = '#6b7280';
 Chart.defaults.borderColor     = '#2e3350';
 Chart.defaults.backgroundColor = 'transparent';
 
-const LIVE_URL     = 'data/trading_game/live_status.json';
-const LOG_URL      = 'data/trading_game/episode_log.jsonl';
-const VAL_RUNS_URL = 'data/trading_game/val_runs.jsonl';
+const LIVE_URL       = 'data/trading_game/live_status.json';
+const LOG_URL        = 'data/trading_game/episode_log.jsonl';
+const VAL_RUNS_URL   = 'data/trading_game/val_runs.jsonl';
+const RUN_CONFIG_URL = 'data/trading_game/run_config.json';
 
 let shown = false;
 let valueChart = null, iterChart = null, valRunsChart = null, valRunsSplitChart = null;
@@ -201,19 +214,21 @@ function fmtTradeStamp(t) {
   return timePart ? `${dmy}-${timePart.slice(0, 5)}` : dmy;
 }
 
-// Shared row template for both the "Current episode" and "Final holdings —
-// latest validation run" tables — same shape either way (symbol, quantity,
-// entry/current price, days held, unrealized P&L), see `_holdings_snapshot`
-// in live.jl.
-function holdingsRowsHtml(holdings) {
+// Shared row template for both holdings tables — same shape otherwise, but
+// the two JSON sources use different keys for the "paid" price column:
+// live_status.json's per-lot "holdings" is entry_price (_holdings_snapshot
+// in live.jl, one row per lot), val_runs.jsonl's "final_holdings" is
+// effective_price (_holdings_snapshot_unified, one row per symbol, weighted
+// average across that symbol's lots) — priceKey picks which.
+function holdingsRowsHtml(holdings, priceKey) {
   return holdings.length ? holdings.map(h => `
     <tr>
       <td><span class="symbol-chip">${esc(h.symbol)}</span></td>
-      <td class="num">${h.quantity.toFixed(2)}</td>
-      <td class="num">${fmtRupee(h.entry_price)}</td>
-      <td class="num">${fmtRupee(h.current_price)}</td>
-      <td class="num">${h.days_held}</td>
-      <td class="num ${h.unrealized_pnl >= 0 ? 'pnl-pos' : 'pnl-neg'}">${fmtRupee(h.unrealized_pnl)} (${h.unrealized_pnl_pct >= 0 ? '+' : ''}${h.unrealized_pnl_pct.toFixed(2)}%)</td>
+      <td class="num" style="text-align:center">${h.quantity.toFixed(0)}</td>
+      <td class="num" style="text-align:center">${fmtRupee(h[priceKey])}</td>
+      <td class="num" style="text-align:center">${fmtRupee(h.current_price)}</td>
+      <td class="num" style="text-align:center">${h.days_held}</td>
+      <td class="num ${h.unrealized_pnl >= 0 ? 'pnl-pos' : 'pnl-neg'}" style="text-align:center">${fmtRupee(h.unrealized_pnl)} (${h.unrealized_pnl_pct >= 0 ? '+' : ''}${h.unrealized_pnl_pct.toFixed(2)}%)</td>
     </tr>`).join('') : `<tr><td colspan="6" class="na" style="padding:14px">All cash — no open positions</td></tr>`;
 }
 
@@ -223,6 +238,14 @@ function revealLayout() {
   document.getElementById('content').innerHTML = `
     <div class="status-bar" id="status-bar"></div>
     <div class="update-bar" id="update-bar" style="display:none"></div>
+
+    <div class="chart-card" id="run-config-card" style="display:none">
+      <div class="chart-header">
+        <div class="chart-title">Training configuration</div>
+        <div class="chart-sub" id="run-config-sub"></div>
+      </div>
+      <div id="run-config-body" style="margin-top:4px"></div>
+    </div>
 
     <div class="chart-card">
       <div class="chart-header">
@@ -246,9 +269,9 @@ function revealLayout() {
         <div class="tbl-wrap" style="margin-top:12px">
           <table class="data-table">
             <thead><tr>
-              <th class="no-sort">Symbol</th><th class="no-sort">Qty</th>
-              <th class="no-sort">Entry</th><th class="no-sort">Current</th>
-              <th class="no-sort">Days held</th><th class="no-sort">Unrealized P&amp;L</th>
+              <th class="no-sort">Symbol</th><th class="no-sort" style="text-align:center">Qty</th>
+              <th class="no-sort" style="text-align:center">Entry</th><th class="no-sort" style="text-align:center">Current</th>
+              <th class="no-sort" style="text-align:center">Days held</th><th class="no-sort" style="text-align:center">Unrealized P&amp;L</th>
             </tr></thead>
             <tbody id="holdings-body"></tbody>
           </table>
@@ -297,9 +320,9 @@ function revealLayout() {
       <div class="tbl-wrap" style="margin-top:12px">
         <table class="data-table">
           <thead><tr>
-            <th class="no-sort">Symbol</th><th class="no-sort">Qty</th>
-            <th class="no-sort">Entry</th><th class="no-sort">Current</th>
-            <th class="no-sort">Days held</th><th class="no-sort">Unrealized P&amp;L</th>
+            <th class="no-sort">Symbol</th><th class="no-sort" style="text-align:center">Qty</th>
+            <th class="no-sort" style="text-align:center">Effective Price</th><th class="no-sort" style="text-align:center">Current</th>
+            <th class="no-sort" style="text-align:center">Days held</th><th class="no-sort" style="text-align:center">Unrealized P&amp;L</th>
           </tr></thead>
           <tbody id="val-holdings-body"></tbody>
         </table>
@@ -480,7 +503,7 @@ function renderStatus(s) {
   }
 
   document.getElementById('holdings-sub').textContent = `Marked at ${s.current_date}`;
-  document.getElementById('holdings-body').innerHTML = holdingsRowsHtml(s.holdings);
+  document.getElementById('holdings-body').innerHTML = holdingsRowsHtml(s.holdings, 'entry_price');
 
   const trades = [...s.recent_trades].reverse();
   document.getElementById('trade-feed').innerHTML = trades.length ? trades.map(t => `
@@ -581,7 +604,7 @@ function renderValRunsChart(runs) {
     `Iter ${latestRun.iteration} · final value ${fmtRupee(latestRun.final_value)} · ` +
     `return ${latestRun.val_return >= 0 ? '+' : ''}${(latestRun.val_return * 100).toFixed(2)}%`;
   document.getElementById('val-holdings-body').innerHTML = latestRun.final_holdings
-    ? holdingsRowsHtml(latestRun.final_holdings)
+    ? holdingsRowsHtml(latestRun.final_holdings, 'effective_price')
     : `<tr><td colspan="6" class="na" style="padding:14px">Not recorded for this run (written before this table was added)</td></tr>`;
   document.getElementById('val-chart-sub').textContent =
     `${runs.length} run${runs.length === 1 ? '' : 's'} · each run its own color ` +
@@ -752,6 +775,56 @@ function renderValRunsChart(runs) {
   }
 }
 
+function paramItem(label, value) {
+  return `<div class="param-item"><div class="l">${esc(label)}</div><div class="v">${value}</div></div>`;
+}
+
+// run_config.json is written once per run (fresh start or --resume) and
+// barely changes mid-run — see save_run_config in scripts/train_trading_policy.jl.
+// resolved_device/resolved_minibatch/train_*/val_*/rule_constants are all
+// informational-only fields added purely for this card; everything else
+// here is the RESUMABLE_KEYS subset the script itself reads back on --resume.
+function renderRunConfig(cfg) {
+  document.getElementById('run-config-card').style.display = '';
+  document.getElementById('run-config-sub').textContent =
+    `${cfg.n_candidates ?? '—'} candidates · train ${cfg.train_start ?? '—'} → ${cfg.train_end ?? '—'} ` +
+    `· val ${cfg.val_start ?? '—'} → ${cfg.val_end ?? '—'}`;
+
+  const rc  = cfg.rule_constants || {};
+  const pct = (v) => v == null ? '—' : (v * 100).toFixed(2) + '%';
+
+  document.getElementById('run-config-body').innerHTML = `
+    <div class="param-section-label">Run config</div>
+    <div class="param-grid">
+      ${paramItem('Device', cfg.resolved_device ?? cfg.device ?? '—')}
+      ${paramItem('Minibatch', cfg.resolved_minibatch ?? cfg.minibatch ?? '—')}
+      ${paramItem('Learning rate', cfg.lr ?? '—')}
+      ${paramItem('Entropy coef', cfg.entropy_coef ?? '—')}
+      ${paramItem('Eval every', cfg.eval_every != null ? cfg.eval_every + ' iters' : '—')}
+      ${paramItem('Val days', cfg.val_days ?? '—')}
+      ${paramItem('Initial cash', cfg.initial_cash != null ? fmtRupee(cfg.initial_cash) : '—')}
+      ${paramItem('Seed', cfg.seed ?? 'none')}
+      ${paramItem('Candidates', cfg.n_candidates ?? '—')}
+    </div>
+
+    <div class="param-section-label">Rule-derived constants</div>
+    <div class="param-grid">
+      ${paramItem('Fee rate', pct(rc.fee_rate))}
+      ${paramItem('Settlement days', rc.settlement_days ?? '—')}
+      ${paramItem('Min hold days', rc.min_hold_days ?? '—')}
+      ${paramItem('Max hold days', rc.max_hold_days ?? '—')}
+      ${paramItem('Max position frac.', pct(rc.max_position_fraction))}
+      ${paramItem('Max holdings', rc.n_max_holdings != null ? `${rc.n_max_holdings} (${pct(rc.n_max_holdings_fraction)} of universe)` : '—')}
+      ${paramItem('Max cash frac.', pct(rc.max_cash_fraction))}
+      ${paramItem('Cash ceiling penalty', rc.cash_ceiling_penalty_coef ?? '—')}
+      ${paramItem('Rebuy cooldown', rc.rebuy_cooldown_days != null ? rc.rebuy_cooldown_days + ' days' : '—')}
+      ${paramItem('Gamma / GAE λ', (rc.gamma ?? '—') + ' / ' + (rc.gae_lambda ?? '—'))}
+      ${paramItem('Clip epsilon', rc.clip_eps ?? '—')}
+      ${paramItem('Value loss coef', rc.value_loss_coef ?? '—')}
+    </div>
+  `;
+}
+
 async function pollLive() {
   try {
     const s = await fetchJSON(LIVE_URL);
@@ -779,7 +852,15 @@ async function pollValRuns() {
   } catch { /* no val_runs.jsonl yet */ }
 }
 
-pollLive(); pollLog(); pollValRuns();
+async function pollRunConfig() {
+  try {
+    const cfg = await fetchJSON(RUN_CONFIG_URL);
+    revealLayout();
+    renderRunConfig(cfg);
+  } catch { /* no run_config.json yet */ }
+}
+
+pollLive(); pollLog(); pollValRuns(); pollRunConfig();
 setInterval(pollLive, 3000);
 setInterval(pollLog, 8000);
 // Held-out runs only land once every eval_every iterations (tens of minutes
@@ -787,6 +868,10 @@ setInterval(pollLog, 8000);
 // kept — see save_val_run!'s docstring), so there's no reason to poll it as
 // often as the live, per-bar status.
 setInterval(pollValRuns, 20000);
+// run_config.json is written once per run start/resume and otherwise static
+// — polled only so a --resume with changed flags (while this page stays
+// open) picks up the new values without a manual refresh.
+setInterval(pollRunConfig, 20000);
 </script>
 </body>
 </html>

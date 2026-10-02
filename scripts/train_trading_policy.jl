@@ -253,16 +253,44 @@ end
 `minibatch=nothing` if left on auto), not resolved/derived ones, so a later
 `--resume` re-derives exactly the same way the original run did.
 
-`n_candidates` is informational only (not a `RESUMABLE_KEYS` entry — nothing
-reads it back on `--resume`, since the candidate universe always comes from
-`universe_latest.json` at load time, not from this file): how many companies
-`UNIVERSE_FILE` held for *this* run, so `run_config.json` is a quick way to
-see what universe size a checkpoint was actually trained against without
-cross-referencing `universe_latest.json`'s own `generated_at`/history."""
-function save_run_config(opts::Dict, path::String, n_candidates::Int)
+Everything else written here — `n_candidates`, `resolved_device`/
+`resolved_minibatch`, the train/val window dates, and `rule_constants` — is
+informational only: none of it is a `RESUMABLE_KEYS` entry, so none of it is
+read back by `load_run_config!` on `--resume` (the candidate universe always
+comes from `universe_latest.json` at load time, not from this file; the rule
+constants come from `constants.jl`, not a flag). It exists purely so
+`tradinggamelive.html` can display this run's actual training parameters and
+rule-derived constants — the same printout `_print_training_params` puts on
+stdout — without needing console access."""
+function save_run_config(opts::Dict, path::String, n_candidates::Int,
+                          resolved_device::Symbol, resolved_minibatch::Int,
+                          train_start::Date, train_end::Date, val_start::Date, val_end::Date)
     open(path, "w") do io
-        JSON3.pretty(io, merge(Dict(k => opts[k] for k in RESUMABLE_KEYS),
-                                Dict("n_candidates" => n_candidates)))
+        JSON3.pretty(io, merge(Dict(k => opts[k] for k in RESUMABLE_KEYS), Dict(
+            "n_candidates"       => n_candidates,
+            "resolved_device"    => string(resolved_device),
+            "resolved_minibatch" => resolved_minibatch,
+            "train_start"        => string(train_start),
+            "train_end"          => string(train_end),
+            "val_start"          => string(val_start),
+            "val_end"            => string(val_end),
+            "rule_constants"     => Dict(
+                "fee_rate"                  => FEE_RATE,
+                "settlement_days"           => SETTLEMENT_DAYS,
+                "min_hold_days"             => MIN_HOLD_DAYS,
+                "max_hold_days"             => MAX_HOLD_DAYS,
+                "max_position_fraction"     => MAX_POSITION_FRACTION,
+                "n_max_holdings_fraction"   => N_MAX_HOLDINGS_FRACTION,
+                "n_max_holdings"            => n_max_holdings(n_candidates),
+                "max_cash_fraction"         => MAX_CASH_FRACTION,
+                "cash_ceiling_penalty_coef" => CASH_CEILING_PENALTY_COEF,
+                "rebuy_cooldown_days"       => REBUY_COOLDOWN_DAYS,
+                "gamma"                     => GAMMA,
+                "gae_lambda"                => GAE_LAMBDA,
+                "clip_eps"                  => CLIP_EPS,
+                "value_loss_coef"           => VALUE_LOSS_COEF,
+            ),
+        )))
     end
 end
 
@@ -370,7 +398,8 @@ function main()
     device    = _resolve_device(opts["device"])
     minibatch = _resolve_minibatch(opts["minibatch"], device)
 
-    save_run_config(opts, config_path, length(universe))
+    save_run_config(opts, config_path, length(universe), device, minibatch,
+                     train_start, train_end, val_start, cache_end)
     _print_training_params(opts, device, minibatch, length(universe), train_start, train_end, val_start, cache_end)
 
     policy, log = train_policy!(policy, env, train_config; val_config=val_config,

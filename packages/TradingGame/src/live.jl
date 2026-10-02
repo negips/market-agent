@@ -187,7 +187,12 @@ function make_update_callback(tracker::LiveTracker, env::TradingGameEnv)
 end
 
 """Snapshot `env.portfolio.holdings` with current price and unrealised P&L —
-computed here (not stored on `Holding`) since it depends on the current bar."""
+computed here (not stored on `Holding`) since it depends on the current bar.
+One row per *lot* (the same symbol bought in two separate decisions is two
+separate `Holding`s, hence two rows) — matches `env.portfolio.holdings`'s own
+granularity, which is what the live "Current episode" view is meant to show
+as training unfolds. See `_holdings_snapshot_unified` for the one-row-per-
+symbol version used by the held-out validation table."""
 function _holdings_snapshot(env::TradingGameEnv)
     date_idx = env.cache.date_index[env.current_date]
     return [begin
@@ -201,6 +206,43 @@ function _holdings_snapshot(env::TradingGameEnv)
             "days_held" => date_idx - h.entry_date_idx,
         )
     end for h in env.portfolio.holdings]
+end
+
+"""Like `_holdings_snapshot`, but unified to one row per symbol — used only
+for the held-out validation run's "final holdings" table (`save_val_run!`),
+where a training episode's constant buying/adding-to-position activity would
+otherwise mean the same symbol shows up several times at several different
+lot prices, which reads as confusing rather than informative for a one-off
+end-of-episode summary. `effective_price` is the quantity-weighted average
+entry price across a symbol's lots (fees excluded from the price itself,
+same convention as `entry_price` on `Holding` — but `unrealized_pnl` below
+still nets out every lot's own fee); `days_held` is likewise the quantity-
+weighted average across lots, rounded to the nearest day."""
+function _holdings_snapshot_unified(env::TradingGameEnv)
+    date_idx = env.cache.date_index[env.current_date]
+    by_symbol = Dict{Int, Vector{Holding}}()
+    for h in env.portfolio.holdings
+        push!(get!(by_symbol, h.sym_idx, Holding[]), h)
+    end
+
+    rows = [begin
+        price           = env.cache.hourly_closes[env.current_hour_idx, first(lots).sym_idx]
+        total_quantity  = sum(l.quantity for l in lots)
+        total_notional  = sum(l.quantity * l.entry_price for l in lots)
+        total_cost      = total_notional + sum(l.entry_fee for l in lots)
+        effective_price = total_notional / total_quantity
+        days_held       = round(Int, sum(l.quantity * (date_idx - l.entry_date_idx) for l in lots) / total_quantity)
+        Dict{String, Any}(
+            "symbol" => first(lots).symbol, "quantity" => total_quantity,
+            "effective_price" => effective_price, "current_price" => price,
+            "unrealized_pnl" => total_quantity * price - total_cost,
+            "unrealized_pnl_pct" => total_cost > 0 ? (total_quantity * price - total_cost) / total_cost * 100 : 0.0,
+            "days_held" => days_held,
+        )
+    end for lots in values(by_symbol)]
+
+    sort!(rows, by = r -> r["symbol"])
+    return rows
 end
 
 """Build the `[{"t":..., "value":..., "stocks_value":..., "cash_value":...},
@@ -227,9 +269,13 @@ buffers for the following phase — `tracker` at that point holds exactly this
 val episode's data (every `start_episode!` call clears both, so there's no
 cross-episode leakage to worry about). `env` must likewise still be at the
 val rollout's terminal state (true right after `collect_rollout` returns,
-before anything else touches it) — `final_holdings` is `_holdings_snapshot(env)`
-taken at that moment, the same shape `live_status.json`'s `"holdings"` field
-uses, so `tradinggamelive.html` can render both with one shared row template.
+before anything else touches it) — `final_holdings` is
+`_holdings_snapshot_unified(env)` taken at that moment: one row per symbol
+(not per lot, unlike `live_status.json`'s `"holdings"` field), since a full
+episode's worth of buying/adding-to-position activity would otherwise mean
+the same symbol repeats at several different lot prices in a one-off
+end-of-episode summary. Both shapes share enough fields that
+`tradinggamelive.html` still renders them with one common row template.
 
 Unlike `live_status.json` (overwritten on every write — it only ever shows
 the *current* episode), this file is pure append: every held-out run this
@@ -251,7 +297,7 @@ function save_val_run!(tracker::LiveTracker, path::String, env::TradingGameEnv;
         started_at     = tracker.started_at,
         value_curve    = _value_curve_json(tracker),
         trades         = tracker.trades,
-        final_holdings = _holdings_snapshot(env),
+        final_holdings = _holdings_snapshot_unified(env),
     )
     open(path, "a") do io
         JSON3.write(io, row)
