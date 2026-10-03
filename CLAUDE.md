@@ -413,6 +413,14 @@ Updates both NSE and BSE by default; pass `--nse-only` or `--bse-only` to restri
 to one exchange (mutually exclusive). Macro instrument CSVs update once regardless
 of exchange selection.
 
+OHLCV data lives one subfolder per granularity under each exchange:
+`website/data/ohlcv/{nse,bse}/{daily,hourly,5min,15min,1min}/{SYMBOL}.csv`
+(`collect_nse_ohlcv.jl`/`collect_bse_ohlcv.jl` write this layout; `--daily-only`,
+`--hourly-only`, `--5min-only`, `--15min-only`, and `--1min-only` on either script
+restrict to one granularity). Macro instrument CSVs are the one exception — too
+few files to need subfolders, so they stay flat and suffixed at
+`website/data/ohlcv/macro/{NAME}_{5min,15min,daily}.csv`.
+
 ```bash
 # Run every trading day after kite_login.js (no arguments needed — updates NSE + BSE)
 julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl

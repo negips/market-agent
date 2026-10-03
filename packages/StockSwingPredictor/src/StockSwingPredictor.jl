@@ -85,6 +85,7 @@ export
     fetch_ohlcv_hourly, collect_ohlcv_hourly, load_cached_ohlcv_hourly,
     fetch_ohlcv_5min, collect_ohlcv_5min, load_cached_ohlcv_5min,
     fetch_ohlcv_15min, collect_ohlcv_15min, load_cached_ohlcv_15min,
+    fetch_ohlcv_1min, collect_ohlcv_1min, load_cached_ohlcv_1min,
     sector_index_name, NSE_INDICES,
 
     # macro_data

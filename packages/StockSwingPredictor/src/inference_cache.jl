@@ -50,18 +50,22 @@ end
 """
 Build the inference cache from cached OHLCV CSVs and save to `path`.
 
-Reads all `{SYMBOL}_daily.csv` and `{SYMBOL}_hourly.csv` in `ohlcv_dir`
-for the given `companies`, aligns them onto a shared time axis, forward-fills
-missing bars, and writes a single BSON file (~42 MB for 942 companies).
+Reads all `{SYMBOL}.csv` in `ohlcv_dir/daily/` and `ohlcv_dir/hourly/` for
+the given `companies` (the per-granularity subfolder layout — see
+`kite_data.jl`'s module docstring), aligns them onto a shared time axis,
+forward-fills missing bars, and writes a single BSON file (~42 MB for 942
+companies).
 
 # Arguments
-- `ohlcv_dir`: directory containing the OHLCV CSVs
+- `ohlcv_dir`: exchange directory containing `daily/` and `hourly/` subfolders
 - `companies`: symbols in the desired column order (sets the universe)
 - `path`: output BSON file path
 """
 function build_inference_cache(ohlcv_dir::String, companies::Vector{String},
                                 path::String)::InferenceCache
     n_comp = length(companies)
+    daily_dir  = joinpath(ohlcv_dir, "daily")
+    hourly_dir = joinpath(ohlcv_dir, "hourly")
 
     @info "Building inference cache — $(n_comp) companies"
 
@@ -69,7 +73,7 @@ function build_inference_cache(ohlcv_dir::String, companies::Vector{String},
 
     all_dates = Set{Date}()
     for sym in companies
-        p = joinpath(ohlcv_dir, "$(sym)_daily.csv")
+        p = joinpath(daily_dir, "$sym.csv")
         isfile(p) || continue
         df = CSV.read(p, DataFrame; select=[:date], types=Dict(:date => Date))
         union!(all_dates, df.date)
@@ -83,7 +87,7 @@ function build_inference_cache(ohlcv_dir::String, companies::Vector{String},
     raw_volumes = zeros(Float32, n_dates, n_comp)
 
     for (j, sym) in enumerate(companies)
-        p = joinpath(ohlcv_dir, "$(sym)_daily.csv")
+        p = joinpath(daily_dir, "$sym.csv")
         isfile(p) || continue
         df = CSV.read(p, DataFrame; types=Dict(:date => Date))
 
@@ -131,7 +135,7 @@ function build_inference_cache(ohlcv_dir::String, companies::Vector{String},
 
     all_dts = Set{DateTime}()
     for sym in companies
-        p = joinpath(ohlcv_dir, "$(sym)_hourly.csv")
+        p = joinpath(hourly_dir, "$sym.csv")
         isfile(p) || continue
         df = CSV.read(p, DataFrame; select=[:datetime], types=Dict(:datetime => DateTime))
         union!(all_dts, df.datetime)
@@ -143,7 +147,7 @@ function build_inference_cache(ohlcv_dir::String, companies::Vector{String},
     hourly_closes = fill(NaN32, n_hourly, n_comp)
 
     for (j, sym) in enumerate(companies)
-        p = joinpath(ohlcv_dir, "$(sym)_hourly.csv")
+        p = joinpath(hourly_dir, "$sym.csv")
         isfile(p) || continue
         df = CSV.read(p, DataFrame; types=Dict(:datetime => DateTime))
 

@@ -187,7 +187,7 @@ function main()
 
     # ── Load hourly data ──────────────────────────────────────────────────────
 
-    path = joinpath(OHLCV_DIR, "$(sym)_hourly.csv")
+    path = joinpath(OHLCV_DIR, "hourly", "$(sym).csv")
     isfile(path) || error("Hourly data not found: $path")
 
     df = CSV.read(path, DataFrame; types=Dict(:datetime => DateTime))

@@ -4,6 +4,15 @@ Kite Connect historical OHLCV data fetching.
 Loads the NSE instrument list, resolves symbols to instrument tokens, and
 fetches daily OHLCV candles via the Kite Connect historical data API.
 
+Every `collect_ohlcv*`/`load_cached_ohlcv*` function here takes an `out_dir`
+that's expected to already be a single granularity's directory (e.g.
+`website/data/ohlcv/nse/hourly/`) and reads/writes `{SYMBOL}.csv` directly
+inside it — not the exchange root with a `_hourly`/`_5min`/etc. filename
+suffix. Callers (`collect_nse_ohlcv.jl`, `collect_bse_ohlcv.jl`,
+`update_ohlcv.jl`) own the `{exchange}/{granularity}/` directory layout;
+this file has no opinion about exchange or granularity beyond what `out_dir`
+it's handed.
+
 Rate limiting: Kite allows ~3 requests/second for historical data. All public
 functions that make multiple requests add a 400 ms inter-request sleep.
 """
@@ -216,13 +225,15 @@ end
 
 """
 Fetch and save OHLCV for a list of symbols. Skips symbols already cached
-unless `refresh=true`. Saves each symbol to `out_dir/{SYMBOL}_daily.csv`.
+unless `refresh=true`. Saves each symbol to `out_dir/{SYMBOL}.csv` — `out_dir`
+is expected to already be a granularity-specific directory (e.g.
+`website/data/ohlcv/nse/daily/`), not the exchange root.
 
 # Arguments
 - `symbols`: NSE tradingsymbols
 - `token_map`: from `build_token_map`
 - `session`: Kite session
-- `out_dir`: directory for CSV output
+- `out_dir`: granularity-specific directory for CSV output
 - `from_date`, `to_date`: date range
 - `refresh`: re-fetch even if file exists
 """
@@ -236,7 +247,7 @@ function collect_ohlcv(symbols::Vector{String}, token_map::Dict{String,Int},
     t_start = time()
 
     for (i, sym) in enumerate(symbols)
-        path = joinpath(out_dir, "$(sym)_daily.csv")
+        path = joinpath(out_dir, "$(sym).csv")
         if !refresh && isfile(path)
             skipped += 1
         else
@@ -271,7 +282,7 @@ end
 Load a cached OHLCV CSV for a symbol. Returns empty DataFrame if not found.
 """
 function load_cached_ohlcv(symbol::String, out_dir::String)::DataFrame
-    path = joinpath(out_dir, "$(symbol)_daily.csv")
+    path = joinpath(out_dir, "$(symbol).csv")
     isfile(path) || return DataFrame()
     return CSV.read(path, DataFrame; types=Dict(:date => Date))
 end
@@ -351,8 +362,10 @@ function fetch_ohlcv_hourly(token::Int, from_date::Date, to_date::Date,
 end
 
 """
-Fetch and cache 60-minute OHLCV for a list of symbols.
-Output: `out_dir/{SYMBOL}_hourly.csv`.
+Fetch and cache 60-minute OHLCV for a list of symbols. Output:
+`out_dir/{SYMBOL}.csv` — `out_dir` is expected to already be a
+granularity-specific directory (e.g. `website/data/ohlcv/nse/hourly/`), not
+the exchange root.
 """
 function collect_ohlcv_hourly(symbols::Vector{String}, token_map::Dict{String,Int},
                                session, out_dir::String,
@@ -364,7 +377,7 @@ function collect_ohlcv_hourly(symbols::Vector{String}, token_map::Dict{String,In
     t_start = time()
 
     for (i, sym) in enumerate(symbols)
-        path = joinpath(out_dir, "$(sym)_hourly.csv")
+        path = joinpath(out_dir, "$(sym).csv")
         if !refresh && isfile(path)
             skipped += 1
         else
@@ -398,7 +411,7 @@ end
 Load cached 60-minute OHLCV for a symbol. Returns empty DataFrame if not found.
 """
 function load_cached_ohlcv_hourly(symbol::String, out_dir::String)::DataFrame
-    path = joinpath(out_dir, "$(symbol)_hourly.csv")
+    path = joinpath(out_dir, "$(symbol).csv")
     isfile(path) || return DataFrame()
     return CSV.read(path, DataFrame; types=Dict(:datetime => DateTime))
 end
@@ -468,8 +481,10 @@ function fetch_ohlcv_5min(token::Int, from_date::Date, to_date::Date,
 end
 
 """
-Fetch and cache 5-minute OHLCV for a list of symbols.
-Output: `out_dir/{SYMBOL}_5min.csv`.
+Fetch and cache 5-minute OHLCV for a list of symbols. Output:
+`out_dir/{SYMBOL}.csv` — `out_dir` is expected to already be a
+granularity-specific directory (e.g. `website/data/ohlcv/nse/5min/`), not
+the exchange root.
 """
 function collect_ohlcv_5min(symbols::Vector{String}, token_map::Dict{String,Int},
                               session, out_dir::String,
@@ -481,7 +496,7 @@ function collect_ohlcv_5min(symbols::Vector{String}, token_map::Dict{String,Int}
     t_start = time()
 
     for (i, sym) in enumerate(symbols)
-        path = joinpath(out_dir, "$(sym)_5min.csv")
+        path = joinpath(out_dir, "$(sym).csv")
         if !refresh && isfile(path)
             skipped += 1
         else
@@ -515,7 +530,7 @@ end
 Load cached 5-minute OHLCV for a symbol. Returns empty DataFrame if not found.
 """
 function load_cached_ohlcv_5min(symbol::String, out_dir::String)::DataFrame
-    path = joinpath(out_dir, "$(symbol)_5min.csv")
+    path = joinpath(out_dir, "$(symbol).csv")
     isfile(path) || return DataFrame()
     return CSV.read(path, DataFrame; types=Dict(:datetime => DateTime))
 end
@@ -590,8 +605,10 @@ function fetch_ohlcv_15min(token::Int, from_date::Date, to_date::Date,
 end
 
 """
-Fetch and cache 15-minute OHLCV for a list of symbols.
-Output: `out_dir/{SYMBOL}_15min.csv`.
+Fetch and cache 15-minute OHLCV for a list of symbols. Output:
+`out_dir/{SYMBOL}.csv` — `out_dir` is expected to already be a
+granularity-specific directory (e.g. `website/data/ohlcv/nse/15min/`), not
+the exchange root.
 """
 function collect_ohlcv_15min(symbols::Vector{String}, token_map::Dict{String,Int},
                                session, out_dir::String,
@@ -603,7 +620,7 @@ function collect_ohlcv_15min(symbols::Vector{String}, token_map::Dict{String,Int
     t_start = time()
 
     for (i, sym) in enumerate(symbols)
-        path = joinpath(out_dir, "$(sym)_15min.csv")
+        path = joinpath(out_dir, "$(sym).csv")
         if !refresh && isfile(path)
             skipped += 1
         else
@@ -637,7 +654,131 @@ end
 Load cached 15-minute OHLCV for a symbol. Returns empty DataFrame if not found.
 """
 function load_cached_ohlcv_15min(symbol::String, out_dir::String)::DataFrame
-    path = joinpath(out_dir, "$(symbol)_15min.csv")
+    path = joinpath(out_dir, "$(symbol).csv")
+    isfile(path) || return DataFrame()
+    return CSV.read(path, DataFrame; types=Dict(:datetime => DateTime))
+end
+
+# ── 1-minute OHLCV ───────────────────────────────────────────────────────────
+
+"""
+Fetch 1-minute OHLCV candles from Kite for one instrument.
+
+Kite retains 1-minute bars for only 60 days — shorter than every other
+intraday interval here (5-minute: 100 days, 15-minute: 200 days, 60-minute:
+400 days). Requests are chunked into 55-day windows to stay safely within
+that limit; a `from_date` more than 60 days before today will simply get no
+data for the portion Kite no longer retains (not an error — each chunk that
+falls outside the window just returns an empty `candles` array, same as any
+other out-of-range request here).
+
+# Returns
+DataFrame with columns: datetime, open, high, low, close, volume.
+Sorted ascending by datetime. Returns empty DataFrame on failure.
+"""
+function fetch_ohlcv_1min(token::Int, from_date::Date, to_date::Date,
+                           session)::DataFrame
+    chunk_days = 55
+    all_chunks = DataFrame[]
+
+    chunk_start = from_date
+    while chunk_start <= to_date
+        chunk_end = min(chunk_start + Day(chunk_days), to_date)
+        from_s = Dates.format(chunk_start, "yyyy-mm-dd") * "+09:15:00"
+        to_s   = Dates.format(chunk_end,   "yyyy-mm-dd") * "+15:30:00"
+        url = "$KITE_BASE/instruments/historical/$token/minute" *
+              "?from=$from_s&to=$to_s&continuous=0&oi=0"
+
+        resp = try
+            HTTP.get(url; headers=_kite_headers(session), request_timeout=30,
+                     status_exception=false)
+        catch e
+            @warn "1min fetch error for token $token ($chunk_start…$chunk_end): $(sprint(showerror, e))"
+            chunk_start = chunk_end + Day(1); sleep(0.35); continue
+        end
+
+        if resp.status == 200
+            raw = try JSON3.read(resp.body) catch; nothing end
+            if !isnothing(raw)
+                cd   = get(raw, :data,    nothing)
+                carr = isnothing(cd) ? nothing : get(cd, :candles, nothing)
+                if !isnothing(carr) && !isempty(carr)
+                    rows = [(
+                        datetime = DateTime(string(c[1])[1:19], "yyyy-mm-ddTHH:MM:SS"),
+                        open     = Float64(c[2]),
+                        high     = Float64(c[3]),
+                        low      = Float64(c[4]),
+                        close    = Float64(c[5]),
+                        volume   = Float64(c[6]),
+                    ) for c in carr]
+                    push!(all_chunks, DataFrame(rows))
+                end
+            end
+        else
+            resp.status == 400 ?
+                @debug("1min HTTP 400 for token $token ($chunk_start…$chunk_end)") :
+                @warn "1min HTTP $(resp.status) for token $token ($chunk_start…$chunk_end)"
+        end
+
+        chunk_start = chunk_end + Day(1)
+        sleep(0.35)
+    end
+
+    isempty(all_chunks) && return DataFrame()
+    return sort!(vcat(all_chunks...), :datetime)
+end
+
+"""
+Fetch and cache 1-minute OHLCV for a list of symbols. Output:
+`out_dir/{SYMBOL}.csv` — `out_dir` is expected to already be a
+granularity-specific directory (e.g. `website/data/ohlcv/nse/1min/`), not
+the exchange root.
+"""
+function collect_ohlcv_1min(symbols::Vector{String}, token_map::Dict{String,Int},
+                             session, out_dir::String,
+                             from_date::Date, to_date::Date;
+                             refresh::Bool=false)
+    mkpath(out_dir)
+    ok = skipped = failed = 0
+    total = length(symbols)
+    t_start = time()
+
+    for (i, sym) in enumerate(symbols)
+        path = joinpath(out_dir, "$(sym).csv")
+        if !refresh && isfile(path)
+            skipped += 1
+        else
+            token = get(token_map, sym, nothing)
+            if isnothing(token)
+                @warn "[$i/$total] No token for $sym — skipping 1min"
+                failed += 1
+            else
+                df = fetch_ohlcv_1min(token, from_date, to_date, session)
+                if isempty(df)
+                    failed += 1
+                    @info "[$i/$total] $sym 1min — 0 bars"
+                else
+                    CSV.write(path, df)
+                    ok += 1
+                    @info "[$i/$total] $sym 1min — $(nrow(df)) bars"
+                end
+            end
+        end
+
+        if i % 100 == 0 || i == total
+            elapsed = round(Int, time() - t_start)
+            @info "  ── [$i/$total] $ok fetched, $skipped skipped, $failed failed — $(elapsed)s elapsed"
+        end
+    end
+
+    @info "1min OHLCV done: $ok fetched, $skipped skipped, $failed failed"
+end
+
+"""
+Load cached 1-minute OHLCV for a symbol. Returns empty DataFrame if not found.
+"""
+function load_cached_ohlcv_1min(symbol::String, out_dir::String)::DataFrame
+    path = joinpath(out_dir, "$(symbol).csv")
     isfile(path) || return DataFrame()
     return CSV.read(path, DataFrame; types=Dict(:datetime => DateTime))
 end

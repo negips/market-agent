@@ -1,9 +1,11 @@
 """
 update_ohlcv.jl
 
-Incrementally update all OHLCV CSVs in website/data/ohlcv/nse/ AND
-website/data/ohlcv/bse/ (both by default — pass --nse-only or --bse-only to
-restrict to one exchange) with bars added since the last collection run.
+Incrementally update all OHLCV CSVs in website/data/ohlcv/{nse,bse}/{daily,
+hourly,5min,15min,1min}/ (both exchanges by default — pass --nse-only or
+--bse-only to restrict to one; macro CSVs under website/data/ohlcv/macro/
+keep their own flat, suffixed layout — too few files to need subfolders)
+with bars added since the last collection run.
 
 For each existing CSV, reads the last date/datetime in the file and fetches
 only the gap since then. Symbols already current are skipped. Appends new
@@ -11,12 +13,16 @@ rows in-place — no full-file rewrite needed.
 
 Run daily after kite_login.js. For 5-min bars, missing a day means that
 data is permanently lost after Kite's 100-day retention window. 15-min bars
-have a 200-day retention window.
+have a 200-day retention window; 1-min bars have only a 60-day retention
+window — the shortest of any interval here, so this is the most sensitive
+to a missed day.
 
 Prerequisites:
   - sidecar/kite_session.json present         (node sidecar/kite_login.js)
-  - website/data/ohlcv/nse/ populated         (run collect_nse_ohlcv.jl first, unless --bse-only)
-  - website/data/ohlcv/bse/ populated         (run collect_bse_ohlcv.jl first, unless --nse-only)
+  - website/data/ohlcv/nse/{daily,hourly,5min,15min,1min}/ populated
+    (run collect_nse_ohlcv.jl first, unless --bse-only)
+  - website/data/ohlcv/bse/{daily,hourly,5min,15min,1min}/ populated
+    (run collect_bse_ohlcv.jl first, unless --nse-only)
 
 Usage:
   julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl
@@ -26,8 +32,10 @@ Usage:
   julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --hourly-only
   julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --5min-only
   julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --15min-only
+  julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --1min-only
   julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --skip-5min
   julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --skip-15min
+  julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --skip-1min
   julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --dry-run
   julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --symbol RELIANCE
 """
@@ -38,7 +46,19 @@ const REPO_ROOT     = joinpath(@__DIR__, "..")
 const OHLCV_ROOT    = joinpath(REPO_ROOT, "website", "data", "ohlcv")
 const NSE_OHLCV_DIR = joinpath(OHLCV_ROOT, "nse")
 const BSE_OHLCV_DIR = joinpath(OHLCV_ROOT, "bse")
-const MACRO_DIR     = joinpath(OHLCV_ROOT, "macro")
+const MACRO_DIR     = joinpath(OHLCV_ROOT, "macro")   # macro stays flat/suffixed — not part of this layout
+
+# One subfolder per granularity under each exchange root (e.g.
+# website/data/ohlcv/nse/hourly/) — see kite_data.jl's module docstring.
+# Macro is intentionally excluded: it's a handful of files, not thousands,
+# so it keeps its original flat {NAME}_5min.csv/{NAME}_15min.csv layout.
+nse_gran_dir(granularity::String) = joinpath(NSE_OHLCV_DIR, granularity)
+bse_gran_dir(granularity::String) = joinpath(BSE_OHLCV_DIR, granularity)
+
+"""`readdir`, but `String[]` instead of an error when `dir` doesn't exist yet
+— e.g. a freshly-added granularity's subfolder before its first collection
+run."""
+_readdir_safe(dir::String) = isdir(dir) ? readdir(dir) : String[]
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -79,14 +99,16 @@ function _last_value(path::String, col::Symbol, T::Type)
     return maximum(good)
 end
 
-_last_daily_date(sym::String, dir::String=NSE_OHLCV_DIR) =
-    _last_value(joinpath(dir, "$(sym)_daily.csv"),  :date,     Date)
-_last_hourly_datetime(sym::String, dir::String=NSE_OHLCV_DIR) =
-    _last_value(joinpath(dir, "$(sym)_hourly.csv"), :datetime, DateTime)
-_last_5min_datetime(sym::String, dir::String=NSE_OHLCV_DIR) =
-    _last_value(joinpath(dir, "$(sym)_5min.csv"),   :datetime, DateTime)
-_last_15min_datetime(sym::String, dir::String=NSE_OHLCV_DIR) =
-    _last_value(joinpath(dir, "$(sym)_15min.csv"),  :datetime, DateTime)
+_last_daily_date(sym::String, dir::String=nse_gran_dir("daily")) =
+    _last_value(joinpath(dir, "$sym.csv"), :date,     Date)
+_last_hourly_datetime(sym::String, dir::String=nse_gran_dir("hourly")) =
+    _last_value(joinpath(dir, "$sym.csv"), :datetime, DateTime)
+_last_5min_datetime(sym::String, dir::String=nse_gran_dir("5min")) =
+    _last_value(joinpath(dir, "$sym.csv"), :datetime, DateTime)
+_last_15min_datetime(sym::String, dir::String=nse_gran_dir("15min")) =
+    _last_value(joinpath(dir, "$sym.csv"), :datetime, DateTime)
+_last_1min_datetime(sym::String, dir::String=nse_gran_dir("1min")) =
+    _last_value(joinpath(dir, "$sym.csv"), :datetime, DateTime)
 _last_macro_5min_datetime(name::String) =
     _last_value(joinpath(MACRO_DIR, "$(name)_5min.csv"),  :datetime, DateTime)
 _last_macro_15min_datetime(name::String) =
@@ -96,13 +118,14 @@ _last_macro_15min_datetime(name::String) =
 const HOURLY_LAST_BAR      = Time(15,  0, 0)   # last 60-min bar opens at 15:00
 const FIVEMIN_LAST_BAR     = Time(15, 25, 0)   # last 5-min bar opens at 15:25 (NSE)
 const FIFTEENMIN_LAST_BAR  = Time(15, 15, 0)   # last 15-min bar opens at 15:15 (NSE)
+const ONEMIN_LAST_BAR      = Time(15, 29, 0)   # last 1-min bar opens at 15:29 (NSE)
 const MCX_FIVEMIN_LAST_BAR    = Time(23, 25, 0)  # last 5-min bar opens at 23:25 (MCX)
 const MCX_FIFTEENMIN_LAST_BAR = Time(23, 15, 0)  # last 15-min bar opens at 23:15 (MCX)
 
 # ── Core update loops ─────────────────────────────────────────────────────────
 
 function update_daily!(symbols, token_map, session, yest::Date;
-                       dry_run::Bool, out_dir::String=NSE_OHLCV_DIR)
+                       dry_run::Bool, out_dir::String=nse_gran_dir("daily"))
     current = updated = failed = 0
     total   = length(symbols)
 
@@ -143,7 +166,7 @@ function update_daily!(symbols, token_map, session, yest::Date;
             continue
         end
 
-        path = joinpath(out_dir, "$(sym)_daily.csv")
+        path = joinpath(out_dir, "$sym.csv")
         CSV.write(path, new_df; append=true)
         updated += 1
         @info "[$i/$total] $sym daily +$(nrow(new_df)) bars ($from → $yest)"
@@ -158,7 +181,7 @@ function update_daily!(symbols, token_map, session, yest::Date;
 end
 
 function update_hourly!(symbols, token_map, session, yest::Date;
-                        dry_run::Bool, out_dir::String=NSE_OHLCV_DIR)
+                        dry_run::Bool, out_dir::String=nse_gran_dir("hourly"))
     current = updated = failed = 0
     total   = length(symbols)
 
@@ -211,7 +234,7 @@ function update_hourly!(symbols, token_map, session, yest::Date;
             continue
         end
 
-        path = joinpath(out_dir, "$(sym)_hourly.csv")
+        path = joinpath(out_dir, "$sym.csv")
         CSV.write(path, new_df; append=true)
         updated += 1
         @info "[$i/$total] $sym hourly +$(nrow(new_df)) bars (from $(new_df.datetime[1]) → $(new_df.datetime[end]))"
@@ -225,7 +248,7 @@ function update_hourly!(symbols, token_map, session, yest::Date;
 end
 
 function update_5min!(symbols, token_map, session, yest::Date;
-                      dry_run::Bool, out_dir::String=NSE_OHLCV_DIR)
+                      dry_run::Bool, out_dir::String=nse_gran_dir("5min"))
     current = updated = failed = 0
     total   = length(symbols)
 
@@ -266,7 +289,7 @@ function update_5min!(symbols, token_map, session, yest::Date;
             failed += 1; continue
         end
 
-        path = joinpath(out_dir, "$(sym)_5min.csv")
+        path = joinpath(out_dir, "$sym.csv")
         CSV.write(path, new_df; append=true)
         updated += 1
         @info "[$i/$total] $sym 5min +$(nrow(new_df)) bars ($(new_df.datetime[1]) → $(new_df.datetime[end]))"
@@ -340,7 +363,7 @@ function update_macro_5min!(session, yest::Date; dry_run::Bool)
 end
 
 function update_15min!(symbols, token_map, session, yest::Date;
-                       dry_run::Bool, out_dir::String=NSE_OHLCV_DIR)
+                       dry_run::Bool, out_dir::String=nse_gran_dir("15min"))
     current = updated = failed = 0
     total   = length(symbols)
 
@@ -381,7 +404,7 @@ function update_15min!(symbols, token_map, session, yest::Date;
             failed += 1; continue
         end
 
-        path = joinpath(out_dir, "$(sym)_15min.csv")
+        path = joinpath(out_dir, "$sym.csv")
         CSV.write(path, new_df; append=true)
         updated += 1
         @info "[$i/$total] $sym 15min +$(nrow(new_df)) bars ($(new_df.datetime[1]) → $(new_df.datetime[end]))"
@@ -391,6 +414,66 @@ function update_15min!(symbols, token_map, session, yest::Date;
         @info "15min: $updated would be updated, $current already current"
     else
         @info "15min: $updated updated, $current already current, $failed failed"
+    end
+end
+
+function update_1min!(symbols, token_map, session, yest::Date;
+                      dry_run::Bool, out_dir::String=nse_gran_dir("1min"))
+    current = updated = failed = 0
+    total   = length(symbols)
+
+    for (i, sym) in enumerate(symbols)
+        last_dt = _last_1min_datetime(sym, out_dir)
+        if isnothing(last_dt)
+            @warn "[$i/$total] $sym 1min — no existing CSV, skipping (run collect_nse_ohlcv.jl first)"
+            failed += 1; continue
+        end
+
+        last_date = Date(last_dt)
+        last_time = Time(last_dt)
+
+        if last_date > yest || (last_date == yest && last_time >= ONEMIN_LAST_BAR)
+            current += 1; continue
+        end
+
+        # Kite only retains 1-minute bars for 60 days — a gap wider than that
+        # means the earliest part of it is already permanently lost, not
+        # fetchable here; the request below simply comes back empty for that
+        # unreachable portion (same as any other out-of-retention request).
+        from   = last_date
+        gap    = (yest - from).value + 1
+        n_chks = ceil(Int, gap / 55)
+
+        if dry_run
+            partial = last_time < ONEMIN_LAST_BAR ? " (partial last day at $last_time)" : ""
+            retention_note = gap > 60 ? " — WARNING: gap exceeds 60-day retention, data permanently lost" : ""
+            @info "[$i/$total] $sym 1min: would fetch $from → $yest ($gap days, ~$n_chks call$(n_chks==1 ? "" : "s"))$partial$retention_note"
+            updated += 1; continue
+        end
+
+        token = get(token_map, sym, nothing)
+        if isnothing(token)
+            @warn "[$i/$total] $sym — no instrument token"; failed += 1; continue
+        end
+
+        new_df = fetch_ohlcv_1min(token, from, yest, session)
+        filter!(row -> row.datetime > last_dt, new_df)
+
+        if isempty(new_df)
+            @debug "[$i/$total] $sym 1min — no new bars after $last_dt"
+            failed += 1; continue
+        end
+
+        path = joinpath(out_dir, "$sym.csv")
+        CSV.write(path, new_df; append=true)
+        updated += 1
+        @info "[$i/$total] $sym 1min +$(nrow(new_df)) bars ($(new_df.datetime[1]) → $(new_df.datetime[end]))"
+    end
+
+    if dry_run
+        @info "1min: $updated would be updated, $current already current"
+    else
+        @info "1min: $updated updated, $current already current, $failed failed"
     end
 end
 
@@ -469,19 +552,24 @@ Flags:
   --hourly-only   Update only hourly (60-min) bars.
   --5min-only     Update only 5-minute bars.
   --15min-only    Update only 15-minute bars.
+  --1min-only     Update only 1-minute bars.
   --skip-5min     Skip the 5-minute pass (overrides --5min-only if both given).
   --skip-15min    Skip the 15-minute pass (overrides --15min-only if both given).
+  --skip-1min     Skip the 1-minute pass (overrides --1min-only if both given).
   --dry-run       Report what would be fetched without making any API calls.
 
-Reads each existing *_daily.csv / *_hourly.csv / *_5min.csv / *_15min.csv in
-website/data/ohlcv/nse/ AND website/data/ohlcv/bse/ (both by default — pass
---nse-only or --bse-only to update a single exchange), finds the last date,
-and fetches only the gap to yesterday. New rows are appended in-place. Macro
-instrument CSVs (website/data/ohlcv/macro/) are updated once regardless of
-exchange selection, during the 5-min/15-min passes.
+Reads each existing {SYMBOL}.csv in website/data/ohlcv/{nse,bse}/{daily,
+hourly,5min,15min,1min}/ (both exchanges by default — pass --nse-only or
+--bse-only to update a single exchange), finds the last date, and fetches
+only the gap to yesterday. New rows are appended in-place. Macro instrument
+CSVs (website/data/ohlcv/macro/, flat and suffixed — not part of this
+subfolder layout) are updated once regardless of exchange selection, during
+the 5-min/15-min passes — there is no macro 1-min collection today, so
+--1min-only/--skip-1min never affect it.
 
 NOTE: 5-min bars have a 100-day retention window; 15-min bars have a
-200-day retention window — run this daily or data will be permanently lost.
+200-day retention window; 1-min bars have only a 60-day retention window
+(the shortest here) — run this daily or data will be permanently lost.
 """)
         return
     end
@@ -490,8 +578,10 @@ NOTE: 5-min bars have a 100-day retention window; 15-min bars have a
     hourly_only     = "--hourly-only"  in ARGS
     fivemin_only    = "--5min-only"    in ARGS
     fifteenmin_only = "--15min-only"   in ARGS
+    onemin_only     = "--1min-only"    in ARGS
     skip_5min       = "--skip-5min"    in ARGS
     skip_15min      = "--skip-15min"   in ARGS
+    skip_1min       = "--skip-1min"    in ARGS
     nse_only        = "--nse-only"     in ARGS
     bse_only        = "--bse-only"     in ARGS
     dry_run         = "--dry-run"      in ARGS
@@ -500,11 +590,12 @@ NOTE: 5-min bars have a 100-day retention window; 15-min bars have a
     run_nse = !bse_only   # both exchanges run by default
     run_bse = !nse_only
 
-    any_only  = daily_only || hourly_only || fivemin_only || fifteenmin_only
+    any_only  = daily_only || hourly_only || fivemin_only || fifteenmin_only || onemin_only
     run_daily  = !any_only || daily_only
     run_hourly = !any_only || hourly_only
     run_5min   = (!any_only || fivemin_only)    && !skip_5min
     run_15min  = (!any_only || fifteenmin_only) && !skip_15min
+    run_1min   = (!any_only || onemin_only)     && !skip_1min
 
     # Optional single-symbol filter (--symbol INFY)
     sym_idx   = findfirst(==("--symbol"), ARGS)
@@ -545,94 +636,106 @@ NOTE: 5-min bars have a 100-day retention window; 15-min bars have a
         isdir(NSE_OHLCV_DIR) || error("NSE OHLCV directory not found: $NSE_OHLCV_DIR\n" *
                                        "Run collect_nse_ohlcv.jl first (or pass --bse-only).")
 
-        daily_syms    = [replace(f, "_daily.csv"  => "")
-                         for f in readdir(NSE_OHLCV_DIR) if endswith(f, "_daily.csv")]
-        hourly_syms   = [replace(f, "_hourly.csv" => "")
-                         for f in readdir(NSE_OHLCV_DIR) if endswith(f, "_hourly.csv")]
-        fivemin_syms  = [replace(f, "_5min.csv"   => "")
-                         for f in readdir(NSE_OHLCV_DIR) if endswith(f, "_5min.csv")]
-        fifteenmin_syms = [replace(f, "_15min.csv" => "")
-                           for f in readdir(NSE_OHLCV_DIR) if endswith(f, "_15min.csv")]
+        daily_syms      = [replace(f, ".csv" => "") for f in _readdir_safe(nse_gran_dir("daily"))]
+        hourly_syms     = [replace(f, ".csv" => "") for f in _readdir_safe(nse_gran_dir("hourly"))]
+        fivemin_syms    = [replace(f, ".csv" => "") for f in _readdir_safe(nse_gran_dir("5min"))]
+        fifteenmin_syms = [replace(f, ".csv" => "") for f in _readdir_safe(nse_gran_dir("15min"))]
+        onemin_syms     = [replace(f, ".csv" => "") for f in _readdir_safe(nse_gran_dir("1min"))]
 
         if !isnothing(sym_filter)
             daily_syms      = filter(==(sym_filter), daily_syms)
             hourly_syms     = filter(==(sym_filter), hourly_syms)
             fivemin_syms    = filter(==(sym_filter), fivemin_syms)
             fifteenmin_syms = filter(==(sym_filter), fifteenmin_syms)
+            onemin_syms     = filter(==(sym_filter), onemin_syms)
             isempty(daily_syms) && isempty(hourly_syms) &&
-            isempty(fivemin_syms) && isempty(fifteenmin_syms) &&
+            isempty(fivemin_syms) && isempty(fifteenmin_syms) && isempty(onemin_syms) &&
                 error("No existing CSV found for symbol '$sym_filter' in $NSE_OHLCV_DIR")
             @info "Filtering to symbol: $sym_filter"
         end
 
-        @info "Found $(length(daily_syms)) NSE daily, $(length(hourly_syms)) hourly, $(length(fivemin_syms)) 5-min, $(length(fifteenmin_syms)) 15-min CSVs"
+        @info "Found $(length(daily_syms)) NSE daily, $(length(hourly_syms)) hourly, $(length(fivemin_syms)) 5-min, $(length(fifteenmin_syms)) 15-min, $(length(onemin_syms)) 1-min CSVs"
         @info "═══ NSE ═══"
 
         if run_daily
             @info "── Daily bars ──"
-            update_daily!(daily_syms, nse_token_map, session, yest; dry_run)
+            update_daily!(daily_syms, nse_token_map, session, yest;
+                          dry_run, out_dir=nse_gran_dir("daily"))
         end
 
         if run_hourly
             @info "── Hourly bars ──"
-            update_hourly!(hourly_syms, nse_token_map, session, yest; dry_run)
+            update_hourly!(hourly_syms, nse_token_map, session, yest;
+                           dry_run, out_dir=nse_gran_dir("hourly"))
         end
 
         if run_5min
             @info "── 5-min bars ──"
-            update_5min!(fivemin_syms, nse_token_map, session, yest; dry_run)
+            update_5min!(fivemin_syms, nse_token_map, session, yest;
+                        dry_run, out_dir=nse_gran_dir("5min"))
         end
 
         if run_15min
             @info "── 15-min bars ──"
-            update_15min!(fifteenmin_syms, nse_token_map, session, yest; dry_run)
+            update_15min!(fifteenmin_syms, nse_token_map, session, yest;
+                         dry_run, out_dir=nse_gran_dir("15min"))
+        end
+
+        if run_1min
+            @info "── 1-min bars ──"
+            update_1min!(onemin_syms, nse_token_map, session, yest;
+                        dry_run, out_dir=nse_gran_dir("1min"))
         end
     end
 
     # ── BSE update ────────────────────────────────────────────────────────────
     if run_bse
         if isdir(BSE_OHLCV_DIR)
-            bse_daily_syms = [replace(f, "_daily.csv"  => "")
-                              for f in readdir(BSE_OHLCV_DIR) if endswith(f, "_daily.csv")]
-            bse_hourly_syms = [replace(f, "_hourly.csv" => "")
-                               for f in readdir(BSE_OHLCV_DIR) if endswith(f, "_hourly.csv")]
-            bse_5min_syms  = [replace(f, "_5min.csv"   => "")
-                              for f in readdir(BSE_OHLCV_DIR) if endswith(f, "_5min.csv")]
-            bse_15min_syms = [replace(f, "_15min.csv"  => "")
-                              for f in readdir(BSE_OHLCV_DIR) if endswith(f, "_15min.csv")]
+            bse_daily_syms   = [replace(f, ".csv" => "") for f in _readdir_safe(bse_gran_dir("daily"))]
+            bse_hourly_syms  = [replace(f, ".csv" => "") for f in _readdir_safe(bse_gran_dir("hourly"))]
+            bse_5min_syms    = [replace(f, ".csv" => "") for f in _readdir_safe(bse_gran_dir("5min"))]
+            bse_15min_syms   = [replace(f, ".csv" => "") for f in _readdir_safe(bse_gran_dir("15min"))]
+            bse_1min_syms    = [replace(f, ".csv" => "") for f in _readdir_safe(bse_gran_dir("1min"))]
 
             if !isnothing(sym_filter)
                 bse_daily_syms  = filter(==(sym_filter), bse_daily_syms)
                 bse_hourly_syms = filter(==(sym_filter), bse_hourly_syms)
                 bse_5min_syms   = filter(==(sym_filter), bse_5min_syms)
                 bse_15min_syms  = filter(==(sym_filter), bse_15min_syms)
+                bse_1min_syms   = filter(==(sym_filter), bse_1min_syms)
             end
 
-            @info "Found $(length(bse_daily_syms)) BSE daily, $(length(bse_hourly_syms)) hourly, $(length(bse_5min_syms)) 5-min, $(length(bse_15min_syms)) 15-min CSVs"
+            @info "Found $(length(bse_daily_syms)) BSE daily, $(length(bse_hourly_syms)) hourly, $(length(bse_5min_syms)) 5-min, $(length(bse_15min_syms)) 15-min, $(length(bse_1min_syms)) 1-min CSVs"
             @info "═══ BSE ═══"
 
             if run_daily
                 @info "── Daily bars ──"
                 update_daily!(bse_daily_syms, bse_token_map, session, yest;
-                              dry_run, out_dir=BSE_OHLCV_DIR)
+                              dry_run, out_dir=bse_gran_dir("daily"))
             end
 
             if run_hourly
                 @info "── Hourly bars ──"
                 update_hourly!(bse_hourly_syms, bse_token_map, session, yest;
-                               dry_run, out_dir=BSE_OHLCV_DIR)
+                               dry_run, out_dir=bse_gran_dir("hourly"))
             end
 
             if run_5min
                 @info "── 5-min bars ──"
                 update_5min!(bse_5min_syms, bse_token_map, session, yest;
-                             dry_run, out_dir=BSE_OHLCV_DIR)
+                             dry_run, out_dir=bse_gran_dir("5min"))
             end
 
             if run_15min
                 @info "── 15-min bars ──"
                 update_15min!(bse_15min_syms, bse_token_map, session, yest;
-                              dry_run, out_dir=BSE_OHLCV_DIR)
+                              dry_run, out_dir=bse_gran_dir("15min"))
+            end
+
+            if run_1min
+                @info "── 1-min bars ──"
+                update_1min!(bse_1min_syms, bse_token_map, session, yest;
+                             dry_run, out_dir=bse_gran_dir("1min"))
             end
         else
             @warn "BSE directory not found ($BSE_OHLCV_DIR) — run collect_bse_ohlcv.jl first (or pass --nse-only)."
