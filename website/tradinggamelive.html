@@ -73,9 +73,13 @@
     text-transform: uppercase; letter-spacing: .05em; margin-top: 18px;
   }
 
+  .val-run-bulk-row {
+    display: flex; align-items: center; gap: 10px;
+    margin-top: 12px;
+  }
   .val-run-toggles {
     display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
-    margin-top: 12px; max-height: 64px; overflow-y: auto;
+    margin-top: 8px; max-height: 64px; overflow-y: auto;
   }
   .val-run-chip {
     display: flex; align-items: center; gap: 5px;
@@ -305,6 +309,11 @@ function revealLayout() {
           </label>
         </div>
       </div>
+      <div class="val-run-bulk-row" id="val-run-bulk-row">
+        <button type="button" class="val-run-bulk" data-bulk="all">Show all</button>
+        <button type="button" class="val-run-bulk" data-bulk="none">Hide all</button>
+        <button type="button" class="val-run-bulk" data-bulk="last5">Last 5 only</button>
+      </div>
       <div class="val-run-toggles" id="val-run-toggles"></div>
       <div class="subplot-label">Portfolio value</div>
       <div class="canvas-wrap"><canvas id="val-chart"></canvas></div>
@@ -356,19 +365,29 @@ function revealLayout() {
     valRunsChart.update();
   });
 
-  // Per-run show/hide toggles. The chip bar's innerHTML is rebuilt on every
+  // Bulk show/hide/last-5 buttons live in their own static row, outside the
+  // chip list's scrollable box (val-run-toggles below) — so they stay put
+  // instead of scrolling out of view once enough runs accumulate to need
+  // that box's own scrollbar. Static markup (unlike the chips), so this
+  // listener is bound once and never re-rendered.
+  document.getElementById('val-run-bulk-row').addEventListener('click', (e) => {
+    const bulk = e.target.closest('[data-bulk]');
+    if (!bulk) return;
+    if (bulk.dataset.bulk === 'none') hiddenValRuns = new Set(lastValRuns.map(r => r.iteration));
+    else if (bulk.dataset.bulk === 'last5') {
+      const keep = new Set(lastValRuns.slice(-5).map(r => r.iteration));
+      hiddenValRuns = new Set(lastValRuns.filter(r => !keep.has(r.iteration)).map(r => r.iteration));
+    }
+    else hiddenValRuns.clear();
+    saveHiddenValRuns(hiddenValRuns);
+    renderValRunsChart(lastValRuns);
+  });
+
+  // Per-run show/hide chips. The chip bar's innerHTML is rebuilt on every
   // renderValRunsChart call (new runs land every eval_every iterations), so
   // this listener is attached once here, delegated, rather than re-bound per
   // render.
   document.getElementById('val-run-toggles').addEventListener('click', (e) => {
-    const bulk = e.target.closest('[data-bulk]');
-    if (bulk) {
-      if (bulk.dataset.bulk === 'none') hiddenValRuns = new Set(lastValRuns.map(r => r.iteration));
-      else hiddenValRuns.clear();
-      saveHiddenValRuns(hiddenValRuns);
-      renderValRunsChart(lastValRuns);
-      return;
-    }
     const chip = e.target.closest('[data-iter]');
     if (!chip) return;
     const iter = Number(chip.dataset.iter);
@@ -590,11 +609,13 @@ function renderValRunsChart(runs) {
   lastValRuns = runs;
   if (!runs.length) {
     document.getElementById('val-chart-sub').textContent = 'No held-out evaluation completed yet';
+    document.getElementById('val-run-bulk-row').style.display = 'none';
     document.getElementById('val-run-toggles').innerHTML = '';
     document.getElementById('val-holdings-sub').textContent = '';
     document.getElementById('val-holdings-body').innerHTML = '';
     return;
   }
+  document.getElementById('val-run-bulk-row').style.display = '';
 
   // Always the most recently completed run, regardless of which runs are
   // toggled on/off in the chart above — the chip toggles control chart
@@ -618,8 +639,6 @@ function renderValRunsChart(runs) {
   // the saved set never grows unboundedly.
   hiddenValRuns = new Set([...hiddenValRuns].filter(it => runs.some(r => r.iteration === it)));
   document.getElementById('val-run-toggles').innerHTML =
-    `<button type="button" class="val-run-bulk" data-bulk="all">Show all</button>` +
-    `<button type="button" class="val-run-bulk" data-bulk="none">Hide all</button>` +
     runs.map((run, i) => {
       const off = hiddenValRuns.has(run.iteration);
       return `<label class="val-run-chip ${off ? 'chip-off' : ''}" data-iter="${run.iteration}">
