@@ -95,7 +95,7 @@ market-agent/
 │   ├── build_cache.jl                    # build inference_cache.bson from all OHLCV CSVs (run each morning)
 │   ├── build_dataset.jl                  # sliding-window dataset assembly; --pred-hours 35|70
 │   ├── train_model.jl                    # train SwingPredictor (v1/v2/v3); auto-selects dataset
-│   ├── build_universe_snapshot.jl        # TradingGame candidate universe: confidence-filtered, pluggable train/val split
+│   ├── build_market_universe_snapshot.jl # TradingGame candidate universe: confidence-filtered, pluggable train/val split
 │   ├── train_trading_policy.jl           # drives TradingGame.train_policy! — see website/tradinggamelive.html
 │   └── training_status.jl                # one-shot read-only snapshot of a running train_trading_policy.jl
 │
@@ -513,7 +513,7 @@ Outputs (under `website/data/models/{arch.name}/`):
 To stop training cleanly: `touch website/data/models/DualCNN_v3/STOP` (saves checkpoint).
 Hard stop without save: `touch website/data/models/DualCNN_v3/STOP_NOW`.
 
-### build_universe_snapshot.jl
+### build_market_universe_snapshot.jl
 
 Builds the `TradingGame` candidate universe: filters `nse_companies_latest.json`'s
 already-computed confidence scores (>= 40, no live sidecar calls) and restricts to
@@ -529,21 +529,21 @@ to change to support that; see the module docstring in `universe.jl` for why.
 
 ```bash
 # shared-topcap (default): top --n by market cap, identical list for train and val
-julia --project=packages/TradingGame scripts/build_universe_snapshot.jl        # top 60
-julia --project=packages/TradingGame scripts/build_universe_snapshot.jl --n 100
+julia --project=packages/TradingGame scripts/build_market_universe_snapshot.jl        # top 60
+julia --project=packages/TradingGame scripts/build_market_universe_snapshot.jl --n 100
 
 # disjoint-topcap: top (n_train+n_val) by market cap, split disjoint and
 # stratified by market-cap decile so neither side skews large/small-cap
-julia --project=packages/TradingGame scripts/build_universe_snapshot.jl \
+julia --project=packages/TradingGame scripts/build_market_universe_snapshot.jl \
     --strategy disjoint-topcap --n-train 60 --n-val 20 --seed 42
 
 # random: uniformly random --n from the WHOLE confidence-passing pool, not
 # restricted to top-market-cap; --disjoint draws independent train/val sets
-julia --project=packages/TradingGame scripts/build_universe_snapshot.jl \
+julia --project=packages/TradingGame scripts/build_market_universe_snapshot.jl \
     --strategy random --n 60 --disjoint --seed 42
 
 # random-bucketed: random selection from named market-cap bands (HI may be 'inf')
-julia --project=packages/TradingGame scripts/build_universe_snapshot.jl \
+julia --project=packages/TradingGame scripts/build_market_universe_snapshot.jl \
     --strategy random-bucketed --band 0:5000:15 --band 5000:inf:15
 ```
 
@@ -558,10 +558,10 @@ val=Vector{String})`, directly usable as `train_config`/`val_config`'s
 ### train_trading_policy.jl
 
 Drives `TradingGame.train_policy!`: loads the cache + the train/val candidate
-universes (`build_universe_snapshot.jl` — a `UniverseStrategy` may give train and
-val different companies, not just different dates), resolves the train/val date
-windows, and trains a fresh `ActorCriticPolicy`. Streams `live_status.json` by
-default — watch the run at `website/tradinggamelive.html`.
+universes (`build_market_universe_snapshot.jl` — a `UniverseStrategy` may give
+train and val different companies, not just different dates), resolves the
+train/val date windows, and trains a fresh `ActorCriticPolicy`. Streams
+`live_status.json` by default — watch the run at `website/tradinggamelive.html`.
 
 ```bash
 julia --project=packages/TradingGame scripts/train_trading_policy.jl
@@ -579,15 +579,16 @@ julia --project=packages/TradingGame scripts/train_trading_policy.jl --val-start
 derived: `trailing` is the original behavior — val is the last `--val-days` of the
 cache, train is everything before it, sound even with disjoint train/val
 companies since there's no leakage risk left to guard against. `same` has train
-and val both span the full cache date range — only meaningful once train/val use
-different companies (see `build_universe_snapshot.jl`), and makes full use of the
-cache's data on both sides instead of carving out a held-out tail. Explicit
+and val both span the full cache date range — only meaningful once train/val
+use different companies (see `build_market_universe_snapshot.jl`), and makes
+full use of the cache's data on both sides instead of carving out a held-out
+tail. Explicit
 `--train-start`/`--train-end`/`--val-start`/`--val-end` (any subset, ISO
 `yyyy-mm-dd`) override whichever bound `--val-window` would otherwise have
 picked, e.g. for deliberately validating against a specific regime.
 
 Prerequisites: `inference_cache.bson` (`build_cache.jl`) and
-`universe_latest.json` (`build_universe_snapshot.jl`).
+`universe_latest.json` (`build_market_universe_snapshot.jl`).
 Outputs (under `website/data/trading_game/`): `policy.bson`, `episode_log.jsonl`,
 `live_status.json`, `val_runs.jsonl` (every held-out episode's full portfolio value/
 stock value/cash value curves, trades, and final holdings snapshot, appended —

@@ -1,5 +1,5 @@
 """
-build_universe_snapshot.jl
+build_market_universe_snapshot.jl
 
 Builds the TradingGame candidate universe: filters `nse_companies_latest.json`
 to the confidence-passing (score >= MIN_CONFIDENCE_SCORE, reusing the
@@ -25,13 +25,13 @@ company counts and/or different companies entirely (no symbol-identity
 embedding or positional encoding anywhere downstream).
 
 Usage:
-  julia --project=packages/TradingGame scripts/build_universe_snapshot.jl
-  julia --project=packages/TradingGame scripts/build_universe_snapshot.jl --n 100
-  julia --project=packages/TradingGame scripts/build_universe_snapshot.jl \\
+  julia --project=packages/TradingGame scripts/build_market_universe_snapshot.jl
+  julia --project=packages/TradingGame scripts/build_market_universe_snapshot.jl --n 100
+  julia --project=packages/TradingGame scripts/build_market_universe_snapshot.jl \\
       --strategy disjoint-topcap --n-train 60 --n-val 20 --seed 42
-  julia --project=packages/TradingGame scripts/build_universe_snapshot.jl \\
+  julia --project=packages/TradingGame scripts/build_market_universe_snapshot.jl \\
       --strategy random --n 60 --disjoint --seed 42
-  julia --project=packages/TradingGame scripts/build_universe_snapshot.jl \\
+  julia --project=packages/TradingGame scripts/build_market_universe_snapshot.jl \\
       --strategy random-bucketed --band 0:5000:15 --band 5000:inf:15
 
 Prerequisites:
@@ -75,7 +75,7 @@ function parse_args()
         if a in ("--help", "-h")
             println("""
 Usage:
-  julia --project=packages/TradingGame scripts/build_universe_snapshot.jl [options]
+  julia --project=packages/TradingGame scripts/build_market_universe_snapshot.jl [options]
 
 Strategies (--strategy NAME):
   shared-topcap      (default) top --n by market cap, same list for train and val

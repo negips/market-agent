@@ -113,7 +113,7 @@ end
 # ── Strategies: train/val composition ────────────────────────────────────────────
 
 """
-How `scripts/build_universe_snapshot.jl` splits `eligible_candidates`'s pool
+How `scripts/build_market_universe_snapshot.jl` splits `eligible_candidates`'s pool
 into a training candidate list and a held-out validation candidate list.
 Every subtype implements `build_universes(strategy, pool) -> (train=.., val=..)`.
 
@@ -338,7 +338,7 @@ which strategy actually built the snapshot.
 function load_universe_snapshot(path::String)
     isfile(path) || error(
         "TradingGame.load_universe_snapshot: not found: $path\n" *
-        "Run: julia --project=packages/TradingGame scripts/build_universe_snapshot.jl")
+        "Run: julia --project=packages/TradingGame scripts/build_market_universe_snapshot.jl")
     raw = JSON3.read(read(path, String))
     return (train = [String(c.symbol) for c in raw.train_candidates],
             val   = [String(c.symbol) for c in raw.val_candidates])

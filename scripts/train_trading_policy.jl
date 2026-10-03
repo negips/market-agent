@@ -2,10 +2,10 @@
 train_trading_policy.jl
 
 Drives `TradingGame.train_policy!`: loads the inference cache + the train/val
-candidate universes (see `build_universe_snapshot.jl` — a `UniverseStrategy`
-may give train and val different companies, not just different dates),
-resolves the train/val date windows, builds a fresh `ActorCriticPolicy`, and
-trains.
+candidate universes (see `build_market_universe_snapshot.jl` — a
+`UniverseStrategy` may give train and val different companies, not just
+different dates), resolves the train/val date windows, builds a fresh
+`ActorCriticPolicy`, and trains.
 
 Usage:
   julia --project=packages/TradingGame scripts/train_trading_policy.jl
@@ -21,9 +21,9 @@ Usage:
 --val-window MODE (default: trailing):
   trailing   val = the last --val-days of the cache; train = everything before
              that. Sound even when train/val use disjoint companies (see
-             build_universe_snapshot.jl) — there's no leakage risk left to
-             guard against, but it keeps results comparable to runs that
-             always used this split.
+             build_market_universe_snapshot.jl) — there's no leakage risk
+             left to guard against, but it keeps results comparable to runs
+             that always used this split.
   same       train and val both span the FULL cache date range — only valid
              generalization-wise once train/val use different companies;
              makes full use of the cache's data on both sides instead of
@@ -36,7 +36,7 @@ regime.
 
 Prerequisites:
   website/data/inference_cache.bson              (build_cache.jl)
-  website/data/trading_game/universe_latest.json (build_universe_snapshot.jl)
+  website/data/trading_game/universe_latest.json (build_market_universe_snapshot.jl)
 
 Outputs (under website/data/trading_game/):
   policy.bson          — best checkpoint (by held-out return)
@@ -437,7 +437,7 @@ function main()
     isfile(CACHE_FILE) || error(
         "Not found: $CACHE_FILE\nRun: julia --project=packages/StockSwingPredictor scripts/build_cache.jl")
     isfile(UNIVERSE_FILE) || error(
-        "Not found: $UNIVERSE_FILE\nRun: julia --project=packages/TradingGame scripts/build_universe_snapshot.jl")
+        "Not found: $UNIVERSE_FILE\nRun: julia --project=packages/TradingGame scripts/build_market_universe_snapshot.jl")
 
     @info "Loading inference cache…"
     cache = load_inference_cache(CACHE_FILE)

@@ -28,7 +28,7 @@ objective is to maximise the total value of the portfolio, evaluated every
 2. Observation assembly + actor-critic network (`observation.jl`, `policy.jl`) — done.
 3. Hand-rolled PPO + a small-universe training sanity check (`ppo.jl`, `train.jl`) — done.
 4. Full-scale training + historical backtest validation — in progress:
-   candidate universe (`universe.jl`, `scripts/build_universe_snapshot.jl`) done;
+   candidate universe (`universe.jl`, `scripts/build_market_universe_snapshot.jl`) done;
    historical news-signal backfill (`news_features.jl`) not started.
 5. Live execution — explicitly out of scope for this package; see
    `StockSwingPredictor.broker.jl` for the read-only Kite portfolio functions a
