@@ -86,10 +86,11 @@ market-agent/
 │   ├── run_confidence_checks.jl          # runs CompanyConfidence on top-N by market cap
 │   ├── enrich_earnings_dates.jl          # projects next earnings date via Tijori history (run every 2 weeks)
 │   ├── generate_earnings_watchlist.jl    # merges NSE calendar + projections → watchlist JSON
-│   ├── collect_nse_ohlcv.jl              # download all NSE OHLCV: daily/hourly/5min/15min (Kite)
-│   ├── collect_bse_ohlcv.jl              # download all BSE OHLCV: daily/hourly/5min/15min (Kite)
+│   ├── collect_nse_ohlcv.jl              # download all NSE OHLCV: daily/hourly/5min/15min/1min (Kite)
+│   ├── collect_bse_ohlcv.jl              # download all BSE OHLCV: daily/hourly/5min/15min/1min (Kite)
 │   ├── collect_macro_ohlcv.jl            # download macro instrument OHLCV (Yahoo + Kite CDS/NSE)
 │   ├── update_ohlcv.jl                   # incremental update: append only missing bars since last run
+│   ├── backfill_ohlcv.jl                 # extend existing OHLCV CSVs backward to an earlier --from date
 │   ├── extract_llm_features.jl           # Claude API → 14 scalar signals per company (resumable)
 │   ├── monitor_news.jl                   # real-time BSE + RSS news monitor daemon
 │   ├── build_cache.jl                    # build inference_cache.bson from all OHLCV CSVs (run each morning)
@@ -421,6 +422,15 @@ restrict to one granularity). Macro instrument CSVs are the one exception — to
 few files to need subfolders, so they stay flat and suffixed at
 `website/data/ohlcv/macro/{NAME}_{5min,15min,daily}.csv`.
 
+Kite's per-interval day limits (60/100/200/400/2000 days for
+1min/5min/15min/60min/day) are a single-request span cap, not a retention
+cliff — verified live against the real API, every intraday interval still
+returns genuine multi-year-old data today. `collect_nse_ohlcv.jl`/
+`collect_bse_ohlcv.jl`'s `--from` flag applies to every granularity, not
+just daily, and a deep `--from` (e.g. 2010-01-01) works for all of them —
+it just means far more chunked API calls and disk the finer the
+granularity, especially `--1min-only`.
+
 ```bash
 # Run every trading day after kite_login.js (no arguments needed — updates NSE + BSE)
 julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl
@@ -435,6 +445,48 @@ julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --dry-run
 # Update only daily bars (skip the slower hourly pass)
 julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --daily-only
 ```
+
+Both `collect_nse_ohlcv.jl`/`collect_bse_ohlcv.jl` and `update_ohlcv.jl` also take
+`--skip-daily`/`--skip-hourly`/`--skip-5min`/`--skip-15min`/`--skip-1min` (the
+collect scripts added `--skip-daily`/`--skip-hourly` later than the others, for
+symmetry — `update_ohlcv.jl` only ever needed `--skip-5min`/`--skip-15min`/
+`--skip-1min` since its daily/hourly passes were never worth skipping on their own).
+
+### backfill_ohlcv.jl
+
+The mirror image of `update_ohlcv.jl`: extends existing OHLCV CSVs *backward* to
+an earlier `--from` date, instead of forward to yesterday. For each existing
+`{SYMBOL}.csv`, reads the earliest date/datetime already on disk and fetches only
+the older gap down to `--from`, merging it in (de-duplicated, re-sorted) rather
+than overwriting the whole file the way `collect_nse_ohlcv.jl --refresh` would.
+A symbol with no existing CSV is skipped — this tool only extends, it doesn't do
+initial collection (use `collect_nse_ohlcv.jl`/`collect_bse_ohlcv.jl` for a
+brand-new granularity, e.g. NSE `15min`, which has zero files today).
+
+This exists because most of the real archive was collected back when the
+"N-day retention" figures above were believed to be hard limits — most symbols'
+files therefore start much later than Kite can actually provide.
+
+```bash
+# Extend everything (both exchanges, all granularities) back to 2010
+julia --project=packages/StockSwingPredictor scripts/backfill_ohlcv.jl --from 2010-01-01
+
+# See the call-count estimate first — no API calls made
+julia --project=packages/StockSwingPredictor scripts/backfill_ohlcv.jl --from 2010-01-01 --dry-run
+
+# Scope a trial run
+julia --project=packages/StockSwingPredictor scripts/backfill_ohlcv.jl --from 2010-01-01 --symbol RELIANCE
+julia --project=packages/StockSwingPredictor scripts/backfill_ohlcv.jl --from 2010-01-01 --nse-only --hourly-only
+julia --project=packages/StockSwingPredictor scripts/backfill_ohlcv.jl --from 2010-01-01 --skip-1min
+```
+
+Same `--nse-only`/`--bse-only`, `--daily-only`/`--hourly-only`/`--5min-only`/
+`--15min-only`/`--1min-only`, matching `--skip-*` flags, and `--symbol` as its
+siblings. Macro is out of scope here too (same reasoning as `update_ohlcv.jl`).
+Going back to 2010 for the finer granularities across the full symbol universe
+is a genuinely large job (many chunked API calls per symbol) — `--dry-run` first
+to see the estimate, then scope with `--symbol`/`--*-only` before committing to
+a full run.
 
 ### collect_macro_ohlcv.jl
 

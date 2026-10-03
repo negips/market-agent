@@ -11,11 +11,14 @@ For each existing CSV, reads the last date/datetime in the file and fetches
 only the gap since then. Symbols already current are skipped. Appends new
 rows in-place — no full-file rewrite needed.
 
-Run daily after kite_login.js. For 5-min bars, missing a day means that
-data is permanently lost after Kite's 100-day retention window. 15-min bars
-have a 200-day retention window; 1-min bars have only a 60-day retention
-window — the shortest of any interval here, so this is the most sensitive
-to a missed day.
+Run daily after kite_login.js. Missing a day never loses data — every
+granularity here, including 1-minute, can still be fetched arbitrarily far
+back (verified live against the real API; Kite's per-interval day limits are
+a single-request span cap, not a retention cliff — see kite_data.jl). The
+reason to run this daily anyway is purely practical: incremental is one
+small chunked request per symbol, where catching up a long-neglected gap
+means re-chunking the whole gap, which is slower and heavier per run the
+longer it's left.
 
 Prerequisites:
   - sidecar/kite_session.json present         (node sidecar/kite_login.js)
@@ -436,18 +439,17 @@ function update_1min!(symbols, token_map, session, yest::Date;
             current += 1; continue
         end
 
-        # Kite only retains 1-minute bars for 60 days — a gap wider than that
-        # means the earliest part of it is already permanently lost, not
-        # fetchable here; the request below simply comes back empty for that
-        # unreachable portion (same as any other out-of-retention request).
+        # 60 days is Kite's per-request span cap for this interval, not a
+        # retention cliff (verified live) — fetch_ohlcv_1min already chunks
+        # under it, so a gap wider than that just costs more chunked calls
+        # here, nothing is unrecoverable.
         from   = last_date
         gap    = (yest - from).value + 1
         n_chks = ceil(Int, gap / 55)
 
         if dry_run
             partial = last_time < ONEMIN_LAST_BAR ? " (partial last day at $last_time)" : ""
-            retention_note = gap > 60 ? " — WARNING: gap exceeds 60-day retention, data permanently lost" : ""
-            @info "[$i/$total] $sym 1min: would fetch $from → $yest ($gap days, ~$n_chks call$(n_chks==1 ? "" : "s"))$partial$retention_note"
+            @info "[$i/$total] $sym 1min: would fetch $from → $yest ($gap days, ~$n_chks call$(n_chks==1 ? "" : "s"))$partial"
             updated += 1; continue
         end
 
@@ -567,9 +569,10 @@ subfolder layout) are updated once regardless of exchange selection, during
 the 5-min/15-min passes — there is no macro 1-min collection today, so
 --1min-only/--skip-1min never affect it.
 
-NOTE: 5-min bars have a 100-day retention window; 15-min bars have a
-200-day retention window; 1-min bars have only a 60-day retention window
-(the shortest here) — run this daily or data will be permanently lost.
+NOTE: no granularity here actually loses data if you skip a day — Kite's
+per-interval day limits are a single-request span cap, not a retention
+cliff (verified live). Running this daily is just cheaper than catching up
+a big gap in one go, not a race against data disappearing.
 """)
         return
     end

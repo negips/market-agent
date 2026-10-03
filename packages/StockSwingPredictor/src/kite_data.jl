@@ -421,8 +421,11 @@ end
 """
 Fetch 5-minute OHLCV candles from Kite for one instrument.
 
-Kite retains 5-minute bars for 100 days. Requests are chunked into 90-day
-windows to stay safely within any per-request limits.
+Kite caps a single historical-data request to a 100-day span for this
+interval — not a total retention limit (verified live: 5-minute candles from
+2021 still return real data today). Requests are chunked into 90-day windows
+so an arbitrarily old `from_date` is walked back correctly, the same way
+`fetch_ohlcv`'s daily chunking already does for its own (2000-day) span cap.
 
 # Returns
 DataFrame with columns: datetime, open, high, low, close, volume.
@@ -540,12 +543,14 @@ end
 """
 Fetch 15-minute OHLCV bars for a single NSE instrument token.
 
-Kite retains 15-minute bars for 200 days. Requests are chunked into 175-day
-windows to stay safely within that limit.
+Kite caps a single historical-data request to a 200-day span for this
+interval — not a total retention limit (verified live: 15-minute candles
+from 2019 still return real data today). Requests are chunked into 175-day
+windows so an arbitrarily old `from_date` is walked back correctly.
 
 # Arguments
 - `token`: Kite instrument token
-- `from_date`, `to_date`: inclusive date range (within 200-day retention window)
+- `from_date`, `to_date`: inclusive date range
 - `session`: Kite session
 
 # Returns
@@ -664,13 +669,13 @@ end
 """
 Fetch 1-minute OHLCV candles from Kite for one instrument.
 
-Kite retains 1-minute bars for only 60 days — shorter than every other
-intraday interval here (5-minute: 100 days, 15-minute: 200 days, 60-minute:
-400 days). Requests are chunked into 55-day windows to stay safely within
-that limit; a `from_date` more than 60 days before today will simply get no
-data for the portion Kite no longer retains (not an error — each chunk that
-falls outside the window just returns an empty `candles` array, same as any
-other out-of-range request here).
+Kite caps a single historical-data request to a 60-day span for this
+interval — the shortest per-request cap of any interval here (5-minute: 100
+days, 15-minute: 200 days, 60-minute: 400 days, day: 2000 days), but NOT a
+total retention limit: verified live against the real API that 1-minute
+candles from 2022 still return real data today. Requests are chunked into
+55-day windows so an arbitrarily old `from_date` is walked back correctly,
+same as every other interval here.
 
 # Returns
 DataFrame with columns: datetime, open, high, low, close, volume.

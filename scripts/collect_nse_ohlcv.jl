@@ -4,8 +4,18 @@ collect_nse_ohlcv.jl
 Initial collection of NSE OHLCV bars for all NSE-listed EQ and INDICES instruments.
 
 Fetches daily, hourly, 5-minute, 15-minute, and 1-minute OHLCV from Kite's
-NSE instrument list. The NSE symbol universe is derived directly from Kite's
-NSE instrument download (all EQ and INDICES).
+NSE instrument list, all from the same `--from` start date. The NSE symbol
+universe is derived directly from Kite's NSE instrument download (all EQ and
+INDICES).
+
+Kite's per-interval day limits (60/100/200/400/2000 days for
+1min/5min/15min/60min/day) are a single-request span cap, not a total
+retention cliff — verified live against the real API, every intraday
+interval here still returns genuine multi-year-old data. `fetch_ohlcv*` in
+`kite_data.jl` already chunks each request to stay under that cap, so a
+`--from` as old as 2010 works for every granularity, not just daily; it's
+just more chunked API calls (and more disk) the further back `--from` goes,
+especially for 1-minute.
 
 Output (one subfolder per granularity):
   website/data/ohlcv/nse/daily/{SYMBOL}.csv
@@ -21,6 +31,7 @@ Usage:
   julia --project=packages/StockSwingPredictor scripts/collect_nse_ohlcv.jl --5min-only
   julia --project=packages/StockSwingPredictor scripts/collect_nse_ohlcv.jl --15min-only
   julia --project=packages/StockSwingPredictor scripts/collect_nse_ohlcv.jl --1min-only
+  julia --project=packages/StockSwingPredictor scripts/collect_nse_ohlcv.jl --skip-1min
   julia --project=packages/StockSwingPredictor scripts/collect_nse_ohlcv.jl --symbol RELIANCE
   julia --project=packages/StockSwingPredictor scripts/collect_nse_ohlcv.jl --refresh
   julia --project=packages/StockSwingPredictor scripts/collect_nse_ohlcv.jl --from 2015-01-01
@@ -46,6 +57,11 @@ function parse_args()
         "fivemin_only"    => false,
         "fifteenmin_only" => false,
         "onemin_only"     => false,
+        "skip_daily"      => false,
+        "skip_hourly"     => false,
+        "skip_5min"       => false,
+        "skip_15min"      => false,
+        "skip_1min"       => false,
         "refresh"         => false,
         "symbol"          => nothing,
         "from"            => DEFAULT_FROM,
@@ -57,10 +73,14 @@ function parse_args()
             println("""
 collect_nse_ohlcv.jl — initial NSE OHLCV collection
 
-Fetches daily (full history from --from), hourly (400-day retention),
-5-min (100-day retention), 15-min (200-day retention), and 1-min (60-day
-retention) bars for every NSE-listed EQ and INDICES instrument in Kite's
-instrument list.
+Fetches daily, hourly, 5-min, 15-min, and 1-min bars — all from --from — for
+every NSE-listed EQ and INDICES instrument in Kite's instrument list. Each
+interval is chunked under Kite's per-request span cap (60/100/200/400/2000
+days respectively), which is NOT a retention limit — --from 2010-01-01 works
+for every granularity, not just daily. Going back that far for the finer
+granularities (especially --1min-only) means many more chunked API calls and
+much more disk than the daily default; narrow --from or use --symbol to
+scope a trial run first.
 
 Flags:
   --daily-only        Only fetch daily bars
@@ -68,9 +88,14 @@ Flags:
   --5min-only         Only fetch 5-minute bars
   --15min-only        Only fetch 15-minute bars
   --1min-only         Only fetch 1-minute bars
+  --skip-daily        Skip the daily pass (overrides --daily-only if both given)
+  --skip-hourly       Skip the hourly pass (overrides --hourly-only if both given)
+  --skip-5min         Skip the 5-minute pass (overrides --5min-only if both given)
+  --skip-15min        Skip the 15-minute pass (overrides --15min-only if both given)
+  --skip-1min         Skip the 1-minute pass (overrides --1min-only if both given)
   --symbol SYM        Fetch only this NSE tradingsymbol (e.g. --symbol RELIANCE)
   --refresh           Re-fetch all even if CSV already exists
-  --from DATE         Daily history start date (default: 2010-01-01)
+  --from DATE         History start date, all granularities (default: 2010-01-01)
   -h, --help          Show this message
 """)
             exit(0)
@@ -79,6 +104,11 @@ Flags:
         elseif a == "--5min-only";    args["fivemin_only"]    = true; i += 1
         elseif a == "--15min-only";   args["fifteenmin_only"] = true; i += 1
         elseif a == "--1min-only";    args["onemin_only"]     = true; i += 1
+        elseif a == "--skip-daily";   args["skip_daily"]      = true; i += 1
+        elseif a == "--skip-hourly";  args["skip_hourly"]     = true; i += 1
+        elseif a == "--skip-5min";    args["skip_5min"]       = true; i += 1
+        elseif a == "--skip-15min";   args["skip_15min"]      = true; i += 1
+        elseif a == "--skip-1min";    args["skip_1min"]       = true; i += 1
         elseif a == "--refresh";      args["refresh"]         = true; i += 1
         elseif a == "--symbol" && i + 1 <= length(ARGS)
             args["symbol"] = ARGS[i+1]; i += 2
@@ -101,11 +131,11 @@ function main()
     # ── Determine which intervals to run ──────────────────────────────────────
     any_flag = args["daily_only"] || args["hourly_only"] ||
                args["fivemin_only"] || args["fifteenmin_only"] || args["onemin_only"]
-    run_daily    = !any_flag || args["daily_only"]
-    run_hourly   = !any_flag || args["hourly_only"]
-    run_5min     = !any_flag || args["fivemin_only"]
-    run_15min    = !any_flag || args["fifteenmin_only"]
-    run_1min     = !any_flag || args["onemin_only"]
+    run_daily    = (!any_flag || args["daily_only"])      && !args["skip_daily"]
+    run_hourly   = (!any_flag || args["hourly_only"])     && !args["skip_hourly"]
+    run_5min     = (!any_flag || args["fivemin_only"])    && !args["skip_5min"]
+    run_15min    = (!any_flag || args["fifteenmin_only"]) && !args["skip_15min"]
+    run_1min     = (!any_flag || args["onemin_only"])     && !args["skip_1min"]
 
     # ── Load NSE instrument list ───────────────────────────────────────────────
     @info "Loading NSE instrument list from Kite…"
@@ -131,34 +161,30 @@ function main()
 
     # ── Hourly ────────────────────────────────────────────────────────────────
     if run_hourly
-        hourly_from = today() - Day(399)
-        @info "── NSE Hourly: $(length(symbols)) symbols ($hourly_from → $to_date) ──"
+        @info "── NSE Hourly: $(length(symbols)) symbols ($(args["from"]) → $to_date) ──"
         collect_ohlcv_hourly(symbols, token_map, session, nse_gran_dir("hourly"),
-                             hourly_from, to_date; refresh=refresh)
+                             args["from"], to_date; refresh=refresh)
     end
 
     # ── 5-minute ──────────────────────────────────────────────────────────────
     if run_5min
-        fivemin_from = today() - Day(99)
-        @info "── NSE 5-min: $(length(symbols)) symbols ($fivemin_from → $to_date) ──"
+        @info "── NSE 5-min: $(length(symbols)) symbols ($(args["from"]) → $to_date) ──"
         collect_ohlcv_5min(symbols, token_map, session, nse_gran_dir("5min"),
-                           fivemin_from, to_date; refresh=refresh)
+                           args["from"], to_date; refresh=refresh)
     end
 
     # ── 15-minute ─────────────────────────────────────────────────────────────
     if run_15min
-        fifteenmin_from = today() - Day(199)
-        @info "── NSE 15-min: $(length(symbols)) symbols ($fifteenmin_from → $to_date) ──"
+        @info "── NSE 15-min: $(length(symbols)) symbols ($(args["from"]) → $to_date) ──"
         collect_ohlcv_15min(symbols, token_map, session, nse_gran_dir("15min"),
-                            fifteenmin_from, to_date; refresh=refresh)
+                            args["from"], to_date; refresh=refresh)
     end
 
     # ── 1-minute ──────────────────────────────────────────────────────────────
     if run_1min
-        onemin_from = today() - Day(59)
-        @info "── NSE 1-min: $(length(symbols)) symbols ($onemin_from → $to_date) ──"
+        @info "── NSE 1-min: $(length(symbols)) symbols ($(args["from"]) → $to_date) ──"
         collect_ohlcv_1min(symbols, token_map, session, nse_gran_dir("1min"),
-                           onemin_from, to_date; refresh=refresh)
+                           args["from"], to_date; refresh=refresh)
     end
 end
 
