@@ -800,14 +800,20 @@ function paramItem(label, value) {
 
 // run_config.json is written once per run (fresh start or --resume) and
 // barely changes mid-run — see save_run_config in scripts/train_trading_policy.jl.
-// resolved_device/resolved_minibatch/train_*/val_*/rule_constants are all
-// informational-only fields added purely for this card; everything else
-// here is the RESUMABLE_KEYS subset the script itself reads back on --resume.
+// resolved_device/resolved_minibatch/resolved_train_*/resolved_val_*/
+// n_candidates_*/n_max_holdings_*/rule_constants are all informational-only
+// fields added purely for this card; everything else here is the
+// RESUMABLE_KEYS subset the script itself reads back on --resume. Note
+// train_start/train_end/val_start/val_end (no "resolved_" prefix) ARE
+// RESUMABLE_KEYS entries — the RAW --train-start/etc. override if one was
+// given, null otherwise — not what actually ran; always read the
+// resolved_train_*/resolved_val_* fields for display.
 function renderRunConfig(cfg) {
   document.getElementById('run-config-card').style.display = '';
   document.getElementById('run-config-sub').textContent =
-    `${cfg.n_candidates ?? '—'} candidates · train ${cfg.train_start ?? '—'} → ${cfg.train_end ?? '—'} ` +
-    `· val ${cfg.val_start ?? '—'} → ${cfg.val_end ?? '—'}`;
+    `${cfg.n_candidates_train ?? '—'} train / ${cfg.n_candidates_val ?? '—'} val candidates · ` +
+    `train ${cfg.resolved_train_start ?? '—'} → ${cfg.resolved_train_end ?? '—'} ` +
+    `· val ${cfg.resolved_val_start ?? '—'} → ${cfg.resolved_val_end ?? '—'}`;
 
   const rc  = cfg.rule_constants || {};
   const pct = (v) => v == null ? '—' : (v * 100).toFixed(2) + '%';
@@ -821,9 +827,11 @@ function renderRunConfig(cfg) {
       ${paramItem('Entropy coef', cfg.entropy_coef ?? '—')}
       ${paramItem('Eval every', cfg.eval_every != null ? cfg.eval_every + ' iters' : '—')}
       ${paramItem('Val days', cfg.val_days ?? '—')}
+      ${paramItem('Val window', cfg.val_window ?? '—')}
       ${paramItem('Initial cash', cfg.initial_cash != null ? fmtRupee(cfg.initial_cash) : '—')}
       ${paramItem('Seed', cfg.seed ?? 'none')}
-      ${paramItem('Candidates', cfg.n_candidates ?? '—')}
+      ${paramItem('Train candidates', cfg.n_candidates_train ?? '—')}
+      ${paramItem('Val candidates', cfg.n_candidates_val ?? '—')}
     </div>
 
     <div class="param-section-label">Rule-derived constants</div>
@@ -833,7 +841,8 @@ function renderRunConfig(cfg) {
       ${paramItem('Min hold days', rc.min_hold_days ?? '—')}
       ${paramItem('Max hold days', rc.max_hold_days ?? '—')}
       ${paramItem('Max position frac.', pct(rc.max_position_fraction))}
-      ${paramItem('Max holdings', rc.n_max_holdings != null ? `${rc.n_max_holdings} (${pct(rc.n_max_holdings_fraction)} of universe)` : '—')}
+      ${paramItem('Max holdings (train)', cfg.n_max_holdings_train != null ? `${cfg.n_max_holdings_train} (${pct(rc.n_max_holdings_fraction)} of universe)` : '—')}
+      ${paramItem('Max holdings (val)', cfg.n_max_holdings_val != null ? `${cfg.n_max_holdings_val} (${pct(rc.n_max_holdings_fraction)} of universe)` : '—')}
       ${paramItem('Max cash frac.', pct(rc.max_cash_fraction))}
       ${paramItem('Cash ceiling penalty', rc.cash_ceiling_penalty_coef ?? '—')}
       ${paramItem('Rebuy cooldown', rc.rebuy_cooldown_days != null ? rc.rebuy_cooldown_days + ' days' : '—')}

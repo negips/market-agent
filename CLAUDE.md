@@ -74,7 +74,7 @@ market-agent/
 │           ├── ppo.jl              # hand-rolled PPO + GAE (collect_rollout, ppo_update!)
 │           ├── live.jl             # streams the current episode to live_status.json (website/tradinggamelive.html)
 │           ├── train.jl            # training loop: train_policy! — checkpoint, episode_log.jsonl, STOP
-│           ├── universe.jl         # candidate universe: confidence-filtered, market-cap-ranked, capped
+│           ├── universe.jl         # candidate universe: confidence-filtered pool + pluggable train/val split strategies
 │           └── display.jl          # Base.show overrides
 │           # news_features.jl: later stage — see TradingGameRules.txt and the TradingGame module docstring
 │       └── docs/                   # LaTeX architecture write-ups (.tex + .bib + built .pdf, all tracked)
@@ -95,7 +95,7 @@ market-agent/
 │   ├── build_cache.jl                    # build inference_cache.bson from all OHLCV CSVs (run each morning)
 │   ├── build_dataset.jl                  # sliding-window dataset assembly; --pred-hours 35|70
 │   ├── train_model.jl                    # train SwingPredictor (v1/v2/v3); auto-selects dataset
-│   ├── build_universe_snapshot.jl        # TradingGame candidate universe (confidence + market-cap filtered)
+│   ├── build_universe_snapshot.jl        # TradingGame candidate universe: confidence-filtered, pluggable train/val split
 │   ├── train_trading_policy.jl           # drives TradingGame.train_policy! — see website/tradinggamelive.html
 │   └── training_status.jl                # one-shot read-only snapshot of a running train_trading_policy.jl
 │
@@ -516,26 +516,52 @@ Hard stop without save: `touch website/data/models/DualCNN_v3/STOP_NOW`.
 ### build_universe_snapshot.jl
 
 Builds the `TradingGame` candidate universe: filters `nse_companies_latest.json`'s
-already-computed confidence scores (>= 40, no live sidecar calls), ranks by market
-cap, caps at `N_CANDIDATE_STOCKS` (60), and restricts to symbols with a cached
-`InferenceCache` entry.
+already-computed confidence scores (>= 40, no live sidecar calls) and restricts to
+symbols with a cached `InferenceCache` entry — this filtered, market-cap-sorted
+pool (`TradingGame.eligible_candidates`) is then split into a **train** candidate
+list and a **val** candidate list by one of several pluggable `--strategy` recipes
+(`TradingGame.UniverseStrategy`, in `packages/TradingGame/src/universe.jl`). Train
+and val are free to use different company counts and/or entirely different
+companies — `TradingGameEnv`, rule 13's holdings cap, and `ActorCriticPolicy` all
+operate purely on each episode's own candidate content (no symbol-identity
+embedding or positional encoding across candidates), so nothing downstream needs
+to change to support that; see the module docstring in `universe.jl` for why.
 
 ```bash
+# shared-topcap (default): top --n by market cap, identical list for train and val
 julia --project=packages/TradingGame scripts/build_universe_snapshot.jl        # top 60
 julia --project=packages/TradingGame scripts/build_universe_snapshot.jl --n 100
+
+# disjoint-topcap: top (n_train+n_val) by market cap, split disjoint and
+# stratified by market-cap decile so neither side skews large/small-cap
+julia --project=packages/TradingGame scripts/build_universe_snapshot.jl \
+    --strategy disjoint-topcap --n-train 60 --n-val 20 --seed 42
+
+# random: uniformly random --n from the WHOLE confidence-passing pool, not
+# restricted to top-market-cap; --disjoint draws independent train/val sets
+julia --project=packages/TradingGame scripts/build_universe_snapshot.jl \
+    --strategy random --n 60 --disjoint --seed 42
+
+# random-bucketed: random selection from named market-cap bands (HI may be 'inf')
+julia --project=packages/TradingGame scripts/build_universe_snapshot.jl \
+    --strategy random-bucketed --band 0:5000:15 --band 5000:inf:15
 ```
 
 Prerequisites: `nse_companies_latest.json` (`generate_nse_list.jl` then
 `run_confidence_checks.jl`) and `inference_cache.bson` (`build_cache.jl`).
-Output: `website/data/trading_game/universe_latest.json` — load with
-`TradingGame.load_universe_snapshot` as `EpisodeConfig.candidate_universe`.
+Output: `website/data/trading_game/universe_latest.json` — `{"strategy": ...,
+"strategy_params": ..., "train_candidates": [...], "val_candidates": [...]}`, load
+with `TradingGame.load_universe_snapshot` → `(train=Vector{String},
+val=Vector{String})`, directly usable as `train_config`/`val_config`'s
+`EpisodeConfig.candidate_universe` respectively (see `train_trading_policy.jl`).
 
 ### train_trading_policy.jl
 
-Drives `TradingGame.train_policy!`: loads the cache + candidate universe, splits
-the cache's date range into a training window and a held-out validation tail,
-and trains a fresh `ActorCriticPolicy`. Streams `live_status.json` by default —
-watch the run at `website/tradinggamelive.html`.
+Drives `TradingGame.train_policy!`: loads the cache + the train/val candidate
+universes (`build_universe_snapshot.jl` — a `UniverseStrategy` may give train and
+val different companies, not just different dates), resolves the train/val date
+windows, and trains a fresh `ActorCriticPolicy`. Streams `live_status.json` by
+default — watch the run at `website/tradinggamelive.html`.
 
 ```bash
 julia --project=packages/TradingGame scripts/train_trading_policy.jl
@@ -545,7 +571,20 @@ julia --project=packages/TradingGame scripts/train_trading_policy.jl --seed 42
 julia --project=packages/TradingGame scripts/train_trading_policy.jl --init-from other_run/policy.bson
 julia --project=packages/TradingGame scripts/train_trading_policy.jl --device gpu
 julia --project=packages/TradingGame scripts/train_trading_policy.jl --entropy 0.02
+julia --project=packages/TradingGame scripts/train_trading_policy.jl --val-window same
+julia --project=packages/TradingGame scripts/train_trading_policy.jl --val-start 2024-06-01 --val-end 2024-12-31
 ```
+
+`--val-window MODE` (default `trailing`) picks how the train/val date windows are
+derived: `trailing` is the original behavior — val is the last `--val-days` of the
+cache, train is everything before it, sound even with disjoint train/val
+companies since there's no leakage risk left to guard against. `same` has train
+and val both span the full cache date range — only meaningful once train/val use
+different companies (see `build_universe_snapshot.jl`), and makes full use of the
+cache's data on both sides instead of carving out a held-out tail. Explicit
+`--train-start`/`--train-end`/`--val-start`/`--val-end` (any subset, ISO
+`yyyy-mm-dd`) override whichever bound `--val-window` would otherwise have
+picked, e.g. for deliberately validating against a specific regime.
 
 Prerequisites: `inference_cache.bson` (`build_cache.jl`) and
 `universe_latest.json` (`build_universe_snapshot.jl`).
@@ -564,21 +603,29 @@ iteration numbering (`--iterations` then means "how many more", not a new
 total), same `--resume` convention as `train_model.jl`.
 
 Every run writes its effective `--initial-cash`/`--val-days`/`--eval-every`/
-`--lr`/`--entropy`/`--seed`/`--device`/`--minibatch` to `run_config.json`.
-`--resume` reads
-it back and applies those values for any of those flags not *also* given
-explicitly on the resume command line — an explicit flag always wins over the
-saved one. This is what makes a bare `--resume` reproduce the original run's
-config instead of silently reverting to script defaults (e.g. `--val-days`
-snapping back to 60, corrupting the train/val split relative to what the
-checkpoint was actually trained on). Delete `run_config.json`, or pass the
-flags explicitly, to intentionally change config on resume.
+`--lr`/`--entropy`/`--seed`/`--device`/`--minibatch`/`--val-window`/
+`--train-start`/`--train-end`/`--val-start`/`--val-end` to `run_config.json`.
+`--resume` reads it back and applies those values for any of those flags not
+*also* given explicitly on the resume command line — an explicit flag always
+wins over the saved one. This is what makes a bare `--resume` reproduce the
+original run's config instead of silently reverting to script defaults (e.g.
+`--val-days` snapping back to 60, corrupting the train/val split relative to
+what the checkpoint was actually trained on). Delete `run_config.json`, or
+pass the flags explicitly, to intentionally change config on resume.
 
-`run_config.json` also records `n_candidates` — how many companies
-`universe_latest.json` held for that run (informational only, not restored
-on `--resume`; the candidate universe always comes from `universe_latest.json`
-itself at load time) — a quick way to see what universe size a checkpoint was
-actually trained against.
+`run_config.json` also records informational-only fields not restored on
+`--resume` (the candidate universe always comes from `universe_latest.json`
+itself at load time; the rule constants come from `constants.jl`, not a
+flag) — `n_candidates_train`/`n_candidates_val` (how many companies each
+role's universe held), `n_max_holdings_train`/`n_max_holdings_val` (rule 13's
+cap, which now differs per role since train/val can have different candidate
+counts), `resolved_device`/`resolved_minibatch`, `resolved_train_start`/
+`resolved_train_end`/`resolved_val_start`/`resolved_val_end` (the dates that
+actually ran — distinct from the plain `train_start`/etc. keys, which hold
+the *raw* `--train-start`/etc. override if one was given, `null` otherwise),
+and `rule_constants` (every named constant in `constants.jl`). This is what
+`tradinggamelive.html`'s "Training configuration" card displays — a quick way
+to see a checkpoint's actual training parameters without console access.
 
 `--seed N` makes a fresh policy's initial weights reproducible
 (`ActorCriticPolicy(seed=...)`, via `Random.seed!`) and also seeds the PPO

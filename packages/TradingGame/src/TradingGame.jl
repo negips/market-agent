@@ -58,9 +58,15 @@ portfolio_value(env)
 ## Quick start: candidate universe
 
 ```julia
-entries = build_candidate_universe(cache, "website/data/nse_companies_latest.json")
-save_universe_snapshot(entries, "website/data/trading_game/universe_latest.json")
-candidate_universe = load_universe_snapshot("website/data/trading_game/universe_latest.json")
+pool = eligible_candidates(cache, "website/data/nse_companies_latest.json")
+
+strategy = DisjointTopMarketCap(n_train=60, n_val=20, seed=42)   # or SharedTopMarketCap(n=60),
+train, val = build_universes(strategy, pool)                     # RandomUniverse(...), BucketedRandom(...)
+
+save_universe_snapshot(strategy, train, val, "website/data/trading_game/universe_latest.json")
+universe = load_universe_snapshot("website/data/trading_game/universe_latest.json")
+universe.train   # candidate_universe for train_config
+universe.val      # candidate_universe for val_config
 ```
 
 ## Quick start: train
@@ -134,6 +140,8 @@ export
     train_policy!, save_policy_training_log,
 
     # universe
-    UniverseEntry, build_candidate_universe, save_universe_snapshot, load_universe_snapshot
+    UniverseEntry, eligible_candidates, build_candidate_universe,
+    UniverseStrategy, SharedTopMarketCap, DisjointTopMarketCap, RandomUniverse, BucketedRandom,
+    build_universes, save_universe_snapshot, load_universe_snapshot
 
 end

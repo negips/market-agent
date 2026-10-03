@@ -1,18 +1,38 @@
 """
 train_trading_policy.jl
 
-Drives `TradingGame.train_policy!`: loads the inference cache + candidate
-universe, splits the cache's date range into a training window and a
-held-out validation tail, builds a fresh `ActorCriticPolicy`, and trains.
+Drives `TradingGame.train_policy!`: loads the inference cache + the train/val
+candidate universes (see `build_universe_snapshot.jl` — a `UniverseStrategy`
+may give train and val different companies, not just different dates),
+resolves the train/val date windows, builds a fresh `ActorCriticPolicy`, and
+trains.
 
 Usage:
   julia --project=packages/TradingGame scripts/train_trading_policy.jl
   julia --project=packages/TradingGame scripts/train_trading_policy.jl --iterations 500
   julia --project=packages/TradingGame scripts/train_trading_policy.jl --val-days 40 --live
+  julia --project=packages/TradingGame scripts/train_trading_policy.jl --val-window same
+  julia --project=packages/TradingGame scripts/train_trading_policy.jl --val-start 2024-06-01 --val-end 2024-12-31
   julia --project=packages/TradingGame scripts/train_trading_policy.jl --resume --iterations 100
   julia --project=packages/TradingGame scripts/train_trading_policy.jl --seed 42
   julia --project=packages/TradingGame scripts/train_trading_policy.jl --init-from other_run/policy.bson
   julia --project=packages/TradingGame scripts/train_trading_policy.jl --device gpu
+
+--val-window MODE (default: trailing):
+  trailing   val = the last --val-days of the cache; train = everything before
+             that. Sound even when train/val use disjoint companies (see
+             build_universe_snapshot.jl) — there's no leakage risk left to
+             guard against, but it keeps results comparable to runs that
+             always used this split.
+  same       train and val both span the FULL cache date range — only valid
+             generalization-wise once train/val use different companies;
+             makes full use of the cache's data on both sides instead of
+             carving out a held-out date tail.
+--train-start/--train-end/--val-start/--val-end (ISO yyyy-mm-dd) override
+whichever bound --val-window would otherwise have picked — e.g. `--val-window
+same --val-start 2024-06-01` uses the full cache range for train but starts
+val partway through it, for deliberately validating against a specific
+regime.
 
 Prerequisites:
   website/data/inference_cache.bson              (build_cache.jl)
@@ -91,8 +111,14 @@ const UNIVERSE_FILE = joinpath(DATA_DIR, "universe_latest.json")
 """Opts persisted to/restored from `run_config.json` on `--resume` — training
 config that must stay consistent across a resumed run, not runtime-only
 flags like `--live`/`--resume`/`--init-from`/`--iterations` (the latter means
-"how many more" each time by design, so it's never something to restore)."""
-const RESUMABLE_KEYS = ("initial_cash", "val_days", "eval_every", "lr", "entropy_coef", "seed", "device", "minibatch")
+"how many more" each time by design, so it's never something to restore).
+`val_window`/`train_start`/`train_end`/`val_start`/`val_end` are included for
+the same reason `val_days` always was — a `--resume` that silently picked up
+a different date-window mode or explicit override than the checkpoint was
+actually trained on would corrupt the train/val split just as surely as
+`val_days` reverting to its default would."""
+const RESUMABLE_KEYS = ("initial_cash", "val_days", "eval_every", "lr", "entropy_coef", "seed", "device", "minibatch",
+                         "val_window", "train_start", "train_end", "val_start", "val_end")
 
 function parse_args()
     opts = Dict{String, Any}(
@@ -108,6 +134,11 @@ function parse_args()
         "init_from"   => "",
         "device"      => "cpu",
         "minibatch"   => nothing,
+        "val_window"  => "trailing",
+        "train_start" => nothing,
+        "train_end"   => nothing,
+        "val_start"   => nothing,
+        "val_end"     => nothing,
     )
     explicit = Set{String}()
     i = 1
@@ -138,6 +169,11 @@ Options:
   --device NAME        cpu or gpu (default: cpu). gpu requires
                         CUDA.functional() — falls back to cpu with a warning
   --minibatch N         PPO minibatch size (default: 256 on gpu, 32 on cpu)
+  --val-window MODE     trailing (default) or same — see the module docstring
+  --train-start DATE    Explicit yyyy-mm-dd override, beats --val-window for
+  --train-end DATE       this specific bound
+  --val-start DATE
+  --val-end DATE
 """)
             exit(0)
         elseif a == "--iterations";   opts["iterations"]   = parse(Int, ARGS[i+1]); push!(explicit, "iterations"); i += 2
@@ -152,6 +188,11 @@ Options:
         elseif a == "--seed";         opts["seed"]         = parse(Int, ARGS[i+1]); push!(explicit, "seed"); i += 2
         elseif a == "--device";       opts["device"]       = ARGS[i+1]; push!(explicit, "device"); i += 2
         elseif a == "--minibatch";    opts["minibatch"]    = parse(Int, ARGS[i+1]); push!(explicit, "minibatch"); i += 2
+        elseif a == "--val-window";   opts["val_window"]   = ARGS[i+1]; push!(explicit, "val_window"); i += 2
+        elseif a == "--train-start";  opts["train_start"]  = Date(ARGS[i+1]); push!(explicit, "train_start"); i += 2
+        elseif a == "--train-end";    opts["train_end"]    = Date(ARGS[i+1]); push!(explicit, "train_end"); i += 2
+        elseif a == "--val-start";    opts["val_start"]    = Date(ARGS[i+1]); push!(explicit, "val_start"); i += 2
+        elseif a == "--val-end";      opts["val_end"]      = Date(ARGS[i+1]); push!(explicit, "val_end"); i += 2
         else; i += 1
         end
     end
@@ -159,6 +200,8 @@ Options:
         error("--resume and --init-from are mutually exclusive")
     opts["device"] in ("cpu", "gpu") ||
         error("Unknown --device '$(opts["device"])'. Expected: cpu, gpu")
+    opts["val_window"] in ("trailing", "same") ||
+        error("Unknown --val-window '$(opts["val_window"])'. Expected: trailing, same")
     return opts, explicit
 end
 
@@ -183,6 +226,41 @@ function _resolve_minibatch(requested::Union{Int, Nothing}, device::Symbol)::Int
     return device === :gpu ? 256 : 32
 end
 
+"""Resolve the train/val date windows for this run — see the module
+docstring's `--val-window` section for `mode`'s two options. Explicit
+`--train-start`/`--train-end`/`--val-start`/`--val-end` (any subset) always
+override whatever `mode` picked for that specific bound."""
+function resolve_date_windows(cache_start::Date, cache_end::Date, mode::String, val_days::Int,
+                               explicit_train_start::Union{Date, Nothing}, explicit_train_end::Union{Date, Nothing},
+                               explicit_val_start::Union{Date, Nothing}, explicit_val_end::Union{Date, Nothing})
+    if mode == "trailing"
+        val_start   = cache_end - Day(val_days)
+        train_start = cache_start
+        train_end   = val_start - Day(1)
+        val_end     = cache_end
+    elseif mode == "same"
+        train_start = cache_start
+        train_end   = cache_end
+        val_start   = cache_start
+        val_end     = cache_end
+    else
+        error("Unknown --val-window '$mode'. Expected: trailing, same")
+    end
+
+    train_start = something(explicit_train_start, train_start)
+    train_end   = something(explicit_train_end, train_end)
+    val_start   = something(explicit_val_start, val_start)
+    val_end     = something(explicit_val_end, val_end)
+
+    train_start < train_end || error(
+        "Train window is empty or inverted: $train_start .. $train_end " *
+        "(cache covers $cache_start .. $cache_end) — adjust --val-days/--val-window/--train-* flags")
+    val_start < val_end || error(
+        "Val window is empty or inverted: $val_start .. $val_end " *
+        "(cache covers $cache_start .. $cache_end) — adjust --val-days/--val-window/--val-* flags")
+    return train_start, train_end, val_start, val_end
+end
+
 _fmt_money(v) = "₹" * replace(@sprintf("%.0f", v), r"(\d)(?=(\d{3})+(?!\d))" => s"\1,")
 
 """Print this run's effective hyperparameters and the rule-derived constants
@@ -193,9 +271,11 @@ than through a CLI flag), this printout is the only record of what was
 actually in effect for a given run — check it before relying on a comparison
 across runs. Called once, after every opt has been fully resolved
 (`--resume`-restored values applied, `device`/`minibatch` auto-resolved)."""
-function _print_training_params(opts::Dict, device::Symbol, minibatch::Int, n_candidates::Int,
+function _print_training_params(opts::Dict, device::Symbol, minibatch::Int,
+                                 n_candidates_train::Int, n_candidates_val::Int,
                                  train_start::Date, train_end::Date, val_start::Date, val_end::Date)
-    n_max = n_max_holdings(n_candidates)
+    n_max_train = n_max_holdings(n_candidates_train)
+    n_max_val   = n_max_holdings(n_candidates_val)
     println("═"^64)
     println("Training parameters")
     println("═"^64)
@@ -207,11 +287,13 @@ function _print_training_params(opts::Dict, device::Symbol, minibatch::Int, n_ca
     @printf("  %-22s %s\n",  "entropy_coef:", opts["entropy_coef"])
     @printf("  %-22s %d\n",  "eval_every:",   opts["eval_every"])
     @printf("  %-22s %d\n",  "val_days:",     opts["val_days"])
+    @printf("  %-22s %s\n",  "val_window:",   opts["val_window"])
     @printf("  %-22s %s\n",  "initial_cash:", _fmt_money(opts["initial_cash"]))
     @printf("  %-22s %s\n",  "seed:",         something(opts["seed"], "none"))
     @printf("  %-22s %s\n",  "resume:",       opts["resume"])
     @printf("  %-22s %s\n",  "init_from:",    isempty(opts["init_from"]) ? "none" : opts["init_from"])
-    @printf("  %-22s %d\n",  "n_candidates:", n_candidates)
+    @printf("  %-22s %d\n",  "n_candidates (train):", n_candidates_train)
+    @printf("  %-22s %d\n",  "n_candidates (val):",   n_candidates_val)
     println("  train window:          $train_start .. $train_end")
     println("  val window:            $val_start .. $val_end")
     println()
@@ -221,8 +303,8 @@ function _print_training_params(opts::Dict, device::Symbol, minibatch::Int, n_ca
     @printf("  %-26s %s\n",     "MIN_HOLD_DAYS:",             MIN_HOLD_DAYS)
     @printf("  %-26s %s\n",     "MAX_HOLD_DAYS:",             MAX_HOLD_DAYS)
     @printf("  %-26s %s\n",     "MAX_POSITION_FRACTION:",     MAX_POSITION_FRACTION)
-    @printf("  %-26s %s (→ N_MAX = %d for this universe)\n",
-                                 "N_MAX_HOLDINGS_FRACTION:",  N_MAX_HOLDINGS_FRACTION, n_max)
+    @printf("  %-26s %s (→ N_MAX = %d train / %d val)\n",
+                                 "N_MAX_HOLDINGS_FRACTION:",  N_MAX_HOLDINGS_FRACTION, n_max_train, n_max_val)
     @printf("  %-26s %s\n",     "MAX_CASH_FRACTION:",         MAX_CASH_FRACTION)
     @printf("  %-26s %s\n",     "CASH_CEILING_PENALTY_COEF:", CASH_CEILING_PENALTY_COEF)
     @printf("  %-26s %s\n",     "REBUY_COOLDOWN_DAYS:",       REBUY_COOLDOWN_DAYS)
@@ -248,13 +330,23 @@ function _last_completed_iteration(log_path::String)::Int
     return max_iter
 end
 
+"""`RESUMABLE_KEYS` whose value is a `Union{Date,Nothing}`, not JSON-native —
+`save_run_config`/`load_run_config!` stringify/parse these explicitly instead
+of handing a `Date` straight to `JSON3` (which has no default encoding for
+one)."""
+const DATE_OPT_KEYS = ("train_start", "train_end", "val_start", "val_end")
+
 """Write the `RESUMABLE_KEYS` subset of `opts` to `path` as JSON — the
 *requested* values (e.g. `device="gpu"` even if it later falls back to cpu,
-`minibatch=nothing` if left on auto), not resolved/derived ones, so a later
-`--resume` re-derives exactly the same way the original run did.
+`minibatch=nothing`/`train_start=nothing` if left on auto), not
+resolved/derived ones, so a later `--resume` re-derives exactly the same way
+the original run did.
 
-Everything else written here — `n_candidates`, `resolved_device`/
-`resolved_minibatch`, the train/val window dates, and `rule_constants` — is
+Everything else written here — `n_candidates_train`/`n_candidates_val`,
+`resolved_device`/`resolved_minibatch`/`resolved_train_start`/etc. (the
+actually-resolved dates, under a `resolved_` prefix so they don't collide
+with the raw, possibly-`nothing` `RESUMABLE_KEYS` entries of the same root
+name), `n_max_holdings_train`/`n_max_holdings_val`, and `rule_constants` — is
 informational only: none of it is a `RESUMABLE_KEYS` entry, so none of it is
 read back by `load_run_config!` on `--resume` (the candidate universe always
 comes from `universe_latest.json` at load time, not from this file; the rule
@@ -262,26 +354,33 @@ constants come from `constants.jl`, not a flag). It exists purely so
 `tradinggamelive.html` can display this run's actual training parameters and
 rule-derived constants — the same printout `_print_training_params` puts on
 stdout — without needing console access."""
-function save_run_config(opts::Dict, path::String, n_candidates::Int,
+function save_run_config(opts::Dict, path::String, n_candidates_train::Int, n_candidates_val::Int,
                           resolved_device::Symbol, resolved_minibatch::Int,
                           train_start::Date, train_end::Date, val_start::Date, val_end::Date)
+    resumable = Dict{String, Any}()
+    for k in RESUMABLE_KEYS
+        v = opts[k]
+        resumable[k] = (k in DATE_OPT_KEYS && v !== nothing) ? string(v) : v
+    end
     open(path, "w") do io
-        JSON3.pretty(io, merge(Dict(k => opts[k] for k in RESUMABLE_KEYS), Dict(
-            "n_candidates"       => n_candidates,
-            "resolved_device"    => string(resolved_device),
-            "resolved_minibatch" => resolved_minibatch,
-            "train_start"        => string(train_start),
-            "train_end"          => string(train_end),
-            "val_start"          => string(val_start),
-            "val_end"            => string(val_end),
-            "rule_constants"     => Dict(
+        JSON3.pretty(io, merge(resumable, Dict(
+            "n_candidates_train"   => n_candidates_train,
+            "n_candidates_val"     => n_candidates_val,
+            "resolved_device"      => string(resolved_device),
+            "resolved_minibatch"   => resolved_minibatch,
+            "resolved_train_start" => string(train_start),
+            "resolved_train_end"   => string(train_end),
+            "resolved_val_start"   => string(val_start),
+            "resolved_val_end"     => string(val_end),
+            "n_max_holdings_train" => n_max_holdings(n_candidates_train),
+            "n_max_holdings_val"   => n_max_holdings(n_candidates_val),
+            "rule_constants"       => Dict(
                 "fee_rate"                  => FEE_RATE,
                 "settlement_days"           => SETTLEMENT_DAYS,
                 "min_hold_days"             => MIN_HOLD_DAYS,
                 "max_hold_days"             => MAX_HOLD_DAYS,
                 "max_position_fraction"     => MAX_POSITION_FRACTION,
                 "n_max_holdings_fraction"   => N_MAX_HOLDINGS_FRACTION,
-                "n_max_holdings"            => n_max_holdings(n_candidates),
                 "max_cash_fraction"         => MAX_CASH_FRACTION,
                 "cash_ceiling_penalty_coef" => CASH_CEILING_PENALTY_COEF,
                 "rebuy_cooldown_days"       => REBUY_COOLDOWN_DAYS,
@@ -306,12 +405,15 @@ function load_run_config!(opts::Dict, explicit::Set{String}, path::String)
         return nothing
     end
     saved = JSON3.read(read(path, String))
+    nullable_keys = ("seed", "minibatch", DATE_OPT_KEYS...)
     for k in RESUMABLE_KEYS
         k in explicit && continue
         haskey(saved, Symbol(k)) || continue
         v = saved[Symbol(k)]
         if v === nothing
-            opts[k] = k in ("seed", "minibatch") ? nothing : opts[k]
+            opts[k] = k in nullable_keys ? nothing : opts[k]
+        elseif k in DATE_OPT_KEYS
+            opts[k] = Date(String(v))
         elseif k == "lr"
             opts[k] = Float32(v)
         elseif k == "entropy_coef"
@@ -340,24 +442,21 @@ function main()
     @info "Loading inference cache…"
     cache = load_inference_cache(CACHE_FILE)
     universe = load_universe_snapshot(UNIVERSE_FILE)
-    @info "  $(length(cache.companies)) companies cached, $(length(universe)) candidates in universe"
+    @info "  $(length(cache.companies)) companies cached, " *
+          "$(length(universe.train)) train / $(length(universe.val)) val candidates in universe"
 
     cache_start, cache_end = first(cache.dates), last(cache.dates)
-    val_start   = cache_end - Day(opts["val_days"])
-    train_start = cache_start
-    train_end   = val_start - Day(1)
-
-    train_start >= train_end && error(
-        "Cache date range ($cache_start .. $cache_end) is too short for a " *
-        "$(opts["val_days"])-day held-out tail — shrink --val-days or extend the cache")
+    train_start, train_end, val_start, val_end = resolve_date_windows(
+        cache_start, cache_end, opts["val_window"], opts["val_days"],
+        opts["train_start"], opts["train_end"], opts["val_start"], opts["val_end"])
 
     @info "Train window: $train_start .. $train_end"
-    @info "Val window:   $val_start .. $cache_end"
+    @info "Val window:   $val_start .. $val_end"
 
     train_config = EpisodeConfig(initial_cash=opts["initial_cash"], start_date=train_start,
-                                  end_date=train_end, candidate_universe=universe)
+                                  end_date=train_end, candidate_universe=universe.train)
     val_config   = EpisodeConfig(initial_cash=opts["initial_cash"], start_date=val_start,
-                                  end_date=cache_end, candidate_universe=universe)
+                                  end_date=val_end, candidate_universe=universe.val)
 
     env = TradingGameEnv(cache)
 
@@ -398,9 +497,10 @@ function main()
     device    = _resolve_device(opts["device"])
     minibatch = _resolve_minibatch(opts["minibatch"], device)
 
-    save_run_config(opts, config_path, length(universe), device, minibatch,
-                     train_start, train_end, val_start, cache_end)
-    _print_training_params(opts, device, minibatch, length(universe), train_start, train_end, val_start, cache_end)
+    save_run_config(opts, config_path, length(universe.train), length(universe.val), device, minibatch,
+                     train_start, train_end, val_start, val_end)
+    _print_training_params(opts, device, minibatch, length(universe.train), length(universe.val),
+                            train_start, train_end, val_start, val_end)
 
     policy, log = train_policy!(policy, env, train_config; val_config=val_config,
         iterations=opts["iterations"], eval_every=opts["eval_every"], lr=opts["lr"],
