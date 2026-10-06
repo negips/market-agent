@@ -38,7 +38,7 @@ function heuristic_policy(env::TradingGameEnv; lookback_bars::Int=7)::JointActio
     held_syms = Set(h.sym_idx for h in env.portfolio.holdings)
 
     for sym_idx in env.candidate_sym_idx
-        p_now  = env.cache.hourly_closes[t, sym_idx]
+        p_now  = current_price(env, sym_idx)
         p_then = env.cache.hourly_closes[t - lookback_bars, sym_idx]
         (isnan(p_now) || isnan(p_then) || p_then <= 0) && continue
         momentum = (p_now - p_then) / p_then

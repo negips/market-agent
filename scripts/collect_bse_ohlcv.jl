@@ -51,6 +51,12 @@ bse_gran_dir(granularity::String) = joinpath(BSE_DIR, granularity)
 # For daily bars that's ~8 years per chunk; we default to 2010-01-01.
 const DEFAULT_FROM = Date(2010, 1, 1)
 
+# Full per-symbol detail goes here (see ScriptLog's docstring in
+# StockSwingPredictor/src/script_log.jl); the terminal only gets stage
+# headers, the existing every-100-symbols heartbeat, and warnings. Override
+# with --log-file.
+const DEFAULT_LOG_FILE = joinpath(OHLCV_ROOT, "logs", "collect_bse_ohlcv.log")
+
 function parse_args()
     args = Dict{String,Any}(
         "daily_only"      => false,
@@ -66,6 +72,7 @@ function parse_args()
         "refresh"         => false,
         "symbol"          => nothing,
         "from"            => DEFAULT_FROM,
+        "log_file"        => DEFAULT_LOG_FILE,
     )
     i = 1
     while i <= length(ARGS)
@@ -97,6 +104,7 @@ Flags:
   --symbol SYM        Fetch only this BSE tradingsymbol (e.g. --symbol RELIANCE)
   --refresh           Re-fetch all even if CSV already exists
   --from DATE         History start date, all granularities (default: 2010-01-01)
+  --log-file PATH     Full per-symbol detail (default: $DEFAULT_LOG_FILE)
   -h, --help          Show this message
 """)
             exit(0)
@@ -115,6 +123,8 @@ Flags:
             args["symbol"] = ARGS[i+1]; i += 2
         elseif a == "--from" && i + 1 <= length(ARGS)
             args["from"] = Date(ARGS[i+1]); i += 2
+        elseif a == "--log-file" && i + 1 <= length(ARGS)
+            args["log_file"] = ARGS[i+1]; i += 2
         else
             @warn "Unknown argument: $a"; i += 1
         end
@@ -124,6 +134,8 @@ end
 
 function main()
     args    = parse_args()
+    slog    = open_script_log(args["log_file"])
+    @info "Logging full per-symbol detail to: $(args["log_file"])"
     session = load_kite_session(REPO_ROOT)
     refresh = args["refresh"]
 
@@ -142,7 +154,7 @@ function main()
     @info "Loading BSE instrument list from Kite…"
     instr     = load_instruments(session; exchange="BSE", refresh=true)
     token_map = build_token_map(instr; exchange="BSE")
-    @info "  $(length(token_map)) BSE EQ instruments found"
+    logboth(slog, "  $(length(token_map)) BSE EQ instruments found")
 
     symbols = collect(keys(token_map))
     if !isnothing(args["symbol"])
@@ -155,38 +167,40 @@ function main()
 
     # ── Daily ─────────────────────────────────────────────────────────────────
     if run_daily
-        @info "── BSE Daily: $(length(symbols)) symbols ($(args["from"]) → $to_date) ──"
+        logboth(slog, "── BSE Daily: $(length(symbols)) symbols ($(args["from"]) → $to_date) ──")
         collect_ohlcv(symbols, token_map, session, bse_gran_dir("daily"),
-                      args["from"], to_date; refresh=refresh)
+                      args["from"], to_date; refresh=refresh, slog)
     end
 
     # ── Hourly ────────────────────────────────────────────────────────────────
     if run_hourly
-        @info "── BSE Hourly: $(length(symbols)) symbols ($(args["from"]) → $to_date) ──"
+        logboth(slog, "── BSE Hourly: $(length(symbols)) symbols ($(args["from"]) → $to_date) ──")
         collect_ohlcv_hourly(symbols, token_map, session, bse_gran_dir("hourly"),
-                             args["from"], to_date; refresh=refresh)
+                             args["from"], to_date; refresh=refresh, slog)
     end
 
     # ── 5-minute ──────────────────────────────────────────────────────────────
     if run_5min
-        @info "── BSE 5-min: $(length(symbols)) symbols ($(args["from"]) → $to_date) ──"
+        logboth(slog, "── BSE 5-min: $(length(symbols)) symbols ($(args["from"]) → $to_date) ──")
         collect_ohlcv_5min(symbols, token_map, session, bse_gran_dir("5min"),
-                           args["from"], to_date; refresh=refresh)
+                           args["from"], to_date; refresh=refresh, slog)
     end
 
     # ── 15-minute ─────────────────────────────────────────────────────────────
     if run_15min
-        @info "── BSE 15-min: $(length(symbols)) symbols ($(args["from"]) → $to_date) ──"
+        logboth(slog, "── BSE 15-min: $(length(symbols)) symbols ($(args["from"]) → $to_date) ──")
         collect_ohlcv_15min(symbols, token_map, session, bse_gran_dir("15min"),
-                            args["from"], to_date; refresh=refresh)
+                            args["from"], to_date; refresh=refresh, slog)
     end
 
     # ── 1-minute ──────────────────────────────────────────────────────────────
     if run_1min
-        @info "── BSE 1-min: $(length(symbols)) symbols ($(args["from"]) → $to_date) ──"
+        logboth(slog, "── BSE 1-min: $(length(symbols)) symbols ($(args["from"]) → $to_date) ──")
         collect_ohlcv_1min(symbols, token_map, session, bse_gran_dir("1min"),
-                           args["from"], to_date; refresh=refresh)
+                           args["from"], to_date; refresh=refresh, slog)
     end
+
+    close_script_log(slog, "exit normally")
 end
 
 main()

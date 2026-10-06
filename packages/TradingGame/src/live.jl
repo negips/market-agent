@@ -196,7 +196,7 @@ symbol version used by the held-out validation table."""
 function _holdings_snapshot(env::TradingGameEnv)
     date_idx = env.cache.date_index[env.current_date]
     return [begin
-        price = env.cache.hourly_closes[env.current_hour_idx, h.sym_idx]
+        price = current_price(env, h.sym_idx)
         cost  = h.quantity * h.entry_price + h.entry_fee
         Dict{String, Any}(
             "symbol" => h.symbol, "quantity" => h.quantity,
@@ -226,7 +226,7 @@ function _holdings_snapshot_unified(env::TradingGameEnv)
     end
 
     rows = [begin
-        price           = env.cache.hourly_closes[env.current_hour_idx, first(lots).sym_idx]
+        price           = current_price(env, first(lots).sym_idx)
         total_quantity  = sum(l.quantity for l in lots)
         total_notional  = sum(l.quantity * l.entry_price for l in lots)
         total_cost      = total_notional + sum(l.entry_fee for l in lots)

@@ -125,14 +125,27 @@ const ONEMIN_LAST_BAR      = Time(15, 29, 0)   # last 1-min bar opens at 15:29 (
 const MCX_FIVEMIN_LAST_BAR    = Time(23, 25, 0)  # last 5-min bar opens at 23:25 (MCX)
 const MCX_FIFTEENMIN_LAST_BAR = Time(23, 15, 0)  # last 15-min bar opens at 23:15 (MCX)
 
+# How often (in symbols) a loop prints a console progress heartbeat — see
+# ScriptLog's docstring (StockSwingPredictor/src/script_log.jl) for why
+# routine per-symbol detail otherwise goes to the log file only.
+const HEARTBEAT_INTERVAL = 100
+
+# Full per-symbol detail goes here; the terminal only gets stage headers,
+# the progress heartbeat, and warnings. Override with --log-file.
+const DEFAULT_LOG_FILE = joinpath(OHLCV_ROOT, "logs", "update_ohlcv.log")
+
 # ── Core update loops ─────────────────────────────────────────────────────────
 
-function update_daily!(symbols, token_map, session, yest::Date;
+function update_daily!(symbols, token_map, session, yest::Date, slog::ScriptLog;
                        dry_run::Bool, out_dir::String=nse_gran_dir("daily"))
     current = updated = failed = 0
     total   = length(symbols)
 
     for (i, sym) in enumerate(symbols)
+        if !dry_run && i % HEARTBEAT_INTERVAL == 0
+            logboth(slog, "[$i/$total] daily progress: $updated updated, $current current, $failed failed so far")
+        end
+
         last = _last_daily_date(sym, out_dir)
         if isnothing(last)
             @warn "[$i/$total] $sym daily — could not determine last date, skipping"
@@ -155,7 +168,7 @@ function update_daily!(symbols, token_map, session, yest::Date;
 
         token = get(token_map, sym, nothing)
         if isnothing(token)
-            @warn "[$i/$total] $sym — no instrument token"
+            logboth(slog, "[$i/$total] $sym — no instrument token"; warn=true)
             failed += 1
             continue
         end
@@ -163,7 +176,7 @@ function update_daily!(symbols, token_map, session, yest::Date;
         new_df = fetch_ohlcv(token, from, yest, session)
         if isempty(new_df)
             # Normal for a holiday gap with no trading days in the range.
-            @debug "[$i/$total] $sym daily — no new bars in $from…$yest (holiday gap?)"
+            logf(slog, "[$i/$total] $sym daily — no new bars in $from…$yest (holiday gap?)")
             failed += 1
             sleep(0.35)
             continue
@@ -172,23 +185,26 @@ function update_daily!(symbols, token_map, session, yest::Date;
         path = joinpath(out_dir, "$sym.csv")
         CSV.write(path, new_df; append=true)
         updated += 1
-        @info "[$i/$total] $sym daily +$(nrow(new_df)) bars ($from → $yest)"
+        logf(slog, "[$i/$total] $sym daily +$(nrow(new_df)) bars ($from → $yest)")
         sleep(0.35)
     end
 
-    if dry_run
-        @info "Daily: $updated would be updated, $current already current"
-    else
-        @info "Daily: $updated updated, $current already current, $failed failed"
-    end
+    summary = dry_run ?
+        "Daily: $updated would be updated, $current already current" :
+        "Daily: $updated updated, $current already current, $failed failed"
+    dry_run ? (@info summary) : logboth(slog, summary)
 end
 
-function update_hourly!(symbols, token_map, session, yest::Date;
+function update_hourly!(symbols, token_map, session, yest::Date, slog::ScriptLog;
                         dry_run::Bool, out_dir::String=nse_gran_dir("hourly"))
     current = updated = failed = 0
     total   = length(symbols)
 
     for (i, sym) in enumerate(symbols)
+        if !dry_run && i % HEARTBEAT_INTERVAL == 0
+            logboth(slog, "[$i/$total] hourly progress: $updated updated, $current current, $failed failed so far")
+        end
+
         last_dt = _last_hourly_datetime(sym, out_dir)
         if isnothing(last_dt)
             @warn "[$i/$total] $sym hourly — could not determine last datetime, skipping"
@@ -221,7 +237,7 @@ function update_hourly!(symbols, token_map, session, yest::Date;
 
         token = get(token_map, sym, nothing)
         if isnothing(token)
-            @warn "[$i/$total] $sym — no instrument token"
+            logboth(slog, "[$i/$total] $sym — no instrument token"; warn=true)
             failed += 1
             continue
         end
@@ -232,7 +248,7 @@ function update_hourly!(symbols, token_map, session, yest::Date;
         filter!(row -> row.datetime > last_dt, new_df)
 
         if isempty(new_df)
-            @debug "[$i/$total] $sym hourly — no new bars after $last_dt"
+            logf(slog, "[$i/$total] $sym hourly — no new bars after $last_dt")
             failed += 1
             continue
         end
@@ -240,22 +256,25 @@ function update_hourly!(symbols, token_map, session, yest::Date;
         path = joinpath(out_dir, "$sym.csv")
         CSV.write(path, new_df; append=true)
         updated += 1
-        @info "[$i/$total] $sym hourly +$(nrow(new_df)) bars (from $(new_df.datetime[1]) → $(new_df.datetime[end]))"
+        logf(slog, "[$i/$total] $sym hourly +$(nrow(new_df)) bars (from $(new_df.datetime[1]) → $(new_df.datetime[end]))")
     end
 
-    if dry_run
-        @info "Hourly: $updated would be updated, $current already current"
-    else
-        @info "Hourly: $updated updated, $current already current, $failed failed"
-    end
+    summary = dry_run ?
+        "Hourly: $updated would be updated, $current already current" :
+        "Hourly: $updated updated, $current already current, $failed failed"
+    dry_run ? (@info summary) : logboth(slog, summary)
 end
 
-function update_5min!(symbols, token_map, session, yest::Date;
+function update_5min!(symbols, token_map, session, yest::Date, slog::ScriptLog;
                       dry_run::Bool, out_dir::String=nse_gran_dir("5min"))
     current = updated = failed = 0
     total   = length(symbols)
 
     for (i, sym) in enumerate(symbols)
+        if !dry_run && i % HEARTBEAT_INTERVAL == 0
+            logboth(slog, "[$i/$total] 5min progress: $updated updated, $current current, $failed failed so far")
+        end
+
         last_dt = _last_5min_datetime(sym, out_dir)
         if isnothing(last_dt)
             @warn "[$i/$total] $sym 5min — no existing CSV, skipping (run collect_nse_ohlcv.jl first)"
@@ -281,28 +300,27 @@ function update_5min!(symbols, token_map, session, yest::Date;
 
         token = get(token_map, sym, nothing)
         if isnothing(token)
-            @warn "[$i/$total] $sym — no instrument token"; failed += 1; continue
+            logboth(slog, "[$i/$total] $sym — no instrument token"; warn=true); failed += 1; continue
         end
 
         new_df = fetch_ohlcv_5min(token, from, yest, session)
         filter!(row -> row.datetime > last_dt, new_df)
 
         if isempty(new_df)
-            @debug "[$i/$total] $sym 5min — no new bars after $last_dt"
+            logf(slog, "[$i/$total] $sym 5min — no new bars after $last_dt")
             failed += 1; continue
         end
 
         path = joinpath(out_dir, "$sym.csv")
         CSV.write(path, new_df; append=true)
         updated += 1
-        @info "[$i/$total] $sym 5min +$(nrow(new_df)) bars ($(new_df.datetime[1]) → $(new_df.datetime[end]))"
+        logf(slog, "[$i/$total] $sym 5min +$(nrow(new_df)) bars ($(new_df.datetime[1]) → $(new_df.datetime[end]))")
     end
 
-    if dry_run
-        @info "5min: $updated would be updated, $current already current"
-    else
-        @info "5min: $updated updated, $current already current, $failed failed"
-    end
+    summary = dry_run ?
+        "5min: $updated would be updated, $current already current" :
+        "5min: $updated updated, $current already current, $failed failed"
+    dry_run ? (@info summary) : logboth(slog, summary)
 end
 
 function update_macro_5min!(session, yest::Date; dry_run::Bool)
@@ -365,12 +383,16 @@ function update_macro_5min!(session, yest::Date; dry_run::Bool)
     end
 end
 
-function update_15min!(symbols, token_map, session, yest::Date;
+function update_15min!(symbols, token_map, session, yest::Date, slog::ScriptLog;
                        dry_run::Bool, out_dir::String=nse_gran_dir("15min"))
     current = updated = failed = 0
     total   = length(symbols)
 
     for (i, sym) in enumerate(symbols)
+        if !dry_run && i % HEARTBEAT_INTERVAL == 0
+            logboth(slog, "[$i/$total] 15min progress: $updated updated, $current current, $failed failed so far")
+        end
+
         last_dt = _last_15min_datetime(sym, out_dir)
         if isnothing(last_dt)
             @warn "[$i/$total] $sym 15min — no existing CSV, skipping (run collect_nse_ohlcv.jl first)"
@@ -396,36 +418,39 @@ function update_15min!(symbols, token_map, session, yest::Date;
 
         token = get(token_map, sym, nothing)
         if isnothing(token)
-            @warn "[$i/$total] $sym — no instrument token"; failed += 1; continue
+            logboth(slog, "[$i/$total] $sym — no instrument token"; warn=true); failed += 1; continue
         end
 
         new_df = fetch_ohlcv_15min(token, from, yest, session)
         filter!(row -> row.datetime > last_dt, new_df)
 
         if isempty(new_df)
-            @debug "[$i/$total] $sym 15min — no new bars after $last_dt"
+            logf(slog, "[$i/$total] $sym 15min — no new bars after $last_dt")
             failed += 1; continue
         end
 
         path = joinpath(out_dir, "$sym.csv")
         CSV.write(path, new_df; append=true)
         updated += 1
-        @info "[$i/$total] $sym 15min +$(nrow(new_df)) bars ($(new_df.datetime[1]) → $(new_df.datetime[end]))"
+        logf(slog, "[$i/$total] $sym 15min +$(nrow(new_df)) bars ($(new_df.datetime[1]) → $(new_df.datetime[end]))")
     end
 
-    if dry_run
-        @info "15min: $updated would be updated, $current already current"
-    else
-        @info "15min: $updated updated, $current already current, $failed failed"
-    end
+    summary = dry_run ?
+        "15min: $updated would be updated, $current already current" :
+        "15min: $updated updated, $current already current, $failed failed"
+    dry_run ? (@info summary) : logboth(slog, summary)
 end
 
-function update_1min!(symbols, token_map, session, yest::Date;
+function update_1min!(symbols, token_map, session, yest::Date, slog::ScriptLog;
                       dry_run::Bool, out_dir::String=nse_gran_dir("1min"))
     current = updated = failed = 0
     total   = length(symbols)
 
     for (i, sym) in enumerate(symbols)
+        if !dry_run && i % HEARTBEAT_INTERVAL == 0
+            logboth(slog, "[$i/$total] 1min progress: $updated updated, $current current, $failed failed so far")
+        end
+
         last_dt = _last_1min_datetime(sym, out_dir)
         if isnothing(last_dt)
             @warn "[$i/$total] $sym 1min — no existing CSV, skipping (run collect_nse_ohlcv.jl first)"
@@ -455,28 +480,27 @@ function update_1min!(symbols, token_map, session, yest::Date;
 
         token = get(token_map, sym, nothing)
         if isnothing(token)
-            @warn "[$i/$total] $sym — no instrument token"; failed += 1; continue
+            logboth(slog, "[$i/$total] $sym — no instrument token"; warn=true); failed += 1; continue
         end
 
         new_df = fetch_ohlcv_1min(token, from, yest, session)
         filter!(row -> row.datetime > last_dt, new_df)
 
         if isempty(new_df)
-            @debug "[$i/$total] $sym 1min — no new bars after $last_dt"
+            logf(slog, "[$i/$total] $sym 1min — no new bars after $last_dt")
             failed += 1; continue
         end
 
         path = joinpath(out_dir, "$sym.csv")
         CSV.write(path, new_df; append=true)
         updated += 1
-        @info "[$i/$total] $sym 1min +$(nrow(new_df)) bars ($(new_df.datetime[1]) → $(new_df.datetime[end]))"
+        logf(slog, "[$i/$total] $sym 1min +$(nrow(new_df)) bars ($(new_df.datetime[1]) → $(new_df.datetime[end]))")
     end
 
-    if dry_run
-        @info "1min: $updated would be updated, $current already current"
-    else
-        @info "1min: $updated updated, $current already current, $failed failed"
-    end
+    summary = dry_run ?
+        "1min: $updated would be updated, $current already current" :
+        "1min: $updated updated, $current already current, $failed failed"
+    dry_run ? (@info summary) : logboth(slog, summary)
 end
 
 function update_macro_15min!(session, yest::Date; dry_run::Bool)
@@ -559,6 +583,10 @@ Flags:
   --skip-15min    Skip the 15-minute pass (overrides --15min-only if both given).
   --skip-1min     Skip the 1-minute pass (overrides --1min-only if both given).
   --dry-run       Report what would be fetched without making any API calls.
+  --log-file PATH Full per-symbol detail (default: $DEFAULT_LOG_FILE).
+                  The terminal only shows stage headers, a progress
+                  heartbeat every $HEARTBEAT_INTERVAL symbols, and warnings —
+                  tail -f the log file for live per-symbol status instead.
 
 Reads each existing {SYMBOL}.csv in website/data/ohlcv/{nse,bse}/{daily,
 hourly,5min,15min,1min}/ (both exchanges by default — pass --nse-only or
@@ -604,11 +632,16 @@ a big gap in one go, not a race against data disappearing.
     sym_idx   = findfirst(==("--symbol"), ARGS)
     sym_filter = (!isnothing(sym_idx) && sym_idx < length(ARGS)) ? ARGS[sym_idx + 1] : nothing
 
+    log_idx  = findfirst(==("--log-file"), ARGS)
+    log_path = (!isnothing(log_idx) && log_idx < length(ARGS)) ? ARGS[log_idx + 1] : DEFAULT_LOG_FILE
+    slog     = open_script_log(log_path)
+    @info "Logging full per-symbol detail to: $log_path"
+
     yest = today() - Day(1)
 
     dry_run && @info "[DRY RUN] No API calls will be made."
 
-    @info "Updating to: $yest"
+    logboth(slog, "Updating to: $yest")
 
     # ── Load session (skipped in dry-run) ─────────────────────────────────────
     session = dry_run ? (api_key="", access_token="") :
@@ -620,7 +653,7 @@ a big gap in one go, not a race against data disappearing.
         @info "Loading NSE instrument list from Kite…"
         instr = load_instruments(session; exchange="NSE")
         t = build_token_map(instr; exchange="NSE")
-        @info "  $(length(t)) NSE instruments loaded"
+        logboth(slog, "  $(length(t)) NSE instruments loaded")
         t
     end
 
@@ -630,7 +663,7 @@ a big gap in one go, not a race against data disappearing.
         @info "Loading BSE instrument list from Kite…"
         instr = load_instruments(session; exchange="BSE", refresh=true)
         t = build_token_map(instr; exchange="BSE")
-        @info "  $(length(t)) BSE instruments loaded"
+        logboth(slog, "  $(length(t)) BSE instruments loaded")
         t
     end
 
@@ -657,36 +690,36 @@ a big gap in one go, not a race against data disappearing.
             @info "Filtering to symbol: $sym_filter"
         end
 
-        @info "Found $(length(daily_syms)) NSE daily, $(length(hourly_syms)) hourly, $(length(fivemin_syms)) 5-min, $(length(fifteenmin_syms)) 15-min, $(length(onemin_syms)) 1-min CSVs"
-        @info "═══ NSE ═══"
+        logboth(slog, "Found $(length(daily_syms)) NSE daily, $(length(hourly_syms)) hourly, $(length(fivemin_syms)) 5-min, $(length(fifteenmin_syms)) 15-min, $(length(onemin_syms)) 1-min CSVs")
+        logboth(slog, "═══ NSE ═══")
 
         if run_daily
-            @info "── Daily bars ──"
-            update_daily!(daily_syms, nse_token_map, session, yest;
+            logboth(slog, "── Daily bars ──")
+            update_daily!(daily_syms, nse_token_map, session, yest, slog;
                           dry_run, out_dir=nse_gran_dir("daily"))
         end
 
         if run_hourly
-            @info "── Hourly bars ──"
-            update_hourly!(hourly_syms, nse_token_map, session, yest;
+            logboth(slog, "── Hourly bars ──")
+            update_hourly!(hourly_syms, nse_token_map, session, yest, slog;
                            dry_run, out_dir=nse_gran_dir("hourly"))
         end
 
         if run_5min
-            @info "── 5-min bars ──"
-            update_5min!(fivemin_syms, nse_token_map, session, yest;
+            logboth(slog, "── 5-min bars ──")
+            update_5min!(fivemin_syms, nse_token_map, session, yest, slog;
                         dry_run, out_dir=nse_gran_dir("5min"))
         end
 
         if run_15min
-            @info "── 15-min bars ──"
-            update_15min!(fifteenmin_syms, nse_token_map, session, yest;
+            logboth(slog, "── 15-min bars ──")
+            update_15min!(fifteenmin_syms, nse_token_map, session, yest, slog;
                          dry_run, out_dir=nse_gran_dir("15min"))
         end
 
         if run_1min
-            @info "── 1-min bars ──"
-            update_1min!(onemin_syms, nse_token_map, session, yest;
+            logboth(slog, "── 1-min bars ──")
+            update_1min!(onemin_syms, nse_token_map, session, yest, slog;
                         dry_run, out_dir=nse_gran_dir("1min"))
         end
     end
@@ -708,36 +741,36 @@ a big gap in one go, not a race against data disappearing.
                 bse_1min_syms   = filter(==(sym_filter), bse_1min_syms)
             end
 
-            @info "Found $(length(bse_daily_syms)) BSE daily, $(length(bse_hourly_syms)) hourly, $(length(bse_5min_syms)) 5-min, $(length(bse_15min_syms)) 15-min, $(length(bse_1min_syms)) 1-min CSVs"
-            @info "═══ BSE ═══"
+            logboth(slog, "Found $(length(bse_daily_syms)) BSE daily, $(length(bse_hourly_syms)) hourly, $(length(bse_5min_syms)) 5-min, $(length(bse_15min_syms)) 15-min, $(length(bse_1min_syms)) 1-min CSVs")
+            logboth(slog, "═══ BSE ═══")
 
             if run_daily
-                @info "── Daily bars ──"
-                update_daily!(bse_daily_syms, bse_token_map, session, yest;
+                logboth(slog, "── Daily bars ──")
+                update_daily!(bse_daily_syms, bse_token_map, session, yest, slog;
                               dry_run, out_dir=bse_gran_dir("daily"))
             end
 
             if run_hourly
-                @info "── Hourly bars ──"
-                update_hourly!(bse_hourly_syms, bse_token_map, session, yest;
+                logboth(slog, "── Hourly bars ──")
+                update_hourly!(bse_hourly_syms, bse_token_map, session, yest, slog;
                                dry_run, out_dir=bse_gran_dir("hourly"))
             end
 
             if run_5min
-                @info "── 5-min bars ──"
-                update_5min!(bse_5min_syms, bse_token_map, session, yest;
+                logboth(slog, "── 5-min bars ──")
+                update_5min!(bse_5min_syms, bse_token_map, session, yest, slog;
                              dry_run, out_dir=bse_gran_dir("5min"))
             end
 
             if run_15min
-                @info "── 15-min bars ──"
-                update_15min!(bse_15min_syms, bse_token_map, session, yest;
+                logboth(slog, "── 15-min bars ──")
+                update_15min!(bse_15min_syms, bse_token_map, session, yest, slog;
                               dry_run, out_dir=bse_gran_dir("15min"))
             end
 
             if run_1min
-                @info "── 1-min bars ──"
-                update_1min!(bse_1min_syms, bse_token_map, session, yest;
+                logboth(slog, "── 1-min bars ──")
+                update_1min!(bse_1min_syms, bse_token_map, session, yest, slog;
                              dry_run, out_dir=bse_gran_dir("1min"))
             end
         else
@@ -751,6 +784,8 @@ a big gap in one go, not a race against data disappearing.
         run_5min  && (@info "── 5-min bars ──";  update_macro_5min!(session, yest; dry_run))
         run_15min && (@info "── 15-min bars ──"; update_macro_15min!(session, yest; dry_run))
     end
+
+    close_script_log(slog, "exit normally")
 end
 
 main()

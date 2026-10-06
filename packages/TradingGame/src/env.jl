@@ -55,16 +55,46 @@ function reset!(env::TradingGameEnv, config::EpisodeConfig)
     return nothing
 end
 
+"""The mark/execution price for `sym_idx` at the current bar — the hourly
+close, UNLESS `env.price_overrides` has a snapshot for `(env.current_hour_idx,
+sym_idx)`. That override is how a qualifying news event's exact 1-minute
+price (`news_features.jl`, built from real 1-minute OHLCV around the event's
+timestamp, not the enclosing hourly bar) reaches every "price right now"
+read in the simulator — `portfolio_breakdown`, `_execute_sell!`,
+`_apply_actions!`'s BUY branch, `resolve_actions`'s rule-12 room check,
+`observation.jl`'s current-bar price/holding features, and the two baseline
+policies all go through this single function rather than reading
+`cache.hourly_closes` directly, so the override logic exists exactly once.
+`env.price_overrides` is empty by default, which makes this identical to a
+plain `cache.hourly_closes[env.current_hour_idx, sym_idx]` read — see
+`TradingGameEnv`'s docstring."""
+function current_price(env::TradingGameEnv, sym_idx::Int)::Float32
+    ov = _price_override(env, sym_idx)
+    ov === nothing && return env.cache.hourly_closes[env.current_hour_idx, sym_idx]
+    return ov
+end
+
+"""Raw news-instant override lookup for `sym_idx` at the current bar, or
+`nothing` if none exists — `current_price` builds on this directly;
+`observation.jl`'s price-window assembly also calls it directly (not
+`current_price`) since it needs the un-substituted value to anchor-normalise
+consistently with the rest of the window, not a final price."""
+function _price_override(env::TradingGameEnv, sym_idx::Int)::Union{Nothing, Float32}
+    overrides = get(env.price_overrides, env.current_hour_idx, nothing)
+    overrides === nothing && return nothing
+    return get(overrides, sym_idx, nothing)
+end
+
 """Decomposes total portfolio value into its two components — stock value
-(mark-to-market at the current hourly close) and cash value (spendable cash
-plus reserved/settling cash, rules 4 and 7) — so callers that need the
-breakdown (e.g. `step!`'s info dict, consumed by `live.jl` for the website's
-stock-value/cash-value chart lines) don't duplicate the holdings loop
-`portfolio_value` already does."""
+(mark-to-market at the current price, see `current_price`) and cash value
+(spendable cash plus reserved/settling cash, rules 4 and 7) — so callers that
+need the breakdown (e.g. `step!`'s info dict, consumed by `live.jl` for the
+website's stock-value/cash-value chart lines) don't duplicate the holdings
+loop `portfolio_value` already does."""
 function portfolio_breakdown(env::TradingGameEnv)::NamedTuple{(:value, :stocks_value, :cash_value), Tuple{Float64, Float64, Float64}}
     stocks = 0.0
     for h in env.portfolio.holdings
-        stocks += h.quantity * env.cache.hourly_closes[env.current_hour_idx, h.sym_idx]
+        stocks += h.quantity * current_price(env, h.sym_idx)
     end
     reserved = isempty(env.portfolio.reserved) ? 0.0 : sum(l.amount for l in env.portfolio.reserved)
     cash = env.portfolio.cash + reserved
@@ -234,7 +264,7 @@ voluntary sells — rule 11 does not distinguish between them, and neither does
 rule 15's cooldown. Returns a `TradeEvent` for `StepResult.info`
 (display/logging only — never consulted for rule decisions)."""
 function _execute_sell!(env::TradingGameEnv, h::Holding, date_idx::Int; reason::String="sell")::TradeEvent
-    price    = env.cache.hourly_closes[env.current_hour_idx, h.sym_idx]
+    price    = current_price(env, h.sym_idx)
     proceeds = h.quantity * price
     fee      = FEE_RATE * proceeds
     push!(env.portfolio.reserved,
@@ -261,7 +291,7 @@ function _apply_actions!(env::TradingGameEnv, resolved::Vector{ResolvedTrade}, d
                     env.portfolio.holdings)
 
         elseif t.kind == BUY
-            price = env.cache.hourly_closes[env.current_hour_idx, t.sym_idx]
+            price = current_price(env, t.sym_idx)
             (isnan(price) || price <= 0) && continue
 
             # Shares trade in whole units — `t.notional` is a cash budget, not a

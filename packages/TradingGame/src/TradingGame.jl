@@ -29,7 +29,8 @@ objective is to maximise the total value of the portfolio, evaluated every
 3. Hand-rolled PPO + a small-universe training sanity check (`ppo.jl`, `train.jl`) — done.
 4. Full-scale training + historical backtest validation — in progress:
    candidate universe (`universe.jl`, `scripts/build_market_universe_snapshot.jl`) done;
-   historical news-signal backfill (`news_features.jl`) not started.
+   historical news-signal backfill (`scripts/backfill_news_signals.jl`,
+   `news_features.jl`) done.
 5. Live execution — explicitly out of scope for this package; see
    `StockSwingPredictor.broker.jl` for the read-only Kite portfolio functions a
    future live-execution follow-up would extend (no order-placement function
@@ -91,11 +92,13 @@ include("action.jl")
 include("env.jl")
 include("baseline_policy.jl")
 include("observation.jl")
+include("news_features.jl")
 include("policy.jl")
 include("ppo.jl")
 include("live.jl")
 include("train.jl")
 include("universe.jl")
+include("date_windows.jl")
 include("display.jl")
 
 export
@@ -105,7 +108,8 @@ export
     MAX_CASH_FRACTION, CASH_CEILING_PENALTY_COEF, REBUY_COOLDOWN_DAYS,
     RewardMode, SPARSE_WINDOW, ROLLING_WINDOW, TRAINING_REWARD_MODE, REWARD_INTERVAL_DAYS,
     DecisionGranularity, HOURLY, MINUTE_15, TRAINING_DECISION_GRANULARITY,
-    N_CANDIDATE_STOCKS, MIN_CONFIDENCE_SCORE, GAMMA, GAE_LAMBDA, CLIP_EPS,
+    N_CANDIDATE_STOCKS, MIN_CONFIDENCE_SCORE, NEWS_DECISION_SEVERITY_THRESHOLD,
+    GAMMA, GAE_LAMBDA, CLIP_EPS,
     VALUE_LOSS_COEF, ENTROPY_COEF, DECAY_HALFLIFE_HOURS, N_HOURLY_BARS_SHORT,
     N_PRICE_CHANNELS, N_MACRO_DAYS, N_MACRO_SERIES, MACRO_SERIES_NAMES,
     N_NEWS_FEATURES, N_HOLDING_FEATURES, N_PORTFOLIO_SCALARS,
@@ -119,13 +123,17 @@ export
     resolve_actions,
 
     # env
-    reset!, step!, portfolio_value, portfolio_breakdown, is_decision_bar,
+    reset!, step!, portfolio_value, portfolio_breakdown, is_decision_bar, current_price,
 
     # baseline_policy
     random_policy, heuristic_policy,
 
     # observation
     MacroCache, build_macro_cache, Observation, assemble_observation, stack_observations,
+
+    # news_features
+    NewsFeatureCache, build_news_feature_cache, news_feature_fn, build_news_snapshots,
+    NEWS_SNAPSHOT_MAX_LAG_MINUTES,
 
     # policy
     ActorCriticPolicy, save_policy, load_policy,
@@ -142,6 +150,9 @@ export
     # universe
     UniverseEntry, eligible_candidates, build_candidate_universe,
     UniverseStrategy, SharedTopMarketCap, DisjointTopMarketCap, RandomUniverse, BucketedRandom,
-    build_universes, save_universe_snapshot, load_universe_snapshot
+    build_universes, save_universe_snapshot, load_universe_snapshot,
+
+    # date_windows
+    resolve_date_windows, save_date_window, load_date_window
 
 end

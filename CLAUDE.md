@@ -75,8 +75,9 @@ market-agent/
 │           ├── live.jl             # streams the current episode to live_status.json (website/tradinggamelive.html)
 │           ├── train.jl            # training loop: train_policy! — checkpoint, episode_log.jsonl, STOP
 │           ├── universe.jl         # candidate universe: confidence-filtered pool + pluggable train/val split strategies
+│           ├── date_windows.jl     # resolve_date_windows: shared by train_trading_policy.jl + prepare_training_data.jl
+│           ├── news_features.jl    # NewsFeatureCache: decayed news_fn + 1-minute instant-price snapshots at news bars
 │           └── display.jl          # Base.show overrides
-│           # news_features.jl: later stage — see TradingGameRules.txt and the TradingGame module docstring
 │       └── docs/                   # LaTeX architecture write-ups (.tex + .bib + built .pdf, all tracked)
 │           └── tradinggame_scaling.tex  # anchor-token cross-attention scaling proposal — equations,
 │                                         # TikZ schematics, measured-GPU-memory regression, references
@@ -86,6 +87,7 @@ market-agent/
 │   ├── run_confidence_checks.jl          # runs CompanyConfidence on top-N by market cap
 │   ├── enrich_earnings_dates.jl          # projects next earnings date via Tijori history (run every 2 weeks)
 │   ├── generate_earnings_watchlist.jl    # merges NSE calendar + projections → watchlist JSON
+│   ├── kite_relogin.jl                   # force a fresh Kite login from Julia (shells out to kite_login.js)
 │   ├── collect_nse_ohlcv.jl              # download all NSE OHLCV: daily/hourly/5min/15min/1min (Kite)
 │   ├── collect_bse_ohlcv.jl              # download all BSE OHLCV: daily/hourly/5min/15min/1min (Kite)
 │   ├── collect_macro_ohlcv.jl            # download macro instrument OHLCV (Yahoo + Kite CDS/NSE)
@@ -93,10 +95,13 @@ market-agent/
 │   ├── backfill_ohlcv.jl                 # extend existing OHLCV CSVs backward to an earlier --from date
 │   ├── extract_llm_features.jl           # Claude API → 14 scalar signals per company (resumable)
 │   ├── monitor_news.jl                   # real-time BSE + RSS news monitor daemon
+│   ├── backfill_news_signals.jl          # classify historical NSE announcements via local Ollama (resumable)
+│   ├── fetch_news_snapshot_ohlcv.jl      # fetch 1-min OHLCV from Kite for news-event days only (resumable)
 │   ├── build_cache.jl                    # build inference_cache.bson from all OHLCV CSVs (run each morning)
 │   ├── build_dataset.jl                  # sliding-window dataset assembly; --pred-hours 35|70
 │   ├── train_model.jl                    # train SwingPredictor (v1/v2/v3); auto-selects dataset
 │   ├── build_market_universe_snapshot.jl # TradingGame candidate universe: confidence-filtered, pluggable train/val split
+│   ├── prepare_training_data.jl          # orchestrates universe + news backfill + 1-min snapshots, one date resolution
 │   ├── train_trading_policy.jl           # drives TradingGame.train_policy! — see website/tradinggamelive.html
 │   └── training_status.jl                # one-shot read-only snapshot of a running train_trading_policy.jl
 │
@@ -148,10 +153,13 @@ EarningsCalendar        — NSE data only, no dependencies on other packages
 NewsMonitor             — BSE/RSS news polling + LLM classification; no dependencies on other packages
 StockSwingPredictor     — depends on TijoriData; Kite used directly via HTTP
                           includes broker.jl (portfolio, positions, funds, orders)
-TradingGame             — depends on StockSwingPredictor (InferenceCache, macro_data);
-                          CompanyConfidence (universe pre-filter) and NewsMonitor
-                          (NewsSignal, historical announcements DB) land with the
-                          news/universe stages. Simulator + RL training only — no
+TradingGame             — depends on StockSwingPredictor (InferenceCache, macro_data)
+                          and CompanyConfidence (universe pre-filter, read as
+                          precomputed JSON, not a package dependency — see
+                          universe.jl). No package dependency on NewsMonitor:
+                          news_features.jl reads scripts/backfill_news_signals.jl's
+                          news_signals.db directly via SQLite.jl, the same
+                          light-coupling pattern. Simulator + RL training only — no
                           order placement (see StockSwingPredictor/broker.jl for
                           the future live-execution follow-up)
 ```
@@ -328,11 +336,53 @@ session and works for all endpoints — no separate trading API key is needed.
 ```bash
 # 1. Acquire a fresh Kite Connect access token (valid for the trading day)
 node sidecar/kite_login.js              # reads .env, writes sidecar/kite_session.json
+# equivalently, from Julia:
+julia --project=packages/StockSwingPredictor scripts/kite_relogin.jl
 
 # 2. Start the sidecar (Julia will start it automatically via start!(), but you can also run it manually)
 node sidecar/server_http.js              # default port 3001
 PORT=3002 node sidecar/server_http.js   # custom port
 ```
+
+### Kite token expiry during long-running jobs
+
+The Kite access token is valid for one trading day. `load_kite_session`
+returns a mutable `KiteSession` (not a plain tuple), and every Kite call in
+`StockSwingPredictor` (`fetch_ohlcv*`, `load_instruments`, `broker.jl`'s
+portfolio/positions/margins/orders, `macro_data.jl`'s Kite-sourced series)
+goes through one shared `_kite_get` helper instead of raw `HTTP.get`. On a
+403 (expired token), `_kite_get` automatically runs `relogin_kite!` —
+shells out to `sidecar/kite_login.js` (Playwright-driven; Kite's login has
+no plain REST endpoint) and mutates the session's `api_key`/`access_token`
+**in place** — then retries the one failed request. Because the session
+object is mutable and shared, every other call anywhere in the same script
+immediately sees the refreshed token too, not just the retried one.
+
+This means an overnight job (`collect_nse_ohlcv.jl`, `update_ohlcv.jl`,
+`backfill_ohlcv.jl`, `fetch_news_snapshot_ohlcv.jl`, …) that spans the daily
+expiry boundary recovers on its own, mid-run — **no script-level changes
+are needed anywhere**; they all already just load one `session` at startup
+and pass it through every call. Requires a display (the relogin launches a
+real, visible browser) and `.env` credentials present, same as running
+`node sidecar/kite_login.js` directly. To force a refresh proactively
+instead of waiting for a 403 — e.g. right before starting a job you know
+will run long — use `scripts/kite_relogin.jl` (see below).
+
+Two failure modes this does NOT turn into a retry loop:
+- **Network actually down**: a connection failure throws straight out of
+  `HTTP.get` before `_kite_get` ever sees a status code, so relogin is
+  never considered at all — it propagates to the calling function's
+  existing per-chunk `try/catch` (warn, skip, continue to the next chunk),
+  exactly like any other transient network error, unrelated to Kite tokens.
+- **Login itself is broken** (not just an expired token, but e.g. the
+  network drops mid-relogin, TOTP timing drifts, Zerodha changes their
+  login page): a 403 means Kite's server DID respond, so relogin is
+  attempted — but at most once per `KITE_RELOGIN_COOLDOWN_SECONDS` (60s),
+  globally, regardless of how many chunks/symbols/functions hit 403 in that
+  window. A multi-year, multi-symbol backfill hitting hundreds of 403s from
+  a genuinely broken login degrades to one logged relogin attempt followed
+  by "skipping relogin, cooldown" warnings and normal per-chunk failures —
+  never a cascade of repeated browser launches.
 
 ## Using TijoriData in the Julia REPL
 
@@ -465,19 +515,22 @@ brand-new granularity, e.g. NSE `15min`, which has zero files today).
 
 This exists because most of the real archive was collected back when the
 "N-day retention" figures above were believed to be hard limits — most symbols'
-files therefore start much later than Kite can actually provide.
+files therefore start much later than Kite can actually provide. `--from`
+defaults to `2010-01-04` (not `-01-01`, a Friday NSE holiday that would make
+the skip check below permanently unsatisfiable).
 
 ```bash
-# Extend everything (both exchanges, all granularities) back to 2010
-julia --project=packages/StockSwingPredictor scripts/backfill_ohlcv.jl --from 2010-01-01
+# Extend everything (both exchanges, all granularities) back to 2010-01-04
+julia --project=packages/StockSwingPredictor scripts/backfill_ohlcv.jl
 
 # See the call-count estimate first — no API calls made
-julia --project=packages/StockSwingPredictor scripts/backfill_ohlcv.jl --from 2010-01-01 --dry-run
+julia --project=packages/StockSwingPredictor scripts/backfill_ohlcv.jl --dry-run
 
 # Scope a trial run
-julia --project=packages/StockSwingPredictor scripts/backfill_ohlcv.jl --from 2010-01-01 --symbol RELIANCE
-julia --project=packages/StockSwingPredictor scripts/backfill_ohlcv.jl --from 2010-01-01 --nse-only --hourly-only
-julia --project=packages/StockSwingPredictor scripts/backfill_ohlcv.jl --from 2010-01-01 --skip-1min
+julia --project=packages/StockSwingPredictor scripts/backfill_ohlcv.jl --symbol RELIANCE
+julia --project=packages/StockSwingPredictor scripts/backfill_ohlcv.jl --nse-only --hourly-only
+julia --project=packages/StockSwingPredictor scripts/backfill_ohlcv.jl --skip-1min
+julia --project=packages/StockSwingPredictor scripts/backfill_ohlcv.jl --from 2015-01-01 --log-file /tmp/custom.log
 ```
 
 Same `--nse-only`/`--bse-only`, `--daily-only`/`--hourly-only`/`--5min-only`/
@@ -487,6 +540,35 @@ Going back to 2010 for the finer granularities across the full symbol universe
 is a genuinely large job (many chunked API calls per symbol) — `--dry-run` first
 to see the estimate, then scope with `--symbol`/`--*-only` before committing to
 a full run.
+
+Full per-symbol detail (every backfill, every "no older bars" confirmation)
+goes to `website/data/ohlcv/logs/backfill_ohlcv.log` (`--log-file PATH` to
+override) via the shared `ScriptLog` mechanism — see `update_ohlcv.jl`'s
+entry below. The terminal only gets stage headers, a progress heartbeat
+every 100 symbols, and warnings; `tail -f` the log file for live status.
+Kite relogin attempts (`_kite_get`'s automatic re-authenticate-on-403, see
+below) are also routed there via a module-level active-log pointer, since a
+relogin can stall for a long time with no other visible sign of why.
+
+Two layers of "don't re-probe a gap already proven empty" keep repeat runs
+cheap:
+- **`{nse,bse}/earliest_trading_day.json`** (one per exchange, at the
+  exchange root): `{symbol => earliest date daily has ever found}`,
+  rebuilt from the daily CSVs after every daily pass. Every finer
+  granularity fetches from `max(--from, earliest_trading_day[symbol])`
+  instead of `--from` alone — daily's 2000-day span cap makes it by far
+  the cheapest granularity to have already settled "nothing before an
+  IPO date" for a symbol.
+- **`{nse,bse}/{hourly,5min,15min,1min}/confirmed_floor.json`** (one per
+  granularity, inside that granularity's own subfolder): `{symbol =>
+  earliest date THAT granularity has confirmed has no older bars}`,
+  written the first time a symbol hits "no older bars" at that specific
+  granularity. This exists because each intraday granularity has its own
+  Kite retention floor, shallower than daily's and shared across symbols
+  regardless of real IPO date — observed live, hourly has nothing before
+  ~2015-02-02 for virtually every NSE symbol, so without this a symbol
+  with a pre-2015 IPO has its full multi-chunk gap re-probed and
+  re-confirmed empty on every single run, forever.
 
 ### collect_macro_ohlcv.jl
 
@@ -615,6 +697,195 @@ with `TradingGame.load_universe_snapshot` → `(train=Vector{String},
 val=Vector{String})`, directly usable as `train_config`/`val_config`'s
 `EpisodeConfig.candidate_universe` respectively (see `train_trading_policy.jl`).
 
+### backfill_news_signals.jl
+
+Classifies historical NSE corporate announcements (`nse_announcements.db`, raw
+text only — no sentiment/severity) into `NewsSignal`-shaped rows using a
+**local Ollama model** (`NewsMonitor.classify_item_ollama`), not the paid
+Claude API — classifying every historical announcement for even a modest
+universe is tens of thousands of calls, free and fine for an overnight local
+job, expensive for a per-call API. `classify_item_ollama` reuses the exact
+same tool schema/calibration text as `classify_item` (the live daemon's
+Claude path), so backfilled and live signals are classified identically.
+
+Scope defaults to every symbol in `universe_latest.json`'s train+val
+candidates (not the whole market — the confidence-passing pool alone is
+~1960 symbols / ~1.08M announcements, ~12+ days serial even for free; the
+actual training universe is what matters, and it only grows as new symbols
+enter it). `--symbol` overrides this with an explicit list instead.
+
+Resumable like `fetch_nse_history.jl`: results are written keyed by `guid`
+into `website/data/news_signals.db`, `INSERT OR IGNORE`'d, so a re-run (new
+symbol, or an interrupted run) only classifies rows not already present. NSE's
+own `symbol` column from `nse_announcements.db` is always trusted over
+whatever symbol the model guesses from free text — observed the model
+occasionally return a near-miss variant (e.g. `LICI` → `LICIND`/`LICINDIA`) or
+name a different company mentioned in the announcement; this only matters for
+this historical path, since the live daemon's RSS/BSE sources often have no
+structured symbol at all and genuinely need the model's guess.
+
+```bash
+# Requires Ollama running locally (qwen3:latest by default) — no API key needed
+julia --project=packages/NewsMonitor scripts/backfill_news_signals.jl
+julia --project=packages/NewsMonitor scripts/backfill_news_signals.jl --dry-run
+julia --project=packages/NewsMonitor scripts/backfill_news_signals.jl --symbol RELIANCE --symbol TCS
+julia --project=packages/NewsMonitor scripts/backfill_news_signals.jl --from 2021-01-01
+julia --project=packages/NewsMonitor scripts/backfill_news_signals.jl --ollama-model qwen3:latest
+```
+
+Prerequisites: `nse_announcements.db` (`fetch_nse_history.jl`) and, for the
+default symbol scope, `universe_latest.json` (`build_market_universe_snapshot.jl`).
+Output: `website/data/news_signals.db`, table `news_signals(guid, symbol,
+event_type, sentiment, severity, summary, source, headline, url,
+published_at, classified_at)` — loaded by `TradingGame.build_news_feature_cache`
+(`news_features.jl`), which `train_trading_policy.jl` reads by default (see
+below; `--no-news` opts out).
+
+### fetch_news_snapshot_ohlcv.jl
+
+Fetches 1-minute OHLCV from Kite for just the few minutes around EVERY
+classified news event — not a continuous historical backfill, and not a
+whole trading day per event either. `news_features.jl`'s instant-price
+snapshot mechanism only ever looks up the first 1-minute bar at-or-after a
+news timestamp within `TradingGame.NEWS_SNAPSHOT_MAX_LAG_MINUTES` (30 min),
+for *every* candidate symbol (the whole market universe's state at that
+instant, not just whichever symbol the news was about) — so fetching a
+whole day (~375 bars) per (symbol, event) pair would be ~12x more than ever
+gets read. Nothing on disk provides even the narrow need today —
+`website/data/ohlcv/nse/1min/` starts out empty.
+
+Deliberately **not** filtered by severity — every distinct `published_at`
+in `news_signals.db` gets fetched, regardless of how routine the event was.
+Whether a signal is severe enough to actually act on is a training-time
+judgement call (`TradingGame.build_news_feature_cache`'s
+`severity_threshold` argument, applied when training reads the DB), not a
+fetch-time one — keeping the two separate means tuning that threshold later
+(or just trying a lower one) never requires re-fetching anything; the data's
+already on disk either way. Symbols default to `universe_latest.json`'s
+train+val candidates (or `--symbol`) — genuinely every candidate, not just
+whichever symbol the news was about: this mimics what live operation will
+actually do (a severe-enough event triggers a check of the market
+universe's full instantaneous state, combined with hourly/daily history, to
+decide buy/sell/hold across the whole book), so narrowing to the newsy
+symbol alone would be cheaper but would stop simulating that. For each
+(symbol, event) pair not already covered by a bar within the same
+30-minute window in that symbol's existing 1-minute CSV, fetches a short
+window (`timestamp - 1 min` … `timestamp + 30 min`) via `StockSwingPredictor.
+fetch_ohlcv_1min_window` (one Kite call per pair, not chunked — that
+function is for short windows only, unlike `fetch_ohlcv_1min`'s whole-day
+chunking) and merges the handful of returned bars in (de-duplicated by
+`datetime`, re-sorted) — never overwrites the file, so this composes
+cleanly with a later full `--1min-only` backfill or `update_ohlcv.jl`'s
+daily runs touching the same CSVs.
+
+`--role {train,val,both}` (default `both`) is the real lever for cutting
+the job down — not narrowing symbols within a role (see above for why
+that's the wrong cut). Train and val are genuinely independent: usually
+different symbols, and (under the default `trailing` `--val-window`)
+different, non-overlapping date windows. Fetching one combined (train ∪ val
+symbols) × (every event, full range) job wastes calls on pairs that can
+never matter — a val-only symbol's price during train's date range is
+never read by any val episode, and vice versa. Running `--role train
+--from <train_start> --to <train_end>` and `--role val --from <val_start>
+--to <val_end>` as two separate passes only fetches what each role can
+actually use. On a real 20/20 split with a ~4.5-year train window and
+~4-month val window, this cut a combined 910,640-pair job down to 290,500
+(train) + 29,420 (val) = 319,920 — about a 2.85x reduction, with val
+alone dropping to roughly 1/15th of its undifferentiated size.
+
+`--from`/`--to` narrow the event timestamps by date. Unlike daily/hourly/
+5-min/15-min, Kite's 1-minute coverage is NOT reliably available arbitrarily
+far back — verified live (RELIANCE/TCS/INFY, weekday, mid-market-hours):
+2015-01 returns nothing, 2016-01 returns real bars, 2016-07 returns nothing
+again, 2017-01 onward returns bars consistently. It's patchy, not one clean
+cutoff, so no default filter is applied — an unfiltered run keeps
+re-attempting pre-2017-ish events on every future run too, since a missing
+bar looks identical to "not yet fetched" and is never treated as permanent.
+`--from 2017-01-01` is a reasonable starting point to skip that wasted
+effort, not a guarantee every later date succeeds.
+
+```bash
+julia --project=packages/TradingGame scripts/fetch_news_snapshot_ohlcv.jl
+julia --project=packages/TradingGame scripts/fetch_news_snapshot_ohlcv.jl --dry-run
+julia --project=packages/TradingGame scripts/fetch_news_snapshot_ohlcv.jl --symbol RELIANCE --symbol TCS
+julia --project=packages/TradingGame scripts/fetch_news_snapshot_ohlcv.jl --from 2017-01-01
+julia --project=packages/TradingGame scripts/fetch_news_snapshot_ohlcv.jl --role train --from 2021-09-09 --to 2026-05-11
+julia --project=packages/TradingGame scripts/fetch_news_snapshot_ohlcv.jl --role val   --from 2026-05-12
+```
+
+Prerequisites: `news_signals.db` (`backfill_news_signals.jl`) and, for the
+default symbol scope, `universe_latest.json` (`build_market_universe_snapshot.jl`).
+Requires a fresh `kite_session.json` (`node sidecar/kite_login.js`) — this
+hits the live Kite historical-data API, unlike `backfill_news_signals.jl`
+(local Ollama, no Kite dependency). Output: merged into
+`website/data/ohlcv/nse/1min/{SYMBOL}.csv`, read by
+`TradingGame.build_news_feature_cache`'s snapshot builder the same way
+`train_trading_policy.jl` already expects (see below) — that function's
+`severity_threshold` is where severity actually gets applied.
+
+### prepare_training_data.jl
+
+Single entry point for the three scripts above — universe, news backfill,
+1-minute snapshots — instead of running each one separately and manually
+keeping their train/val dates in sync. The date math is `TradingGame.
+resolve_date_windows`, moved into the package specifically so this script
+and `train_trading_policy.jl` call the exact same function rather than two
+independent implementations that could quietly drift apart — whatever this
+prepares for is guaranteed to be what a training run with the same
+`--val-window`/`--val-days`/`--train-*`/`--val-*` flags will actually use.
+
+Stages, in order: (1) universe — `TradingGame.eligible_candidates`/
+`build_universes`/`save_universe_snapshot` run in-process (same functions
+`build_market_universe_snapshot.jl` itself calls), skipped if
+`universe_latest.json` already exists (an existing, possibly deliberately-
+built universe is never silently clobbered — pass `--rebuild-universe` to
+force); only `SharedTopMarketCap(n=...)` is available here, run
+`build_market_universe_snapshot.jl` yourself first for any other strategy,
+then `--skip-universe` picks it up as-is. (2) news backfill — one combined
+pass over `min(train_start,val_start)…max(train_end,val_end)` (symbol-
+scoped only, no role split needed — see `backfill_news_signals.jl`).
+(3) 1-minute snapshots — two separate `--role train`/`--role val` passes,
+each scoped to that role's own window (see `fetch_news_snapshot_ohlcv.jl`
+for why role, not symbol, is the right split). Stages 2 and 3 run as real
+subprocesses (`--project=packages/NewsMonitor` / `--project=packages/
+TradingGame` respectively — TradingGame has no package dependency on
+NewsMonitor, so stage 2 can't be an in-process call), so expect their
+startup cost (Flux/CUDA for stage 3, a minute or so each call) on top of
+this script's own — small next to how long stages 2/3 themselves run.
+
+```bash
+julia --project=packages/TradingGame scripts/prepare_training_data.jl
+julia --project=packages/TradingGame scripts/prepare_training_data.jl --dry-run
+julia --project=packages/TradingGame scripts/prepare_training_data.jl --val-days 120
+julia --project=packages/TradingGame scripts/prepare_training_data.jl --val-window same
+julia --project=packages/TradingGame scripts/prepare_training_data.jl --train-start 2021-09-09 --val-start 2026-05-12
+julia --project=packages/TradingGame scripts/prepare_training_data.jl --skip-universe --skip-news
+julia --project=packages/TradingGame scripts/prepare_training_data.jl --n 100 --rebuild-universe
+```
+
+`--dry-run` prints the resolved windows and the exact commands it would
+run — no universe build, no Ollama calls, no Kite calls.
+
+The windows are resolved against `cache.hourly_datetimes`, not
+`cache.dates` — `TradingGameEnv` trains at hourly granularity only
+(`TRAINING_DECISION_GRANULARITY` in `env.jl`), and hourly's real Kite
+floor is shallower than daily's (daily can reach back to 2010-01-04 after
+`backfill_ohlcv.jl`'s fixes; hourly has nothing before ~2015-02-02 for
+virtually every NSE symbol — see `backfill_ohlcv.jl`'s entry above).
+Resolving against the daily axis would default `train_start` to a date no
+hourly bar can satisfy, crashing `TradingGameEnv.reset!` with "no hourly
+bars at or before episode start."
+
+The resolved window is also saved to `website/data/trading_game/
+date_window.json` (not run in `--dry-run`, which has no side effects at
+all). `train_trading_policy.jl` reads this back automatically as a
+fallback default for any of `--train-start`/`--train-end`/`--val-start`/
+`--val-end` not given explicitly on its own command line — run this script
+once with your intended date flags, then `train_trading_policy.jl` with
+none at all, and it reproduces the exact same window. An explicit flag on
+either script, or a `--resume`d run's saved `run_config.json`, still takes
+priority over this file.
+
 ### train_trading_policy.jl
 
 Drives `TradingGame.train_policy!`: loads the cache + the train/val candidate
@@ -622,6 +893,33 @@ universes (`build_market_universe_snapshot.jl` — a `UniverseStrategy` may give
 train and val different companies, not just different dates), resolves the
 train/val date windows, and trains a fresh `ActorCriticPolicy`. Streams
 `live_status.json` by default — watch the run at `website/tradinggamelive.html`.
+
+Builds a real `MacroCache` (`website/data/ohlcv/macro`) and `NewsFeatureCache`
+(`website/data/news_signals.db`, via `news_features.jl`) by default and passes
+both through to `train_policy!` — before this, `macro_cache`/`news_fn` were
+plumbed all the way through `train_policy!`/`collect_rollout` but this script
+never actually built or passed either, so every run trained on the all-zero
+placeholders for both channels regardless of what data existed on disk. A
+missing macro dir or `news_signals.db` degrades to that same zero placeholder
+with a warning, rather than erroring — both are optional enrichments, not
+hard prerequisites. `--no-macro`/`--no-news` silence the warning by opting out
+explicitly; `--news-db PATH` points at a non-default classified-signals DB.
+
+Also builds `TradingGameEnv.price_overrides`: at every bar with a qualifying
+news event, every candidate's price is replaced with its real **1-minute
+open** at-or-just-after the news's exact timestamp (read from
+`website/data/ohlcv/nse/1min/{SYMBOL}.csv`), instead of the hourly bar's
+close — "look at the instant market state the moment news lands, trade off
+that," not off a close that could be up to an hour stale. `current_price`
+(`env.jl`) is the single choke point every price-right-now read in the
+simulator goes through, so this is consistent across execution, mark-to-
+market, and the observation's current-bar price feature. A symbol with no
+1-minute CSV yet (or whose nearest 1-minute bar is too stale —
+`NEWS_SNAPSHOT_MAX_LAG_MINUTES`, 30 min) simply falls back to the hourly
+close for that bar — run `fetch_news_snapshot_ohlcv.jl` first (see above) to
+populate exactly the days this needs; without it this mechanism silently
+degrades to "no override," which
+is why it's additive rather than required.
 
 ```bash
 julia --project=packages/TradingGame scripts/train_trading_policy.jl
@@ -633,6 +931,7 @@ julia --project=packages/TradingGame scripts/train_trading_policy.jl --device gp
 julia --project=packages/TradingGame scripts/train_trading_policy.jl --entropy 0.02
 julia --project=packages/TradingGame scripts/train_trading_policy.jl --val-window same
 julia --project=packages/TradingGame scripts/train_trading_policy.jl --val-start 2024-06-01 --val-end 2024-12-31
+julia --project=packages/TradingGame scripts/train_trading_policy.jl --no-macro --no-news
 ```
 
 `--val-window MODE` (default `trailing`) picks how the train/val date windows are
@@ -645,7 +944,16 @@ full use of the cache's data on both sides instead of carving out a held-out
 tail. Explicit
 `--train-start`/`--train-end`/`--val-start`/`--val-end` (any subset, ISO
 `yyyy-mm-dd`) override whichever bound `--val-window` would otherwise have
-picked, e.g. for deliberately validating against a specific regime.
+picked, e.g. for deliberately validating against a specific regime. Like
+`prepare_training_data.jl`, these resolve against `cache.hourly_datetimes`,
+not `cache.dates` — see that script's entry above for why.
+
+For any of the four date bounds not given explicitly, the fallback (below
+`--resume`'s saved `run_config.json`, above the raw cache-bounds default)
+is `website/data/trading_game/date_window.json`, written by
+`prepare_training_data.jl`. So `prepare_training_data.jl --train-start
+2021-09-09` once, then `train_trading_policy.jl` with no date flags at
+all, trains on that same `2021-09-09` start with nothing to repeat.
 
 Prerequisites: `inference_cache.bson` (`build_cache.jl`) and
 `universe_latest.json` (`build_market_universe_snapshot.jl`).
@@ -774,9 +1082,9 @@ and `CompanyConfidence` (its candidate-universe pre-filter) as a parallel RL
 training track, not a downstream stage of the swing-prediction pipeline above —
 see the dependency table and `TradingGame`'s module docstring. Unlike the rest of
 this diagram it's actively in progress, not planned: simulator, PPO training loop,
-and live training/validation visualization (`tradinggamelive.html`) all exist and
-run today; only the historical news-signal backfill (`news_features.jl`) remains
-unstarted.
+live training/validation visualization (`tradinggamelive.html`), and the
+historical news-signal backfill (`backfill_news_signals.jl`, `news_features.jl`)
+all exist and run today.
 
 ## Environment variables
 

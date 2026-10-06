@@ -17,6 +17,7 @@ Usage:
   julia --project=packages/TradingGame scripts/train_trading_policy.jl --seed 42
   julia --project=packages/TradingGame scripts/train_trading_policy.jl --init-from other_run/policy.bson
   julia --project=packages/TradingGame scripts/train_trading_policy.jl --device gpu
+  julia --project=packages/TradingGame scripts/train_trading_policy.jl --no-macro --no-news
 
 --val-window MODE (default: trailing):
   trailing   val = the last --val-days of the cache; train = everything before
@@ -33,6 +34,14 @@ whichever bound --val-window would otherwise have picked — e.g. `--val-window
 same --val-start 2024-06-01` uses the full cache range for train but starts
 val partway through it, for deliberately validating against a specific
 regime.
+
+For any of those four NOT given explicitly here, the fallback (before the
+raw cache-bounds default) is website/data/trading_game/date_window.json,
+written by prepare_training_data.jl right after it resolves its own
+window — so running that script once with your intended date flags, then
+this one with none at all, reproduces the exact same window with nothing
+to repeat. A --resume'd run's saved run_config.json still takes priority
+over that file, same as an explicit flag would.
 
 Prerequisites:
   website/data/inference_cache.bson              (build_cache.jl)
@@ -107,6 +116,9 @@ const REPO_ROOT   = joinpath(@__DIR__, "..")
 const DATA_DIR    = joinpath(REPO_ROOT, "website", "data", "trading_game")
 const CACHE_FILE  = joinpath(REPO_ROOT, "website", "data", "inference_cache.bson")
 const UNIVERSE_FILE = joinpath(DATA_DIR, "universe_latest.json")
+const MACRO_DIR   = normpath(joinpath(REPO_ROOT, "website", "data", "ohlcv", "macro"))
+const OHLCV_1MIN_DIR = normpath(joinpath(REPO_ROOT, "website", "data", "ohlcv", "nse", "1min"))
+const NEWS_DB_FILE = normpath(joinpath(REPO_ROOT, "website", "data", "news_signals.db"))
 
 """Opts persisted to/restored from `run_config.json` on `--resume` — training
 config that must stay consistent across a resumed run, not runtime-only
@@ -118,7 +130,8 @@ a different date-window mode or explicit override than the checkpoint was
 actually trained on would corrupt the train/val split just as surely as
 `val_days` reverting to its default would."""
 const RESUMABLE_KEYS = ("initial_cash", "val_days", "eval_every", "lr", "entropy_coef", "seed", "device", "minibatch",
-                         "val_window", "train_start", "train_end", "val_start", "val_end")
+                         "val_window", "train_start", "train_end", "val_start", "val_end",
+                         "use_macro", "use_news", "news_db")
 
 function parse_args()
     opts = Dict{String, Any}(
@@ -139,6 +152,9 @@ function parse_args()
         "train_end"   => nothing,
         "val_start"   => nothing,
         "val_end"     => nothing,
+        "use_macro"   => true,
+        "use_news"    => true,
+        "news_db"     => NEWS_DB_FILE,
     )
     explicit = Set{String}()
     i = 1
@@ -174,6 +190,10 @@ Options:
   --train-end DATE       this specific bound
   --val-start DATE
   --val-end DATE
+  --no-macro            Don't build macro context (SP500/VIX/etc.) — zero
+                        placeholder instead, same as before this flag existed
+  --no-news             Don't load news features — zero placeholder instead
+  --news-db PATH        Classified-signals DB (default: $(opts["news_db"]))
 """)
             exit(0)
         elseif a == "--iterations";   opts["iterations"]   = parse(Int, ARGS[i+1]); push!(explicit, "iterations"); i += 2
@@ -193,6 +213,9 @@ Options:
         elseif a == "--train-end";    opts["train_end"]    = Date(ARGS[i+1]); push!(explicit, "train_end"); i += 2
         elseif a == "--val-start";    opts["val_start"]    = Date(ARGS[i+1]); push!(explicit, "val_start"); i += 2
         elseif a == "--val-end";      opts["val_end"]      = Date(ARGS[i+1]); push!(explicit, "val_end"); i += 2
+        elseif a == "--no-macro";     opts["use_macro"]    = false; push!(explicit, "use_macro"); i += 1
+        elseif a == "--no-news";      opts["use_news"]     = false; push!(explicit, "use_news"); i += 1
+        elseif a == "--news-db";      opts["news_db"]      = ARGS[i+1]; push!(explicit, "news_db"); i += 2
         else; i += 1
         end
     end
@@ -226,41 +249,6 @@ function _resolve_minibatch(requested::Union{Int, Nothing}, device::Symbol)::Int
     return device === :gpu ? 256 : 32
 end
 
-"""Resolve the train/val date windows for this run — see the module
-docstring's `--val-window` section for `mode`'s two options. Explicit
-`--train-start`/`--train-end`/`--val-start`/`--val-end` (any subset) always
-override whatever `mode` picked for that specific bound."""
-function resolve_date_windows(cache_start::Date, cache_end::Date, mode::String, val_days::Int,
-                               explicit_train_start::Union{Date, Nothing}, explicit_train_end::Union{Date, Nothing},
-                               explicit_val_start::Union{Date, Nothing}, explicit_val_end::Union{Date, Nothing})
-    if mode == "trailing"
-        val_start   = cache_end - Day(val_days)
-        train_start = cache_start
-        train_end   = val_start - Day(1)
-        val_end     = cache_end
-    elseif mode == "same"
-        train_start = cache_start
-        train_end   = cache_end
-        val_start   = cache_start
-        val_end     = cache_end
-    else
-        error("Unknown --val-window '$mode'. Expected: trailing, same")
-    end
-
-    train_start = something(explicit_train_start, train_start)
-    train_end   = something(explicit_train_end, train_end)
-    val_start   = something(explicit_val_start, val_start)
-    val_end     = something(explicit_val_end, val_end)
-
-    train_start < train_end || error(
-        "Train window is empty or inverted: $train_start .. $train_end " *
-        "(cache covers $cache_start .. $cache_end) — adjust --val-days/--val-window/--train-* flags")
-    val_start < val_end || error(
-        "Val window is empty or inverted: $val_start .. $val_end " *
-        "(cache covers $cache_start .. $cache_end) — adjust --val-days/--val-window/--val-* flags")
-    return train_start, train_end, val_start, val_end
-end
-
 _fmt_money(v) = "₹" * replace(@sprintf("%.0f", v), r"(\d)(?=(\d{3})+(?!\d))" => s"\1,")
 
 """Print this run's effective hyperparameters and the rule-derived constants
@@ -292,6 +280,8 @@ function _print_training_params(opts::Dict, device::Symbol, minibatch::Int,
     @printf("  %-22s %s\n",  "seed:",         something(opts["seed"], "none"))
     @printf("  %-22s %s\n",  "resume:",       opts["resume"])
     @printf("  %-22s %s\n",  "init_from:",    isempty(opts["init_from"]) ? "none" : opts["init_from"])
+    @printf("  %-22s %s\n",  "use_macro:",    opts["use_macro"])
+    @printf("  %-22s %s\n",  "use_news:",     opts["use_news"])
     @printf("  %-22s %d\n",  "n_candidates (train):", n_candidates_train)
     @printf("  %-22s %d\n",  "n_candidates (val):",   n_candidates_val)
     println("  train window:          $train_start .. $train_end")
@@ -388,6 +378,7 @@ function save_run_config(opts::Dict, path::String, n_candidates_train::Int, n_ca
                 "gae_lambda"                => GAE_LAMBDA,
                 "clip_eps"                  => CLIP_EPS,
                 "value_loss_coef"           => VALUE_LOSS_COEF,
+                "news_decision_severity_threshold" => NEWS_DECISION_SEVERITY_THRESHOLD,
             ),
         )))
     end
@@ -423,8 +414,33 @@ function load_run_config!(opts::Dict, explicit::Set{String}, path::String)
         else
             opts[k] = v
         end
+        # Mark as settled, same as a CLI flag — this is what stops the
+        # weaker prepare_training_data.jl-persisted date-window layer
+        # (applied right before resolve_date_windows, see main()) from
+        # overwriting a value --resume just restored.
+        push!(explicit, k)
     end
     @info "Loaded saved run config from $path for flags not given explicitly"
+    return nothing
+end
+
+"""
+Fill in any of `train_start`/`train_end`/`val_start`/`val_end` NOT already
+settled (a CLI flag, or a `--resume`d run's saved config — both already in
+`explicit` by the time this runs) from `prepare_training_data.jl`'s
+persisted `date_window.json`, if one exists. This is the weakest of the
+three layers — CLI flag, then `--resume`'s saved config, then this — and is
+what lets `train_trading_policy.jl` reproduce the exact window
+`prepare_training_data.jl` was run with, with no date flags of its own.
+No-op (no warning — this file is optional, unlike `run_config.json` on an
+explicit `--resume`) if `path` doesn't exist."""
+function load_date_window!(opts::Dict, explicit::Set{String}, path::String)
+    isfile(path) || return nothing
+    train_start, train_end, val_start, val_end = load_date_window(path)
+    for (k, v) in zip(DATE_OPT_KEYS, (train_start, train_end, val_start, val_end))
+        k in explicit || (opts[k] = v)
+    end
+    @info "Loaded resolved date window from $path for date flags not given explicitly/by --resume"
     return nothing
 end
 
@@ -433,6 +449,8 @@ function main()
     mkpath(DATA_DIR)
     config_path = joinpath(DATA_DIR, "run_config.json")
     opts["resume"] && load_run_config!(opts, explicit, config_path)
+    date_window_path = joinpath(DATA_DIR, "date_window.json")
+    load_date_window!(opts, explicit, date_window_path)
 
     isfile(CACHE_FILE) || error(
         "Not found: $CACHE_FILE\nRun: julia --project=packages/StockSwingPredictor scripts/build_cache.jl")
@@ -445,7 +463,12 @@ function main()
     @info "  $(length(cache.companies)) companies cached, " *
           "$(length(universe.train)) train / $(length(universe.val)) val candidates in universe"
 
-    cache_start, cache_end = first(cache.dates), last(cache.dates)
+    # Hourly axis, not daily — episodes are hourly-only (see env.jl's
+    # TRAINING_DECISION_GRANULARITY), and hourly's real Kite floor is
+    # shallower than daily's. See prepare_training_data.jl's matching
+    # comment for the concrete numbers that motivated this.
+    cache_start = Date(first(cache.hourly_datetimes))
+    cache_end   = Date(last(cache.hourly_datetimes))
     train_start, train_end, val_start, val_end = resolve_date_windows(
         cache_start, cache_end, opts["val_window"], opts["val_days"],
         opts["train_start"], opts["train_end"], opts["val_start"], opts["val_end"])
@@ -458,7 +481,45 @@ function main()
     val_config   = EpisodeConfig(initial_cash=opts["initial_cash"], start_date=val_start,
                                   end_date=val_end, candidate_universe=universe.val)
 
-    env = TradingGameEnv(cache)
+    macro_cache = nothing
+    if opts["use_macro"]
+        if isdir(MACRO_DIR)
+            @info "Loading macro context from $MACRO_DIR…"
+            macro_cache = build_macro_cache(MACRO_DIR)
+        else
+            @warn "Macro OHLCV dir not found, training without macro context: $MACRO_DIR " *
+                  "(run collect_macro_ohlcv.jl, or pass --no-macro to silence this)"
+        end
+    end
+
+    news_fn = (_env, _s, _h) -> zeros(Float32, N_NEWS_FEATURES)   # same neutral default as TradingGame's internal _zero_news
+    news_hour_indices = Set{Int}()
+    price_overrides   = Dict{Int, Dict{Int, Float32}}()
+    if opts["use_news"]
+        if isfile(opts["news_db"])
+            @info "Loading news features from $(opts["news_db"])…"
+            snapshot_symbols = unique(vcat(universe.train, universe.val))
+            ohlcv_1min_dir   = isdir(OHLCV_1MIN_DIR) ? OHLCV_1MIN_DIR : nothing
+            isnothing(ohlcv_1min_dir) && @warn "No 1-minute OHLCV dir at $OHLCV_1MIN_DIR — " *
+                  "news-instant snapshots will be skipped (every news bar falls back to the hourly close). " *
+                  "Collect it with collect_nse_ohlcv.jl --1min-only / backfill_ohlcv.jl for the candidate universe."
+            news_cache = build_news_feature_cache(cache, opts["news_db"];
+                snapshot_symbols=ohlcv_1min_dir === nothing ? String[] : snapshot_symbols,
+                ohlcv_1min_dir=ohlcv_1min_dir)
+            news_fn = news_feature_fn(news_cache)
+            news_hour_indices = news_cache.decision_hours
+            price_overrides   = news_cache.snapshots
+            n_snapshot_bars = length(price_overrides)
+            @info "  $(length(news_cache.market_events)) classified signals, " *
+                  "$(length(news_hour_indices)) hourly bars at/above severity threshold, " *
+                  "$n_snapshot_bars with a 1-minute instant-price snapshot"
+        else
+            @warn "News signals DB not found, training without news features: $(opts["news_db"]) " *
+                  "(run scripts/backfill_news_signals.jl, or pass --no-news to silence this)"
+        end
+    end
+
+    env = TradingGameEnv(cache; news_hour_indices=news_hour_indices, price_overrides=price_overrides)
 
     checkpoint_path  = joinpath(DATA_DIR, "policy.bson")
     episode_log_path = joinpath(DATA_DIR, "episode_log.jsonl")
@@ -512,6 +573,7 @@ function main()
         live_path=opts["live"] ? joinpath(DATA_DIR, "live_status.json") : "",
         val_curve_path=opts["live"] ? val_curve_path : "",
         iteration_offset=iteration_offset,
+        macro_cache=macro_cache, news_fn=news_fn,
         embed_dim=hp.embed_dim, macro_embed_dim=hp.macro_embed_dim,
         attn_heads=hp.attn_heads, critic_hidden=hp.critic_hidden)
 

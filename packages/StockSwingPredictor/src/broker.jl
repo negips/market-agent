@@ -1,7 +1,7 @@
 """
 Kite Connect broker endpoints: portfolio, positions, funds, orders.
 
-All functions accept a `session` named tuple from `load_kite_session` and return
+All functions accept a `session` (`KiteSession`, from `load_kite_session`) and return
 DataFrames or plain Dicts. The same session token used for historical data works
 for all Kite Connect REST endpoints.
 """
@@ -14,7 +14,7 @@ using HTTP, JSON3, DataFrames, Dates
 Fetch long-term demat holdings from Kite.
 
 # Arguments
-- `session`: named tuple from `load_kite_session`
+- `session`: `KiteSession` from `load_kite_session`
 
 # Returns
 DataFrame with one row per holding:
@@ -22,8 +22,7 @@ DataFrame with one row per holding:
   last_price, close_price, pnl, day_change, day_change_pct
 """
 function get_holdings(session)::DataFrame
-    resp = HTTP.get("$KITE_BASE/portfolio/holdings",
-                    _kite_headers(session); status_exception=false)
+    resp = _kite_get("$KITE_BASE/portfolio/holdings", session; status_exception=false)
     resp.status == 200 || error("Holdings endpoint returned HTTP $(resp.status): $(String(resp.body))")
     data = JSON3.read(String(resp.body))[:data]
     isempty(data) && return DataFrame()
@@ -48,7 +47,7 @@ end
 Fetch open intraday and overnight positions from Kite.
 
 # Arguments
-- `session`: named tuple from `load_kite_session`
+- `session`: `KiteSession` from `load_kite_session`
 - `kind`: `:net` (default) for combined view, `:day` for intraday only
 
 # Returns
@@ -58,8 +57,7 @@ DataFrame with one row per open position:
 Returns empty DataFrame when no positions are open.
 """
 function get_positions(session; kind::Symbol=:net)::DataFrame
-    resp = HTTP.get("$KITE_BASE/portfolio/positions",
-                    _kite_headers(session); status_exception=false)
+    resp = _kite_get("$KITE_BASE/portfolio/positions", session; status_exception=false)
     resp.status == 200 || error("Positions endpoint returned HTTP $(resp.status): $(String(resp.body))")
     body = JSON3.read(String(resp.body))[:data]
     data = kind == :day ? body[:day] : body[:net]
@@ -84,7 +82,7 @@ end
 Fetch available funds and margin utilisation from Kite.
 
 # Arguments
-- `session`: named tuple from `load_kite_session`
+- `session`: `KiteSession` from `load_kite_session`
 - `segment`: `:equity` (default) or `:commodity`
 
 # Returns
@@ -98,8 +96,7 @@ NamedTuple with:
 """
 function get_margins(session; segment::Symbol=:equity)
     seg = segment == :commodity ? "commodity" : "equity"
-    resp = HTTP.get("$KITE_BASE/user/margins/$seg",
-                    _kite_headers(session); status_exception=false)
+    resp = _kite_get("$KITE_BASE/user/margins/$seg", session; status_exception=false)
     resp.status == 200 || error("Margins endpoint returned HTTP $(resp.status): $(String(resp.body))")
     d = JSON3.read(String(resp.body))[:data]
     av = d[:available]
@@ -120,7 +117,7 @@ end
 Fetch today's order book from Kite.
 
 # Arguments
-- `session`: named tuple from `load_kite_session`
+- `session`: `KiteSession` from `load_kite_session`
 
 # Returns
 DataFrame with one row per order:
@@ -129,8 +126,7 @@ DataFrame with one row per order:
 Returns empty DataFrame when no orders have been placed today.
 """
 function get_orders(session)::DataFrame
-    resp = HTTP.get("$KITE_BASE/orders",
-                    _kite_headers(session); status_exception=false)
+    resp = _kite_get("$KITE_BASE/orders", session; status_exception=false)
     resp.status == 200 || error("Orders endpoint returned HTTP $(resp.status): $(String(resp.body))")
     data = JSON3.read(String(resp.body))[:data]
     isempty(data) && return DataFrame()

@@ -157,6 +157,12 @@ function assemble_observation!(hourly::AbstractArray{Float32,3}, macro_ctx::Abst
                 c = raw[i]
                 hourly[i, 1, col] = isnan(c) ? 1f0 : c / anchor
             end
+            # The window's last bar (= the current bar, time `t`) reflects a
+            # news-instant override when one exists, same anchor as the rest
+            # of the window — so the policy sees the price it's about to
+            # trade at, not the enclosing hour's close.
+            ov = _price_override(env, sym_idx)
+            ov !== nothing && (hourly[N_HOURLY_BARS_SHORT, 1, col] = ov / anchor)
         else
             hourly[:, 1, col] .= 0f0
         end
@@ -185,7 +191,7 @@ function assemble_observation!(hourly::AbstractArray{Float32,3}, macro_ctx::Abst
     for h in env.portfolio.holdings
         col = get(sym_col, h.sym_idx, 0)
         col == 0 && continue
-        price = env.cache.hourly_closes[t, h.sym_idx]
+        price = current_price(env, h.sym_idx)
         isnan(price) && continue
         held[col]      = true
         qty_sum[col]  += h.quantity

@@ -115,7 +115,7 @@ Load Kite instruments master for any exchange segment.
 Caches alongside `NSE_INSTRUMENTS_CACHE`; refreshes once per calendar day.
 
 # Arguments
-- `session`: Kite session named tuple
+- `session`: `KiteSession` from `load_kite_session`
 - `exchange`: "NSE", "CDS", "MCX", etc.
 """
 function load_instruments_for_exchange(session; exchange::String)::DataFrame
@@ -126,8 +126,8 @@ function load_instruments_for_exchange(session; exchange::String)::DataFrame
         cache_date == today() && return CSV.read(cache_path, DataFrame)
     end
 
-    resp = HTTP.get("$KITE_BASE/instruments/$exchange";
-                    headers=_kite_headers(session), request_timeout=30)
+    resp = _kite_get("$KITE_BASE/instruments/$exchange", session;
+                      request_timeout=30, status_exception=false)
     resp.status == 200 || error("Kite instruments/$exchange returned HTTP $(resp.status)")
 
     df = CSV.read(IOBuffer(resp.body), DataFrame)
@@ -217,8 +217,7 @@ function fetch_kite_macro_ohlcv(token::Int, from_date::Date, to_date::Date,
                  "?from=$from_s&to=$to_s&continuous=$cont&oi=0"
 
         resp = try
-            HTTP.get(url; headers=_kite_headers(session), request_timeout=30,
-                     status_exception=false)
+            _kite_get(url, session; request_timeout=30, status_exception=false)
         catch e
             @warn "Kite macro fetch failed (token $token, $chunk_start…$chunk_end): $(sprint(showerror, e))"
             chunk_start = chunk_end + Day(1); sleep(0.35); continue
@@ -286,8 +285,7 @@ function fetch_kite_macro_5min(token::Int, from_date::Date, to_date::Date,
                  "?from=$from_s&to=$to_s&continuous=$cont&oi=0"
 
         resp = try
-            HTTP.get(url; headers=_kite_headers(session), request_timeout=30,
-                     status_exception=false)
+            _kite_get(url, session; request_timeout=30, status_exception=false)
         catch e
             @warn "Macro 5min fetch failed (token $token, $chunk_start…$chunk_end): $(sprint(showerror, e))"
             chunk_start = chunk_end + Day(1); sleep(0.35); continue
@@ -419,8 +417,7 @@ function fetch_kite_macro_15min(token::Int, from_date::Date, to_date::Date,
                  "?from=$from_s&to=$to_s&continuous=$cont&oi=0"
 
         resp = try
-            HTTP.get(url; headers=_kite_headers(session), request_timeout=30,
-                     status_exception=false)
+            _kite_get(url, session; request_timeout=30, status_exception=false)
         catch e
             @warn "Macro 15min fetch failed (token $token, $chunk_start…$chunk_end): $(sprint(showerror, e))"
             chunk_start = chunk_end + Day(1); sleep(0.35); continue

@@ -33,7 +33,7 @@ include("poller.jl")
 
 export NewsItem, NewsSignal, PollerConfig
 export fetch_nse_announcements, fetch_bse_announcements, fetch_rss
-export classify_item
+export classify_item, classify_item_ollama
 export run_poller, is_market_hours, append_signal
 
 end

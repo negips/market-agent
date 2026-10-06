@@ -135,6 +135,15 @@ lookup of "the value N trading days ago" possible —
 — rather than needing a search. Maintained by `step!` regardless of which
 mode is actually active (negligible cost: at most one entry per trading day,
 so even a 5-year episode is only ~1,250 entries).
+
+`price_overrides` is the "instant market snapshot" mechanism: `hour_idx =>
+(sym_idx => price)`, built by `news_features.jl` from 1-minute OHLCV taken at
+a qualifying news event's exact timestamp, not the hourly close — see
+`current_price`'s docstring (`env.jl`) for how every "price right now" read
+in the simulator consults this first. Empty by default, which makes
+`current_price` fall through to the plain hourly close unconditionally — the
+override is purely additive, so every existing test/caller that never passes
+one sees byte-for-byte the same prices as before this field existed.
 """
 mutable struct TradingGameEnv
     cache             :: InferenceCache
@@ -150,11 +159,13 @@ mutable struct TradingGameEnv
     reward_window_start_value    :: Float64
     daily_value_base_date_idx    :: Int
     daily_values                 :: Vector{Float64}
+    price_overrides   :: Dict{Int, Dict{Int, Float32}}
 end
 
-function TradingGameEnv(cache::InferenceCache; news_hour_indices::Set{Int}=Set{Int}())
+function TradingGameEnv(cache::InferenceCache; news_hour_indices::Set{Int}=Set{Int}(),
+                         price_overrides::Dict{Int, Dict{Int, Float32}}=Dict{Int, Dict{Int, Float32}}())
     TradingGameEnv(cache, Portfolio(cash=0.0), nothing, 0, Date(1900, 1, 1), 0,
-                    Set{Int}(), Int[], news_hour_indices, 0, 0.0, 0, Float64[])
+                    Set{Int}(), Int[], news_hour_indices, 0, 0.0, 0, Float64[], price_overrides)
 end
 
 """One executed trade (forced exit, voluntary sell, or buy) — `StepResult.info["trades"]`

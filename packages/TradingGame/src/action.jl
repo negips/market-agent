@@ -107,7 +107,7 @@ function resolve_actions(env::TradingGameEnv, raw::JointAction, date_idx::Int;
                 share    = max(0.0, b.weight) / total_weight
                 notional = cash * share / (1 + FEE_RATE)
 
-                existing_value = sum(h.quantity * env.cache.hourly_closes[env.current_hour_idx, h.sym_idx]
+                existing_value = sum(h.quantity * current_price(env, h.sym_idx)
                                       for h in env.portfolio.holdings if h.sym_idx == b.sym_idx; init=0.0)
                 room     = MAX_POSITION_FRACTION * total_value - existing_value
                 notional = min(notional, max(0.0, room))

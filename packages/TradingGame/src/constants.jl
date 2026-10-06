@@ -161,6 +161,16 @@ const N_PORTFOLIO_SCALARS = 4
 # ── RL training (used from Stage 3 onward; declared here as the single source
 #    of truth so `policy.jl`/`ppo.jl`/`train.jl` never redefine them) ───────────
 
+"""Minimum `severity` (NewsMonitor's 0–1 scale — see `NewsMonitor.llm_classify.jl`'s
+calibration text: 0.5 = moderate impact, 1.0 = major market-moving) for a
+classified signal to add its hourly bar to `TradingGameEnv.news_hour_indices`
+(`news_features.jl`'s `build_news_feature_cache`) — routine/noise
+announcements (severity ~0.1) don't count as a news-triggered decision
+point. Currently a no-op under `TRAINING_DECISION_GRANULARITY == HOURLY`
+(every bar is already a decision bar — see `env.jl`'s module docstring);
+kept so the set is populated correctly once `MINUTE_15` lands."""
+const NEWS_DECISION_SEVERITY_THRESHOLD = 0.5
+
 const GAMMA               = 0.99
 const GAE_LAMBDA           = 0.95
 const CLIP_EPS              = 0.2

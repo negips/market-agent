@@ -105,7 +105,7 @@ Output: $OUTPUT_FILE
         elseif a == "--disjoint"; disjoint = true; i += 1
         elseif a == "--seed";     seed = parse(Int, ARGS[i+1]); i += 2
         elseif a == "--band";     push!(bands, _parse_band(ARGS[i+1])); i += 2
-        else; i += 1
+        else; @warn "Unknown argument: $a"; i += 1
         end
     end
 

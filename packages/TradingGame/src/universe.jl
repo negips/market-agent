@@ -291,11 +291,22 @@ end
 """Field-reflection dump of a `UniverseStrategy`'s parameters, for the
 snapshot file's `strategy_params` — a new strategy serializes automatically,
 no change needed here. `quotas` (a `Vector{Pair}`, which `JSON3` has no native
-encoding for) is flattened to an array of `[[lo, hi], quota]` triples."""
+encoding for) is flattened to an array of `[[lo, hi], quota]` triples.
+
+`hi` is commonly `Inf` for an open-ended band (e.g. `--band 5000:inf:15`,
+see `build_market_universe_snapshot.jl`) — raw JSON has no representation
+for infinity and `JSON3.write` errors on it outright, so `_json_safe_bound`
+writes it as the string `"inf"`/`"-inf"` instead (matching the CLI's own
+spelling). Write-only: `strategy_params` is never read back by
+`load_universe_snapshot` (informational/provenance only — see this file's
+module docstring), so there's no corresponding parse path to keep in sync."""
 _strategy_params(s::UniverseStrategy) =
     Dict(string(f) => _strategy_param_value(getfield(s, f)) for f in fieldnames(typeof(s)))
-_strategy_param_value(v::Vector{<:Pair}) = [[[p.first[1], p.first[2]], p.second] for p in v]
+_strategy_param_value(v::Vector{<:Pair}) =
+    [[[_json_safe_bound(p.first[1]), _json_safe_bound(p.first[2])], p.second] for p in v]
 _strategy_param_value(v) = v
+
+_json_safe_bound(x::Float64) = isinf(x) ? (x > 0 ? "inf" : "-inf") : x
 
 """
 Save a built train/val universe pair (rank/draw order preserved) as JSON at

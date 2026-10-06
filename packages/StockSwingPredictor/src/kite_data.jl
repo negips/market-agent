@@ -59,10 +59,29 @@ const SECTOR_TO_INDEX = Dict(
 )
 
 """
-Read the Kite session from kite_session.json.
-Returns `(api_key, access_token)` or throws if not found / expired.
+A Kite Connect session: `api_key`/`access_token` for the `Authorization`
+header, plus `repo_root` so the session can re-authenticate itself (see
+`relogin_kite!`) without every caller needing to separately track where the
+repo lives. Mutable so a mid-run token refresh (`_kite_get`'s automatic
+403-retry, or an explicit `relogin_kite!` call) is immediately visible to
+every holder of the same session object — a long-running script loops
+hundreds of calls over one `session` it loaded once at startup; after a
+refresh, the very next call anywhere in that loop already sees the new
+token, with nothing re-loaded or re-passed.
 """
-function load_kite_session(repo_root::String)
+mutable struct KiteSession
+    api_key      :: String
+    access_token :: String
+    repo_root    :: String
+end
+
+"""
+Read the Kite session from kite_session.json.
+Throws if not found. Warns (does not throw) if the saved date doesn't match
+today — the token itself may still be valid for a few hours past midnight;
+`_kite_get`'s automatic 403-retry is what actually catches genuine expiry.
+"""
+function load_kite_session(repo_root::String)::KiteSession
     path = joinpath(repo_root, "sidecar", "kite_session.json")
     isfile(path) || error("No Kite session found. Run: node sidecar/kite_login.js")
     s = JSON3.read(read(path, String))
@@ -71,7 +90,7 @@ function load_kite_session(repo_root::String)
         @warn "Kite session is from $date_str — token may be stale. " *
               "Run: node sidecar/kite_login.js"
     end
-    return (api_key=string(s.api_key), access_token=string(s.access_token))
+    return KiteSession(string(s.api_key), string(s.access_token), repo_root)
 end
 
 function _kite_headers(session)
@@ -80,12 +99,145 @@ function _kite_headers(session)
 end
 
 """
+Force a fresh Kite login by running `sidecar/kite_login.js` — Playwright-
+driven, since Zerodha's login page has no plain REST endpoint to
+re-authenticate against directly (see that script's own docstring for the
+TOTP + OAuth redirect flow). Blocking: launches a real (visible) browser and
+waits for the OAuth redirect, typically a few seconds, requires a display.
+Reads `.env` itself (same as the script does standalone), so no credentials
+need to be threaded through Julia.
+
+Two methods: `relogin_kite!(repo_root)` bootstraps a brand new `KiteSession`
+(no existing session file required — the first run of the day); `relogin_kite!
+(session)` refreshes an existing session **in place**, so every other
+holder of that same object picks up the new token too (see `KiteSession`'s
+docstring). This is what `_kite_get` calls automatically on a 403; call it
+directly to force a refresh proactively (e.g. right before an overnight job
+you know will span the token's expiry).
+"""
+function relogin_kite!(repo_root::String)::KiteSession
+    login_script = joinpath(repo_root, "sidecar", "kite_login.js")
+    isfile(login_script) || error("relogin_kite!: not found: $login_script")
+    run(`node $login_script`)
+    return load_kite_session(repo_root)
+end
+
+function relogin_kite!(session::KiteSession)::KiteSession
+    fresh = relogin_kite!(session.repo_root)
+    session.api_key      = fresh.api_key
+    session.access_token = fresh.access_token
+    return session
+end
+
+"""Minimum gap between relogin ATTEMPTS (successful or not), shared across
+every `_kite_get` call regardless of which symbol/chunk/function triggered
+it. Without this, a script with hundreds of chunks across many symbols
+(`collect_nse_ohlcv.jl`, a multi-year backfill, …) would launch one browser
+login per 403 it sees — if the underlying problem isn't a one-off (network
+drops mid-relogin, Zerodha's login page changes, TOTP drifts), every one of
+those chunks hits 403 independently and `_kite_get` had no memory between
+calls, so it'd hammer out a fresh login attempt for every single one.
+Module-level (not per-`KiteSession`) because this codebase only ever uses
+one Kite account at a time — a global cooldown is the correct granularity,
+not an added complication."""
+const KITE_RELOGIN_COOLDOWN_SECONDS = 60.0
+const _LAST_KITE_RELOGIN_ATTEMPT = Ref(-Inf)
+
+"""Default per-request timeouts (seconds) applied to every Kite HTTP call
+that doesn't explicitly override them. Without these, a connection that's
+accepted at the TCP level but then never sends a response (or goes silent
+mid-response) blocks `HTTP.get` indefinitely — observed live: a
+`backfill_ohlcv.jl` hourly chunk stalled for 5+ hours on a single request,
+zero CPU, zero error, zero progress, because nothing bounded it. Three
+separate stages can each hang independently, so all three are set:
+`connect_timeout` (TCP+TLS handshake), `request_timeout` (overall deadline
+for the whole request/response), `read_idle_timeout` (max gap between
+reads once a response starts streaming)."""
+const KITE_CONNECT_TIMEOUT_SECONDS    = 15.0
+const KITE_REQUEST_TIMEOUT_SECONDS    = 30.0
+const KITE_READ_IDLE_TIMEOUT_SECONDS  = 30.0
+
+"""
+`HTTP.get` against a Kite endpoint, with ONE automatic re-authenticate-and-
+retry if the response is a 403 (expired token) — every `fetch_ohlcv*`/
+`load_instruments`/broker/macro function here calls this instead of raw
+`HTTP.get(url; headers=_kite_headers(session), ...)`, so a token expiring
+mid-run (an overnight job spanning the daily expiry boundary) is handled in
+exactly one place rather than needing matching retry logic duplicated
+across every call site. `kwargs` forward straight to `HTTP.get`; the three
+timeout keywords above are applied as defaults here (not left to each call
+site to remember) and a caller passing its own `connect_timeout`/
+`request_timeout`/`read_idle_timeout` still overrides them as normal.
+
+A connection failure (network down, DNS, a timeout firing) throws straight
+out of the first `HTTP.get` call below, before `resp` even exists — this
+function never gets a chance to inspect a status code, so relogin is never
+considered for that case at all; it propagates to the caller's own
+try/catch exactly as it always did, with no behaviour change from before
+this function existed.
+
+A 403 is a different case: Kite's server DID respond, meaning the network
+is clearly up, and the token is genuinely invalid. Only here does a relogin
+get attempted — at most once per `KITE_RELOGIN_COOLDOWN_SECONDS`, win or
+lose, enforced by `_LAST_KITE_RELOGIN_ATTEMPT` — so a persistent problem
+(not just an expired token, but a genuinely broken login) degrades to "log
+a warning and let the caller's existing status-check handle the still-403
+response" instead of retrying a losing battle on every single call. Either
+way this returns a response exactly as `HTTP.get` would have, never an
+exception from the relogin step itself, so every existing caller's status-
+code handling downstream needs no change at all.
+
+Every relogin outcome (skipped on cooldown, attempted, succeeded, failed)
+is logged via `_log_summary(active_script_log(), ...)` so it lands in
+whichever script's log file is currently open, not just the live terminal
+— `relogin_kite!` shells out to a Playwright-driven browser login with no
+timeout of its own, so this is often the ONLY record of why a run stalled
+for an extended stretch (observed live: a single relogin took over an
+hour) once the terminal scrolls past it.
+"""
+function _kite_get(url::String, session::KiteSession;
+                    connect_timeout::Real=KITE_CONNECT_TIMEOUT_SECONDS,
+                    request_timeout::Real=KITE_REQUEST_TIMEOUT_SECONDS,
+                    read_idle_timeout::Real=KITE_READ_IDLE_TIMEOUT_SECONDS,
+                    kwargs...)
+    resp = HTTP.get(url; headers=_kite_headers(session), connect_timeout,
+                     request_timeout, read_idle_timeout, kwargs...)
+    resp.status != 403 && return resp
+
+    elapsed = time() - _LAST_KITE_RELOGIN_ATTEMPT[]
+    if elapsed < KITE_RELOGIN_COOLDOWN_SECONDS
+        _log_summary(active_script_log(),
+            "Kite token expired (403) — skipping relogin, last attempt " *
+            "$(round(elapsed, digits=1))s ago (cooldown $(KITE_RELOGIN_COOLDOWN_SECONDS)s)";
+            warn=true)
+        return resp
+    end
+
+    _LAST_KITE_RELOGIN_ATTEMPT[] = time()
+    _log_summary(active_script_log(), "Kite token expired (403) — re-authenticating…"; warn=true)
+    relogin_start = time()
+    try
+        relogin_kite!(session)
+        _log_summary(active_script_log(),
+            "Kite relogin succeeded ($(round(time() - relogin_start, digits=1))s)")
+        return HTTP.get(url; headers=_kite_headers(session), connect_timeout,
+                         request_timeout, read_idle_timeout, kwargs...)
+    catch e
+        _log_summary(active_script_log(),
+            "Kite relogin failed after $(round(time() - relogin_start, digits=1))s, " *
+            "will not retry again for $(KITE_RELOGIN_COOLDOWN_SECONDS)s: $(sprint(showerror, e))";
+            warn=true)
+        return resp
+    end
+end
+
+"""
 Download the instrument list from Kite for a given exchange and cache it locally.
 Returns a DataFrame with columns: instrument_token, tradingsymbol, name,
 instrument_type, segment, exchange.
 
 # Arguments
-- `session`: named tuple from `load_kite_session`
+- `session`: `KiteSession` from `load_kite_session`
 - `exchange`: `"NSE"` (default) or `"BSE"`
 - `refresh`: force re-download even if cache exists (default false)
 """
@@ -95,8 +247,8 @@ function load_instruments(session; exchange::String="NSE", refresh::Bool=false):
         return CSV.read(cache, DataFrame)
     end
 
-    resp = HTTP.get("$KITE_BASE/instruments/$exchange";
-                    headers=_kite_headers(session), request_timeout=30)
+    resp = _kite_get("$KITE_BASE/instruments/$exchange", session;
+                      request_timeout=30, status_exception=false)
     resp.status == 200 || error("Instruments endpoint returned HTTP $(resp.status)")
 
     df = CSV.read(IOBuffer(resp.body), DataFrame)
@@ -162,7 +314,7 @@ This function automatically chunks the date range and concatenates the results.
 # Arguments
 - `token`: Kite instrument_token (integer)
 - `from_date`, `to_date`: inclusive date range
-- `session`: named tuple with api_key, access_token
+- `session`: `KiteSession` (api_key, access_token, repo_root)
 
 # Returns
 DataFrame with columns: date, open, high, low, close, volume
@@ -180,8 +332,7 @@ function fetch_ohlcv(token::Int, from_date::Date, to_date::Date, session)::DataF
         url = "$KITE_BASE/instruments/historical/$token/day?from=$from_s&to=$to_s&continuous=0&oi=0"
 
         resp = try
-            HTTP.get(url; headers=_kite_headers(session), request_timeout=20,
-                     status_exception=false)
+            _kite_get(url, session; request_timeout=20, status_exception=false)
         catch e
             @warn "Daily fetch error for token $token ($chunk_start…$chunk_end): $(sprint(showerror, e))"
             chunk_start = chunk_end + Day(1)
@@ -240,7 +391,7 @@ is expected to already be a granularity-specific directory (e.g.
 function collect_ohlcv(symbols::Vector{String}, token_map::Dict{String,Int},
                        session, out_dir::String,
                        from_date::Date, to_date::Date;
-                       refresh::Bool=false)
+                       refresh::Bool=false, slog::Union{ScriptLog, Nothing}=nothing)
     mkpath(out_dir)
     ok = skipped = failed = 0
     total = length(symbols)
@@ -253,17 +404,17 @@ function collect_ohlcv(symbols::Vector{String}, token_map::Dict{String,Int},
         else
             token = get(token_map, sym, nothing)
             if isnothing(token)
-                @warn "[$i/$total] No instrument token for $sym — skipping"
+                _log_summary(slog, "[$i/$total] No instrument token for $sym — skipping"; warn=true)
                 failed += 1
             else
                 df = fetch_ohlcv(token, from_date, to_date, session)
                 if isempty(df)
                     failed += 1
-                    @info "[$i/$total] $sym — 0 bars"
+                    _log_detail(slog, "[$i/$total] $sym — 0 bars")
                 else
                     CSV.write(path, df)
                     ok += 1
-                    @info "[$i/$total] $sym — $(nrow(df)) days"
+                    _log_detail(slog, "[$i/$total] $sym — $(nrow(df)) days")
                 end
                 sleep(0.35)   # ~3 req/s rate limit
             end
@@ -271,11 +422,11 @@ function collect_ohlcv(symbols::Vector{String}, token_map::Dict{String,Int},
 
         if i % 100 == 0 || i == total
             elapsed = round(Int, time() - t_start)
-            @info "  ── [$i/$total] $ok fetched, $skipped skipped, $failed failed — $(elapsed)s elapsed"
+            _log_summary(slog, "  ── [$i/$total] $ok fetched, $skipped skipped, $failed failed — $(elapsed)s elapsed")
         end
     end
 
-    @info "Daily OHLCV done: $ok fetched, $skipped skipped, $failed failed"
+    _log_summary(slog, "Daily OHLCV done: $ok fetched, $skipped skipped, $failed failed")
 end
 
 """
@@ -320,8 +471,7 @@ function fetch_ohlcv_hourly(token::Int, from_date::Date, to_date::Date,
         url = "$KITE_BASE/instruments/historical/$token/60minute?from=$from_s&to=$to_s&continuous=0&oi=0"
 
         resp = try
-            HTTP.get(url; headers=_kite_headers(session), request_timeout=30,
-                     status_exception=false)
+            _kite_get(url, session; request_timeout=30, status_exception=false)
         catch e
             @warn "Hourly fetch error for token $token ($chunk_start…$chunk_end): $(sprint(showerror, e))"
             chunk_start = chunk_end + Day(1)
@@ -370,7 +520,7 @@ the exchange root.
 function collect_ohlcv_hourly(symbols::Vector{String}, token_map::Dict{String,Int},
                                session, out_dir::String,
                                from_date::Date, to_date::Date;
-                               refresh::Bool=false)
+                               refresh::Bool=false, slog::Union{ScriptLog, Nothing}=nothing)
     mkpath(out_dir)
     ok = skipped = failed = 0
     total = length(symbols)
@@ -383,28 +533,28 @@ function collect_ohlcv_hourly(symbols::Vector{String}, token_map::Dict{String,In
         else
             token = get(token_map, sym, nothing)
             if isnothing(token)
-                @warn "[$i/$total] No token for $sym — skipping hourly"
+                _log_summary(slog, "[$i/$total] No token for $sym — skipping hourly"; warn=true)
                 failed += 1
             else
                 df = fetch_ohlcv_hourly(token, from_date, to_date, session)
                 if isempty(df)
                     failed += 1
-                    @info "[$i/$total] $sym hourly — 0 bars"
+                    _log_detail(slog, "[$i/$total] $sym hourly — 0 bars")
                 else
                     CSV.write(path, df)
                     ok += 1
-                    @info "[$i/$total] $sym hourly — $(nrow(df)) bars"
+                    _log_detail(slog, "[$i/$total] $sym hourly — $(nrow(df)) bars")
                 end
             end
         end
 
         if i % 100 == 0 || i == total
             elapsed = round(Int, time() - t_start)
-            @info "  ── [$i/$total] $ok fetched, $skipped skipped, $failed failed — $(elapsed)s elapsed"
+            _log_summary(slog, "  ── [$i/$total] $ok fetched, $skipped skipped, $failed failed — $(elapsed)s elapsed")
         end
     end
 
-    @info "Hourly OHLCV done: $ok fetched, $skipped skipped, $failed failed"
+    _log_summary(slog, "Hourly OHLCV done: $ok fetched, $skipped skipped, $failed failed")
 end
 
 """
@@ -445,8 +595,7 @@ function fetch_ohlcv_5min(token::Int, from_date::Date, to_date::Date,
               "?from=$from_s&to=$to_s&continuous=0&oi=0"
 
         resp = try
-            HTTP.get(url; headers=_kite_headers(session), request_timeout=30,
-                     status_exception=false)
+            _kite_get(url, session; request_timeout=30, status_exception=false)
         catch e
             @warn "5min fetch error for token $token ($chunk_start…$chunk_end): $(sprint(showerror, e))"
             chunk_start = chunk_end + Day(1); sleep(0.35); continue
@@ -492,7 +641,7 @@ the exchange root.
 function collect_ohlcv_5min(symbols::Vector{String}, token_map::Dict{String,Int},
                               session, out_dir::String,
                               from_date::Date, to_date::Date;
-                              refresh::Bool=false)
+                              refresh::Bool=false, slog::Union{ScriptLog, Nothing}=nothing)
     mkpath(out_dir)
     ok = skipped = failed = 0
     total = length(symbols)
@@ -505,28 +654,28 @@ function collect_ohlcv_5min(symbols::Vector{String}, token_map::Dict{String,Int}
         else
             token = get(token_map, sym, nothing)
             if isnothing(token)
-                @warn "[$i/$total] No token for $sym — skipping 5min"
+                _log_summary(slog, "[$i/$total] No token for $sym — skipping 5min"; warn=true)
                 failed += 1
             else
                 df = fetch_ohlcv_5min(token, from_date, to_date, session)
                 if isempty(df)
                     failed += 1
-                    @info "[$i/$total] $sym 5min — 0 bars"
+                    _log_detail(slog, "[$i/$total] $sym 5min — 0 bars")
                 else
                     CSV.write(path, df)
                     ok += 1
-                    @info "[$i/$total] $sym 5min — $(nrow(df)) bars"
+                    _log_detail(slog, "[$i/$total] $sym 5min — $(nrow(df)) bars")
                 end
             end
         end
 
         if i % 100 == 0 || i == total
             elapsed = round(Int, time() - t_start)
-            @info "  ── [$i/$total] $ok fetched, $skipped skipped, $failed failed — $(elapsed)s elapsed"
+            _log_summary(slog, "  ── [$i/$total] $ok fetched, $skipped skipped, $failed failed — $(elapsed)s elapsed")
         end
     end
 
-    @info "5min OHLCV done: $ok fetched, $skipped skipped, $failed failed"
+    _log_summary(slog, "5min OHLCV done: $ok fetched, $skipped skipped, $failed failed")
 end
 
 """
@@ -571,8 +720,7 @@ function fetch_ohlcv_15min(token::Int, from_date::Date, to_date::Date,
               "?from=$from_s&to=$to_s&continuous=0&oi=0"
 
         resp = try
-            HTTP.get(url; headers=_kite_headers(session), request_timeout=30,
-                     status_exception=false)
+            _kite_get(url, session; request_timeout=30, status_exception=false)
         catch e
             @warn "15min fetch error for token $token ($chunk_start…$chunk_end): $(sprint(showerror, e))"
             chunk_start = chunk_end + Day(1); sleep(0.35); continue
@@ -618,7 +766,7 @@ the exchange root.
 function collect_ohlcv_15min(symbols::Vector{String}, token_map::Dict{String,Int},
                                session, out_dir::String,
                                from_date::Date, to_date::Date;
-                               refresh::Bool=false)
+                               refresh::Bool=false, slog::Union{ScriptLog, Nothing}=nothing)
     mkpath(out_dir)
     ok = skipped = failed = 0
     total = length(symbols)
@@ -631,28 +779,28 @@ function collect_ohlcv_15min(symbols::Vector{String}, token_map::Dict{String,Int
         else
             token = get(token_map, sym, nothing)
             if isnothing(token)
-                @warn "[$i/$total] No token for $sym — skipping 15min"
+                _log_summary(slog, "[$i/$total] No token for $sym — skipping 15min"; warn=true)
                 failed += 1
             else
                 df = fetch_ohlcv_15min(token, from_date, to_date, session)
                 if isempty(df)
                     failed += 1
-                    @info "[$i/$total] $sym 15min — 0 bars"
+                    _log_detail(slog, "[$i/$total] $sym 15min — 0 bars")
                 else
                     CSV.write(path, df)
                     ok += 1
-                    @info "[$i/$total] $sym 15min — $(nrow(df)) bars"
+                    _log_detail(slog, "[$i/$total] $sym 15min — $(nrow(df)) bars")
                 end
             end
         end
 
         if i % 100 == 0 || i == total
             elapsed = round(Int, time() - t_start)
-            @info "  ── [$i/$total] $ok fetched, $skipped skipped, $failed failed — $(elapsed)s elapsed"
+            _log_summary(slog, "  ── [$i/$total] $ok fetched, $skipped skipped, $failed failed — $(elapsed)s elapsed")
         end
     end
 
-    @info "15min OHLCV done: $ok fetched, $skipped skipped, $failed failed"
+    _log_summary(slog, "15min OHLCV done: $ok fetched, $skipped skipped, $failed failed")
 end
 
 """
@@ -665,6 +813,56 @@ function load_cached_ohlcv_15min(symbol::String, out_dir::String)::DataFrame
 end
 
 # ── 1-minute OHLCV ───────────────────────────────────────────────────────────
+
+"""
+Fetch 1-minute OHLCV for `token` over a short, EXACT datetime window
+(`from_dt`/`to_dt`, to-the-minute — not whole trading days like
+`fetch_ohlcv_1min`). One single Kite historical-data call, no chunking —
+intended for a window of at most a couple of hours (e.g. `fetch_news_
+snapshot_ohlcv.jl`'s "just the few minutes around a news timestamp" use
+case), never a multi-day range.
+
+# Returns
+DataFrame with columns: datetime, open, high, low, close, volume. Sorted
+ascending by datetime. Returns empty DataFrame on failure or if the window
+contains no bars (e.g. outside market hours).
+"""
+function fetch_ohlcv_1min_window(token::Int, from_dt::DateTime, to_dt::DateTime, session)::DataFrame
+    from_s = Dates.format(from_dt, "yyyy-mm-dd") * "+" * Dates.format(from_dt, "HH:MM:SS")
+    to_s   = Dates.format(to_dt,   "yyyy-mm-dd") * "+" * Dates.format(to_dt,   "HH:MM:SS")
+    url = "$KITE_BASE/instruments/historical/$token/minute" *
+          "?from=$from_s&to=$to_s&continuous=0&oi=0"
+
+    resp = try
+        _kite_get(url, session; request_timeout=30, status_exception=false)
+    catch e
+        @warn "1min window fetch error for token $token ($from_dt…$to_dt): $(sprint(showerror, e))"
+        return DataFrame()
+    end
+
+    if resp.status != 200
+        resp.status == 400 ?
+            @debug("1min window HTTP 400 for token $token ($from_dt…$to_dt)") :
+            @warn "1min window HTTP $(resp.status) for token $token ($from_dt…$to_dt)"
+        return DataFrame()
+    end
+
+    raw = try JSON3.read(resp.body) catch; nothing end
+    isnothing(raw) && return DataFrame()
+    cd   = get(raw, :data, nothing)
+    carr = isnothing(cd) ? nothing : get(cd, :candles, nothing)
+    (isnothing(carr) || isempty(carr)) && return DataFrame()
+
+    rows = [(
+        datetime = DateTime(string(c[1])[1:19], "yyyy-mm-ddTHH:MM:SS"),
+        open     = Float64(c[2]),
+        high     = Float64(c[3]),
+        low      = Float64(c[4]),
+        close    = Float64(c[5]),
+        volume   = Float64(c[6]),
+    ) for c in carr]
+    return sort!(DataFrame(rows), :datetime)
+end
 
 """
 Fetch 1-minute OHLCV candles from Kite for one instrument.
@@ -695,8 +893,7 @@ function fetch_ohlcv_1min(token::Int, from_date::Date, to_date::Date,
               "?from=$from_s&to=$to_s&continuous=0&oi=0"
 
         resp = try
-            HTTP.get(url; headers=_kite_headers(session), request_timeout=30,
-                     status_exception=false)
+            _kite_get(url, session; request_timeout=30, status_exception=false)
         catch e
             @warn "1min fetch error for token $token ($chunk_start…$chunk_end): $(sprint(showerror, e))"
             chunk_start = chunk_end + Day(1); sleep(0.35); continue
@@ -742,7 +939,7 @@ the exchange root.
 function collect_ohlcv_1min(symbols::Vector{String}, token_map::Dict{String,Int},
                              session, out_dir::String,
                              from_date::Date, to_date::Date;
-                             refresh::Bool=false)
+                             refresh::Bool=false, slog::Union{ScriptLog, Nothing}=nothing)
     mkpath(out_dir)
     ok = skipped = failed = 0
     total = length(symbols)
@@ -755,28 +952,28 @@ function collect_ohlcv_1min(symbols::Vector{String}, token_map::Dict{String,Int}
         else
             token = get(token_map, sym, nothing)
             if isnothing(token)
-                @warn "[$i/$total] No token for $sym — skipping 1min"
+                _log_summary(slog, "[$i/$total] No token for $sym — skipping 1min"; warn=true)
                 failed += 1
             else
                 df = fetch_ohlcv_1min(token, from_date, to_date, session)
                 if isempty(df)
                     failed += 1
-                    @info "[$i/$total] $sym 1min — 0 bars"
+                    _log_detail(slog, "[$i/$total] $sym 1min — 0 bars")
                 else
                     CSV.write(path, df)
                     ok += 1
-                    @info "[$i/$total] $sym 1min — $(nrow(df)) bars"
+                    _log_detail(slog, "[$i/$total] $sym 1min — $(nrow(df)) bars")
                 end
             end
         end
 
         if i % 100 == 0 || i == total
             elapsed = round(Int, time() - t_start)
-            @info "  ── [$i/$total] $ok fetched, $skipped skipped, $failed failed — $(elapsed)s elapsed"
+            _log_summary(slog, "  ── [$i/$total] $ok fetched, $skipped skipped, $failed failed — $(elapsed)s elapsed")
         end
     end
 
-    @info "1min OHLCV done: $ok fetched, $skipped skipped, $failed failed"
+    _log_summary(slog, "1min OHLCV done: $ok fetched, $skipped skipped, $failed failed")
 end
 
 """
