@@ -307,16 +307,23 @@ of exchange:
    contain a hyphen, and none of those are a settlement/series marker —
    e.g. `BAJAJ-AUTO` is just how BSE spells the ticker). The name field is
    the only signal BSE gives for these.
-5. `_FUND_NAME_RE` — `"MUTUAL FUND"` in the `name` field: exchange-listed
-   mutual fund scheme units (fixed-maturity plans, closed-end debt
-   schemes), not company stock. 99 BSE rows across 17 AMCs (Axis, HDFC,
-   ICICI Prudential, SBI, Nippon India, …), zero on NSE. Needed because
-   the AMC tags these inconsistently — of one Nippon India FMP product's
-   four numbered series, `07`/`09` have a blank `name` (caught by rule 1)
-   and `08` happens to start with a digit the symbol-regex below also
-   catches, but `11` (`11ADD`, `11ADR`, …) has a non-empty, non-debt-
-   keyword name (`"NIPPON INDIA MUTUAL FUND"`) and a symbol starting with
-   `1`, so nothing before this rule caught it.
+5. `_FUND_NAME_RE`/`_ETF_NAME_RE` — whole-word `FUND`/`ETF` in the `name`
+   field. `_FUND_NAME_RE` catches exchange-listed mutual fund scheme units
+   (fixed-maturity plans, closed-end debt schemes — 21 distinct names
+   across 17 AMCs on BSE, e.g. `"NIPPON INDIA MUTUAL FUND"`, plus the
+   non-AMC closed-end fund `"FIRST CUSTODIAN FUND (INDIA) LTD"`) as well
+   as catching `08`/`11`-series Nippon FMP codes whose symbol alone gives
+   no hint (`11ADD`, `11ADR`, …; the AMC tags these inconsistently — some
+   series have a blank `name`, caught by rule 1, this one doesn't).
+   `_ETF_NAME_RE` catches exchange-traded funds: verified these were
+   previously **completely unfiltered** — 300 of 3,648 NSE survivors and
+   236 of 5,409 BSE survivors (`NIFTYBEES`, `GOLDBEES`, `BANKBEES`, and
+   hundreds of sectoral/thematic/gold/silver/liquid ETFs from every major
+   AMC) were nominal "EQ" rows with no debt/trust/fund keyword to catch
+   them, since `ETF` was never checked for at all. Verified against the
+   full dump that neither regex has a false-positive risk: every `FUND`-
+   or `ETF`-named `EQ` row on both exchanges is a genuine fund vehicle,
+   none is an operating company's own name.
 
 BSE additionally needs two more checks, since many of its debt instruments
 carry cryptic, non-descriptive names (e.g. `773CG2034` named just
@@ -367,7 +374,8 @@ const _BSE_DEBT_CODE_NAME_RE  = r"^[\d.]+[A-Za-z].*\d$"
 const _DEBT_NAME_RE      = r"\bSDL\b|\bGOI\b|TBILL|GOLD\s?BONDS?|\bNCD\b|DEBENTURE|\bBOND\b"i
 const _EXCLUDED_SUFFIXES = ("-RR", "-IV", "-E1", "-BE", "-BZ", "-BL", "-ST")
 const _TRUST_NAME_RE     = r"\bREIT\b|\bINVIT\b"i
-const _FUND_NAME_RE      = r"MUTUAL FUND"i
+const _FUND_NAME_RE      = r"\bFUND\b"i
+const _ETF_NAME_RE       = r"\bETF\b"i
 
 function build_token_map(instruments::DataFrame; exchange::String="NSE")::Dict{String, Int}
     map = Dict{String, Int}()
@@ -383,6 +391,7 @@ function build_token_map(instruments::DataFrame; exchange::String="NSE")::Dict{S
                 !isnothing(match(_DEBT_NAME_RE, name))  && continue
                 !isnothing(match(_TRUST_NAME_RE, name)) && continue
                 !isnothing(match(_FUND_NAME_RE, name))  && continue
+                !isnothing(match(_ETF_NAME_RE, name))   && continue
                 any(endswith(sym, s) for s in _EXCLUDED_SUFFIXES) && continue
                 if exchange == "BSE"
                     !isnothing(match(_BSE_DEBT_RE, sym))           && continue
