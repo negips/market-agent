@@ -166,7 +166,8 @@ const VAL_RUNS_URL   = 'data/trading_game/val_runs.jsonl';
 const RUN_CONFIG_URL = 'data/trading_game/run_config.json';
 
 let shown = false;
-let valueChart = null, iterChart = null, valRunsChart = null, valRunsSplitChart = null;
+let valueChart = null, iterChart = null, valRunsChart = null, valRunsSplitChart = null, valDistChart = null;
+let initialCash = null;   // from run_config.json — the denominator for the validation-return distribution
 let lastValRuns = [];   // most recent renderValRunsChart(runs) argument — re-rendered on a toggle click, no re-fetch needed
 
 function loadShowTrades() {
@@ -319,6 +320,14 @@ function revealLayout() {
       <div class="canvas-wrap"><canvas id="val-chart"></canvas></div>
       <div class="subplot-label">Portfolio split — stock vs cash</div>
       <div class="canvas-wrap small"><canvas id="val-split-chart"></canvas></div>
+    </div>
+
+    <div class="chart-card">
+      <div class="chart-header">
+        <div class="chart-title">Held-out validation — return distribution</div>
+        <div class="chart-sub" id="val-dist-sub"></div>
+      </div>
+      <div class="canvas-wrap"><canvas id="val-dist-chart"></canvas></div>
     </div>
 
     <div class="chart-card">
@@ -607,6 +616,7 @@ function valRunColor(rank, total) {
 
 function renderValRunsChart(runs) {
   lastValRuns = runs;
+  renderValDistChart(runs);
   if (!runs.length) {
     document.getElementById('val-chart-sub').textContent = 'No held-out evaluation completed yet';
     document.getElementById('val-run-bulk-row').style.display = 'none';
@@ -794,6 +804,113 @@ function renderValRunsChart(runs) {
   }
 }
 
+// Dashed vertical line at the mean return (plus, once there are
+// VAL_DIST_FIT_MIN_RUNS runs, a fitted normal curve), drawn over the histogram. The
+// category x-axis has no numeric scale, so the mean's fractional position in
+// bin units is converted to pixels by interpolating between bin centers.
+const VAL_DIST_FIT_MIN_RUNS = 50;   // normal-fit curve only drawn once this many validation runs exist
+const valDistMeanPlugin = {
+  id: 'valDistMean',
+  afterDatasetsDraw(chart, _args, opts) {
+    if (!opts || opts.pos == null) return;
+    const { ctx, chartArea, scales: { x } } = chart;
+    const x0 = x.getPixelForValue(0), x1 = x.getPixelForValue(1);
+    const px = x0 + (opts.pos - 0.5) * (x1 - x0);
+    const f = opts.fit, y = chart.scales.y;
+    if (f) {
+      ctx.save();
+      ctx.strokeStyle = '#8b9cff'; ctx.lineWidth = 2;
+      ctx.beginPath();
+      const nPts = 120, nBins = chart.data.labels.length;
+      for (let i = 0; i <= nPts; i++) {
+        const u = i / nPts * nBins;                       // position in bin units, 0..nBins
+        const z = ((u + f.first) * f.step - f.mu) / f.sigma;
+        const density = f.n * f.step * Math.exp(-0.5 * z * z) / (f.sigma * Math.sqrt(2 * Math.PI));
+        const cx = x0 + (u - 0.5) * (x1 - x0), cy = y.getPixelForValue(density);
+        i === 0 ? ctx.moveTo(cx, cy) : ctx.lineTo(cx, cy);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+    if (px < chartArea.left || px > chartArea.right) return;
+    ctx.save();
+    ctx.strokeStyle = '#e5e7eb'; ctx.fillStyle = '#e5e7eb'; ctx.lineWidth = 2;
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath(); ctx.moveTo(px, chartArea.top); ctx.lineTo(px, chartArea.bottom); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.font = '12px sans-serif';
+    const right = px < (chartArea.left + chartArea.right) / 2;
+    ctx.textAlign = right ? 'left' : 'right';
+    ctx.fillText(opts.label, px + (right ? 6 : -6), chartArea.top + 12);
+    ctx.restore();
+  },
+};
+
+// Distribution of (final value - initial value) / initial value across every
+// held-out validation run in val_runs.jsonl — one sample per run. Bin width is
+// the smallest "nice" step (1/2/5 x 10^k percent) giving <= ~12 bins, with
+// bin edges anchored at 0 so a bar never straddles break-even.
+function renderValDistChart(runs) {
+  const sub = document.getElementById('val-dist-sub');
+  if (!sub) return;
+  if (!runs.length || !initialCash) {
+    sub.textContent = runs.length ? 'Waiting for run config (initial cash)' : 'No held-out evaluation completed yet';
+    return;
+  }
+  const rets = runs.map(r => (r.final_value - initialCash) / initialCash * 100);
+  const lo = Math.min(...rets), hi = Math.max(...rets);
+  const span = Math.max(hi - lo, 0.5);
+  const raw = span / 12, mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 5, 10].map(m => m * mag).find(w => w >= raw);
+  const first = Math.floor(lo / step), last = Math.max(Math.floor(hi / step), first);
+  const counts = new Array(last - first + 1).fill(0);
+  rets.forEach(v => counts[Math.floor(v / step) - first]++);
+  const fmt = (v) => (Math.abs(v) < 1e-9 ? 0 : v).toFixed(step < 1 ? 1 : 0);
+  const labels = counts.map((_, i) => `${fmt((first + i) * step)}% – ${fmt((first + i + 1) * step)}%`);
+  const colors = counts.map((_, i) => (first + i) >= 0 ? 'rgba(61,214,140,0.7)' : 'rgba(247,111,111,0.7)');
+
+  const sorted = [...rets].sort((a, b) => a - b);
+  const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
+  const median = sorted.length % 2 ? sorted[(sorted.length - 1) / 2]
+    : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2;
+  const pos = rets.filter(v => v > 0).length;
+  const sg = (v) => (v >= 0 ? '+' : '') + v.toFixed(2) + '%';
+  const sigma = Math.sqrt(rets.reduce((a, v) => a + (v - mean) ** 2, 0) / (rets.length - 1));
+  const fit = rets.length >= VAL_DIST_FIT_MIN_RUNS && sigma > 0
+    ? { mu: mean, sigma, n: rets.length, step, first } : null;
+  const meanLine = { pos: mean / step - first, label: `mean ${sg(mean)}`, fit };
+  const yMax = Math.max(...counts, fit ? fit.n * step / (sigma * Math.sqrt(2 * Math.PI)) : 0) * 1.1;
+  const fitNote = fit ? ` · normal fit σ ${sigma.toFixed(2)}% (curve)`
+                      : ` · fitted curve appears at ${VAL_DIST_FIT_MIN_RUNS} runs`;
+  sub.textContent = `${runs.length} run${runs.length === 1 ? '' : 's'} · mean ${sg(mean)} (dashed line) · median ${sg(median)} · ` +
+    `${pos}/${runs.length} profitable (${(pos / runs.length * 100).toFixed(0)}%) · range ${sg(lo)} … ${sg(hi)}${fitNote}`;
+
+  if (!valDistChart) {
+    valDistChart = new Chart(document.getElementById('val-dist-chart'), {
+      type: 'bar',
+      data: { labels, datasets: [{ data: counts, backgroundColor: colors }] },
+      plugins: [valDistMeanPlugin],
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        scales: {
+          x: { title: { display: true, text: 'Return (final − initial) / initial', color: '#6b7280' }, grid: { display: false } },
+          y: { title: { display: true, text: 'Validation runs', color: '#6b7280' }, beginAtZero: true, suggestedMax: yMax,
+               ticks: { precision: 0 }, grid: { color: '#2e3350' } },
+        },
+        plugins: { legend: { display: false }, valDistMean: meanLine,
+                   tooltip: { callbacks: { label: (item) => `${item.raw} run${item.raw === 1 ? '' : 's'}` } } },
+      },
+    });
+  } else {
+    const ds = valDistChart.data.datasets[0];
+    valDistChart.data.labels = labels;
+    valDistChart.options.plugins.valDistMean = meanLine;
+    valDistChart.options.scales.y.suggestedMax = yMax;
+    ds.data = counts; ds.backgroundColor = colors;
+    valDistChart.update('none');
+  }
+}
+
 function paramItem(label, value) {
   return `<div class="param-item"><div class="l">${esc(label)}</div><div class="v">${value}</div></div>`;
 }
@@ -809,6 +926,10 @@ function paramItem(label, value) {
 // given, null otherwise — not what actually ran; always read the
 // resolved_train_*/resolved_val_* fields for display.
 function renderRunConfig(cfg) {
+  if (cfg.initial_cash && cfg.initial_cash !== initialCash) {
+    initialCash = cfg.initial_cash;
+    renderValDistChart(lastValRuns);
+  }
   document.getElementById('run-config-card').style.display = '';
   document.getElementById('run-config-sub').textContent =
     `${cfg.n_candidates_train ?? '—'} train / ${cfg.n_candidates_val ?? '—'} val candidates · ` +
