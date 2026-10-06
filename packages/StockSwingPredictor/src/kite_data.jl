@@ -307,27 +307,67 @@ of exchange:
    contain a hyphen, and none of those are a settlement/series marker —
    e.g. `BAJAJ-AUTO` is just how BSE spells the ticker). The name field is
    the only signal BSE gives for these.
+5. `_FUND_NAME_RE` — `"MUTUAL FUND"` in the `name` field: exchange-listed
+   mutual fund scheme units (fixed-maturity plans, closed-end debt
+   schemes), not company stock. 99 BSE rows across 17 AMCs (Axis, HDFC,
+   ICICI Prudential, SBI, Nippon India, …), zero on NSE. Needed because
+   the AMC tags these inconsistently — of one Nippon India FMP product's
+   four numbered series, `07`/`09` have a blank `name` (caught by rule 1)
+   and `08` happens to start with a digit the symbol-regex below also
+   catches, but `11` (`11ADD`, `11ADR`, …) has a non-empty, non-debt-
+   keyword name (`"NIPPON INDIA MUTUAL FUND"`) and a symbol starting with
+   `1`, so nothing before this rule caught it.
 
 BSE additionally needs two more checks, since many of its debt instruments
 carry cryptic, non-descriptive names (e.g. `773CG2034` named just
-`"773CG2034"`) that the name-based rule above can't catch:
+`"773CG2034"`) that the name-based rules above can't catch:
 
-5. `_BSE_DEBT_RE` — four regex patterns against the `tradingsymbol` itself:
+6. `_BSE_DEBT_RE` — four regex patterns against the `tradingsymbol` itself:
    `^0` (government securities, `07ABB`), `^SGB` (Sovereign Gold Bonds,
    `SGBOCT26`), `^[\\d.]+[A-Za-z].*\\d\$` (coupon-prefixed NCDs/bonds,
    `001HCCL29`, `8.9JSWSL30`), `^\\d{3,}[A-Za-z].*\\d` (3-digit coupon
    prefix, `813CG2045A`, excludes `360ONE`), and `\\s` (whitespace —
    catches BSE index codes like `BSE CD`).
-6. `tick_size == 0` — BSE index instruments (SENSEX, BANKEX, etc.).
+7. `tick_size == 0` — BSE index instruments (SENSEX, BANKEX, etc.).
+8. `_BSE_DEBT_CODE_SYM_RE`/`_BSE_DEBT_CODE_NAME_RE` — a second, narrower
+   SDL/G-Sec pattern that rule 6 misses: BSE spells these names with NO
+   spaces (`"64GUJSDL30"`, `"69GS2065P"`), so `_DEBT_NAME_RE`'s `\\bSDL\\b`/
+   `\\bGOI\\b` word-boundary check never fires (there's no boundary between
+   two word characters), and rule 6 also misses most of them — they end
+   in a disambiguating letter instead of a digit (`64GJ30A`), or the
+   coupon prefix is only 2 digits where rule 6 requires 3+ (`69GS2065P`).
+   `_BSE_DEBT_CODE_SYM_RE` (`^\\d{2,}[A-Za-z]+\\d+[A-Za-z]?\$`, 2+ digits,
+   letters, 1+ digits, optional trailing letter) catches the tradingsymbol
+   form directly (`64GJ30A`, `69GS2065P`, `70AP38A`, `73GS2053P`,
+   `77MH33A`, `78GJ32A`, `78TN32A`); `_BSE_DEBT_CODE_NAME_RE` (the same
+   digit-prefix/ends-in-digit shape as rule 6 but without its trailing
+   `\\s` alternative, applied to `name` instead of `sym`) catches the one
+   straggler whose symbol itself ends in letters with no trailing digit
+   at all (`717MHSDL`, named `"717MHSDL29"`).
 
-Neither of these two extra BSE checks is needed for NSE: verified NSE has
-zero `EQ` rows with `tick_size == 0`, and every NSE debt instrument with a
-non-empty name already matches `_DEBT_NAME_RE`.
+   Verified against the full instrument dump, not just the known junk:
+   applying both new regexes changes NSE's kept count by zero (anchored
+   on a leading digit, and NSE's digit-leading debt names all already
+   have spaces, so rule 2 already catches them) and drops exactly these
+   8 BSE rows, nothing else — every digit-leading real company (checked:
+   `20MICRONS`, `21STCENMGM`, `360ONE`, `3BBLACKBIO`, `3BFILMS`, `3CIT`,
+   `3IINFOLTD`, `3MINDIA`, `3PLAND`, `5PAISA`, `63MOONS`, `7NR`, `7SEASL`,
+   `7TEC`) fails both patterns structurally: each either has only a
+   single leading digit (`_BSE_DEBT_CODE_SYM_RE` requires 2+) or its name
+   has a space immediately after the leading digit run, which neither
+   pattern's `[A-Za-z]`/digit-run requirement can cross.
+
+Neither of the two BSE-only checks before this one is needed for NSE:
+verified NSE has zero `EQ` rows with `tick_size == 0`, and every NSE debt
+instrument with a non-empty name already matches `_DEBT_NAME_RE`.
 """
-const _BSE_DEBT_RE       = r"^0|^SGB|^[\d.]+[A-Za-z].*\d$|^\d{3,}[A-Za-z].*\d|\s"
+const _BSE_DEBT_RE            = r"^0|^SGB|^[\d.]+[A-Za-z].*\d$|^\d{3,}[A-Za-z].*\d|\s"
+const _BSE_DEBT_CODE_SYM_RE   = r"^\d{2,}[A-Za-z]+\d+[A-Za-z]?$"
+const _BSE_DEBT_CODE_NAME_RE  = r"^[\d.]+[A-Za-z].*\d$"
 const _DEBT_NAME_RE      = r"\bSDL\b|\bGOI\b|TBILL|GOLD\s?BONDS?|\bNCD\b|DEBENTURE|\bBOND\b"i
 const _EXCLUDED_SUFFIXES = ("-RR", "-IV", "-E1", "-BE", "-BZ", "-BL", "-ST")
 const _TRUST_NAME_RE     = r"\bREIT\b|\bINVIT\b"i
+const _FUND_NAME_RE      = r"MUTUAL FUND"i
 
 function build_token_map(instruments::DataFrame; exchange::String="NSE")::Dict{String, Int}
     map = Dict{String, Int}()
@@ -342,10 +382,13 @@ function build_token_map(instruments::DataFrame; exchange::String="NSE")::Dict{S
                 isempty(name)                      && continue
                 !isnothing(match(_DEBT_NAME_RE, name))  && continue
                 !isnothing(match(_TRUST_NAME_RE, name)) && continue
+                !isnothing(match(_FUND_NAME_RE, name))  && continue
                 any(endswith(sym, s) for s in _EXCLUDED_SUFFIXES) && continue
                 if exchange == "BSE"
-                    !isnothing(match(_BSE_DEBT_RE, sym)) && continue
-                    get(row, :tick_size, 1.0) == 0.0     && continue
+                    !isnothing(match(_BSE_DEBT_RE, sym))           && continue
+                    get(row, :tick_size, 1.0) == 0.0               && continue
+                    !isnothing(match(_BSE_DEBT_CODE_SYM_RE, sym))  && continue
+                    !isnothing(match(_BSE_DEBT_CODE_NAME_RE, name)) && continue
                 end
             end
             map[sym] = Int(row.instrument_token)
