@@ -48,7 +48,7 @@ const NSE_DIR    = joinpath(OHLCV_ROOT, "nse")
 # into whichever directory it's given).
 nse_gran_dir(granularity::String) = joinpath(NSE_DIR, granularity)
 
-const DEFAULT_FROM = Date(2010, 1, 1)
+const DEFAULT_FROM = Date(2010, 1, 4)
 
 # Full per-symbol detail goes here (see ScriptLog's docstring in
 # StockSwingPredictor/src/script_log.jl); the terminal only gets stage
@@ -83,7 +83,7 @@ collect_nse_ohlcv.jl — initial NSE OHLCV collection
 Fetches daily, hourly, 5-min, 15-min, and 1-min bars — all from --from — for
 every NSE-listed EQ and INDICES instrument in Kite's instrument list. Each
 interval is chunked under Kite's per-request span cap (60/100/200/400/2000
-days respectively), which is NOT a retention limit — --from 2010-01-01 works
+days respectively), which is NOT a retention limit — --from 2010-01-04 works
 for every granularity, not just daily. Going back that far for the finer
 granularities (especially --1min-only) means many more chunked API calls and
 much more disk than the daily default; narrow --from or use --symbol to
@@ -102,7 +102,7 @@ Flags:
   --skip-1min         Skip the 1-minute pass (overrides --1min-only if both given)
   --symbol SYM        Fetch only this NSE tradingsymbol (e.g. --symbol RELIANCE)
   --refresh           Re-fetch all even if CSV already exists
-  --from DATE         History start date, all granularities (default: 2010-01-01)
+  --from DATE         History start date, all granularities (default: 2010-01-04)
   --log-file PATH     Full per-symbol detail (default: $DEFAULT_LOG_FILE)
   -h, --help          Show this message
 """)

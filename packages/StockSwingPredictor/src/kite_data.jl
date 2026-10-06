@@ -266,25 +266,68 @@ Build a symbol → instrument_token lookup dict for EQ stocks (and NSE INDICES).
 - `exchange`: `"NSE"` (default) or `"BSE"`
 
 # Notes
-BSE's instrument list classifies bonds, NCDs, and government securities as
-`instrument_type = "EQ"`. Four regex patterns cover the main non-equity classes:
+Both exchanges' instrument dumps classify a large number of non-equity
+instruments — sovereign/state government bonds, T-bills, Sovereign Gold
+Bonds, corporate NCDs/debentures — as `instrument_type = "EQ"`, same as a
+real company's shares. Verified live against the full NSE dump: roughly
+60% of NSE's nominal "EQ" rows are actually debt instruments (State
+Development Loans alone account for ~4,300), not company stock. Two
+independent layers filter these out, applied to every `EQ` row regardless
+of exchange:
 
-1. `^0` — starts with zero: government securities (`07ABB`, `07ADD`).
-2. `^SGB` — Sovereign Gold Bonds (`SGBOCT26`, `SGBJAN29II`, etc.).
-3. `^[\\d.]+[A-Za-z].*\\d\$` — coupon-rate prefix, has letters, ends with digit:
-   NCDs (`001HCCL29`, `360OP31125`) and decimal-coupon bonds (`8.9JSWSL30`).
-4. `^\\d{3,}[A-Za-z].*\\d` — 3-digit coupon prefix, digit somewhere after first
-   letter: State Development Loans (`813CG2045A`, `723GS39P`, `717MHSDL`).
-   Excludes `360ONE` (no digit after the leading letters).
-5. `\\s` — whitespace in name: BSE index codes (`BSE CD`, `12 MFLS2`).
+1. Empty `name` field — NCDs and other unregistered debt series are listed
+   with no descriptive name at all (e.g. tradingsymbol suffixes `-N0`
+   through `-N9`/`-NA` through `-NZ` on NSE; `10IGG`, `FFTF16BGR` on BSE).
+   Also catches BSE's MF fixed-maturity/closed-end debt scheme units.
+2. `_DEBT_NAME_RE` — the `name` field reliably spells out what the
+   remaining debt instruments are, even when the `tradingsymbol` alone
+   wouldn't obviously say so (e.g. NSE's `66RJ30-SG` is named
+   `"SDL RJ 6.6% 2030"`): State Development Loans (`SDL ...`), GOI loans
+   and T-bills (`GOI ...`, `... TBILL ...`), Sovereign Gold Bonds
+   (`...GOLDBONDS...`/`SOVEREIGN GOLD BOND...`), and any NCD/debenture/bond
+   (`BOND` as a whole word — matches `BHARAT BOND ETF`, not a company name
+   that merely contains the substring, e.g. `CHEMBOND CHEMICAL`,
+   `BONDADA ENGINEERING`).
+3. `_EXCLUDED_SUFFIXES` — `tradingsymbol` suffixes excluded by deliberate
+   choice, not because the name regex misses them: `-RR` (REIT units,
+   e.g. `EMBASSY-RR` → `"EMBASSY OFFICE PARKS REIT"`), `-IV` (InvIT units,
+   e.g. `PGINVIT-IV` → `"POWERGRID INFRA INVESTMENT TRUST - INVIT"`) — both
+   trust units, not a company's own shares — `-E1` (partly-paid-up shares,
+   e.g. `ROCKPP-E1` → `"ROCKINGDCE RS.5 PPD UP"`), and `-BE`/`-BZ`/`-BL`/
+   `-ST` (surveillance/trade-to-trade settlement series — still ordinary
+   equity, just excluded anyway per explicit request). Only observed on
+   NSE (`-BL` currently has zero matches but is kept in the list in case a
+   future instrument dump adds one) — checked regardless of exchange
+   anyway, since it's cheap and exchange-agnostic.
+4. `_TRUST_NAME_RE` — whole-word `REIT`/`INVIT` in the `name` field.
+   Redundant with `-RR`/`-IV` above on NSE, but BSE lists the exact same
+   trusts (`EMBASSY`, `MINDSPACE`, `PGINVIT`, `IRBINVIT`, …) under a plain
+   `tradingsymbol` with no suffix at all — BSE doesn't use NSE's
+   hyphen-suffix scheme (verified: of 12,916 BSE `EQ` rows, only 18
+   contain a hyphen, and none of those are a settlement/series marker —
+   e.g. `BAJAJ-AUTO` is just how BSE spells the ticker). The name field is
+   the only signal BSE gives for these.
 
-Additionally:
-- `tick_size == 0` → BSE index instruments (SENSEX, BANKEX, etc.).
-- Empty `name` field → MF fixed-maturity units, closed-end debt schemes, and
-  unregistered instruments listed as EQ but not serveable via the historical API
-  (~2,300 instruments, e.g. `10IGG`, `FFTF16BGR`, `KTKFMP46G`).
+BSE additionally needs two more checks, since many of its debt instruments
+carry cryptic, non-descriptive names (e.g. `773CG2034` named just
+`"773CG2034"`) that the name-based rule above can't catch:
+
+5. `_BSE_DEBT_RE` — four regex patterns against the `tradingsymbol` itself:
+   `^0` (government securities, `07ABB`), `^SGB` (Sovereign Gold Bonds,
+   `SGBOCT26`), `^[\\d.]+[A-Za-z].*\\d\$` (coupon-prefixed NCDs/bonds,
+   `001HCCL29`, `8.9JSWSL30`), `^\\d{3,}[A-Za-z].*\\d` (3-digit coupon
+   prefix, `813CG2045A`, excludes `360ONE`), and `\\s` (whitespace —
+   catches BSE index codes like `BSE CD`).
+6. `tick_size == 0` — BSE index instruments (SENSEX, BANKEX, etc.).
+
+Neither of these two extra BSE checks is needed for NSE: verified NSE has
+zero `EQ` rows with `tick_size == 0`, and every NSE debt instrument with a
+non-empty name already matches `_DEBT_NAME_RE`.
 """
-const _BSE_DEBT_RE = r"^0|^SGB|^[\d.]+[A-Za-z].*\d$|^\d{3,}[A-Za-z].*\d|\s"
+const _BSE_DEBT_RE       = r"^0|^SGB|^[\d.]+[A-Za-z].*\d$|^\d{3,}[A-Za-z].*\d|\s"
+const _DEBT_NAME_RE      = r"\bSDL\b|\bGOI\b|TBILL|GOLD\s?BONDS?|\bNCD\b|DEBENTURE|\bBOND\b"i
+const _EXCLUDED_SUFFIXES = ("-RR", "-IV", "-E1", "-BE", "-BZ", "-BL", "-ST")
+const _TRUST_NAME_RE     = r"\bREIT\b|\bINVIT\b"i
 
 function build_token_map(instruments::DataFrame; exchange::String="NSE")::Dict{String, Int}
     map = Dict{String, Int}()
@@ -294,10 +337,16 @@ function build_token_map(instruments::DataFrame; exchange::String="NSE")::Dict{S
         exch == exchange || continue
         if type == "EQ" || (exchange == "NSE" && type == "INDICES")
             sym = string(row.tradingsymbol)
-            if exchange == "BSE"
-                !isnothing(match(_BSE_DEBT_RE, sym)) && continue
-                get(row, :tick_size, 1.0) == 0.0         && continue
-                isempty(strip(string(get(row, :name, "")))) && continue
+            if type == "EQ"
+                name = strip(string(coalesce(get(row, :name, ""), "")))
+                isempty(name)                      && continue
+                !isnothing(match(_DEBT_NAME_RE, name))  && continue
+                !isnothing(match(_TRUST_NAME_RE, name)) && continue
+                any(endswith(sym, s) for s in _EXCLUDED_SUFFIXES) && continue
+                if exchange == "BSE"
+                    !isnothing(match(_BSE_DEBT_RE, sym)) && continue
+                    get(row, :tick_size, 1.0) == 0.0     && continue
+                end
             end
             map[sym] = Int(row.instrument_token)
         end
