@@ -2,17 +2,24 @@
  * kite_login.js — Obtain a fresh Kite Connect access token via browser automation.
  *
  * Run once per trading day before starting the Julia session:
- *   node sidecar/kite_login.js
+ *   node sidecar/kite_login.js              # account 1 (KITE_HISTORICAL_*)
+ *   node sidecar/kite_login.js --account 2  # account 2 (KITE_HISTORICAL2_*)
+ *
+ * Kite rate limits are per API key; a second app's key/secret gives a second
+ * independent request budget, so two jobs can run in parallel, one per
+ * account. The trading user (id/password/TOTP) is the same for every account.
  *
  * Required env vars (read from repo-root .env automatically):
  *   KITE_HISTORICAL_API_KEY    — Kite Connect Historical Data app key
  *   KITE_HISTORICAL_API_SECRET — Kite Connect Historical Data app secret
+ *   KITE_HISTORICAL{N}_API_KEY / _SECRET — same, for --account N (N >= 2)
  *   KITE_USER_ID               — Zerodha trading account client ID (e.g. AB1234)
  *   KITE_PASSWORD              — Zerodha trading account password
  *   KITE_TOTP_SECRET           — Base32 TOTP secret from your authenticator app setup
  *
  * Output:
- *   sidecar/kite_session.json  (gitignored) — contains access_token, valid for today
+ *   sidecar/kite_session.json  (account 1) or kite_session{N}.json (gitignored) —
+ *   contains access_token, valid for today
  *
  * The running sidecar exposes the token at GET /kite/token.
  */
@@ -38,15 +45,25 @@ try {
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
+const accountArg = process.argv.indexOf('--account');
+const ACCOUNT    = accountArg === -1 ? 1 : Number(process.argv[accountArg + 1]);
+if (!Number.isInteger(ACCOUNT) || ACCOUNT < 1) {
+  console.error('--account expects an integer >= 1');
+  process.exit(1);
+}
+const ENV_PREFIX = ACCOUNT === 1 ? 'KITE_HISTORICAL' : `KITE_HISTORICAL${ACCOUNT}`;
+const KEY_VAR    = `${ENV_PREFIX}_API_KEY`;
+const SECRET_VAR = `${ENV_PREFIX}_API_SECRET`;
+
 const {
-  KITE_HISTORICAL_API_KEY:    API_KEY,
-  KITE_HISTORICAL_API_SECRET: API_SECRET,
-  KITE_USER_ID:               USER_ID,
-  KITE_PASSWORD:              PASSWORD,
-  KITE_TOTP_SECRET:           TOTP_SECRET,
+  [KEY_VAR]:        API_KEY,
+  [SECRET_VAR]:     API_SECRET,
+  KITE_USER_ID:     USER_ID,
+  KITE_PASSWORD:    PASSWORD,
+  KITE_TOTP_SECRET: TOTP_SECRET,
 } = process.env;
 
-const missing = ['KITE_HISTORICAL_API_KEY','KITE_HISTORICAL_API_SECRET','KITE_USER_ID','KITE_PASSWORD','KITE_TOTP_SECRET']
+const missing = [KEY_VAR, SECRET_VAR,'KITE_USER_ID','KITE_PASSWORD','KITE_TOTP_SECRET']
   .filter(k => !process.env[k]);
 if (missing.length) {
   console.error(`Missing required env vars: ${missing.join(', ')}`);
@@ -56,7 +73,7 @@ if (missing.length) {
 
 const LOGIN_URL    = `https://kite.zerodha.com/connect/login?v=3&api_key=${API_KEY}`;
 const TOKEN_URL    = 'https://api.kite.trade/session/token';
-const SESSION_FILE = path.join(__dirname, 'kite_session.json');
+const SESSION_FILE = path.join(__dirname, ACCOUNT === 1 ? 'kite_session.json' : `kite_session${ACCOUNT}.json`);
 
 // ── TOTP (RFC 6238) — no external packages ────────────────────────────────────
 
@@ -101,7 +118,7 @@ async function main() {
   // Import Playwright from the tijori-finance-mcp install (avoids a second Chromium download)
   const { chromium } = await import('./tijori-finance-mcp/node_modules/playwright/index.mjs');
 
-  console.log('Launching Chromium for Kite login...');
+  console.log(`Launching Chromium for Kite login (account ${ACCOUNT}, ${KEY_VAR})...`);
   const browser = await chromium.launch({ headless: false });
   const context = await browser.newContext();
   const page    = await context.newPage();
@@ -179,7 +196,7 @@ async function main() {
   const { access_token, user_id, user_name } = body.data;
   const today = new Date().toISOString().slice(0, 10);
 
-  const session = { access_token, user_id, user_name, api_key: API_KEY, date: today, acquired_at: localISOString(new Date()) };
+  const session = { access_token, user_id, user_name, api_key: API_KEY, account: ACCOUNT, date: today, acquired_at: localISOString(new Date()) };
   fs.writeFileSync(SESSION_FILE, JSON.stringify(session, null, 2));
 
   console.log(`\nKite session saved for ${user_name} (${user_id})`);

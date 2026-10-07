@@ -38,6 +38,26 @@ const _ACTIVE_SCRIPT_LOG = Ref{Union{ScriptLog,Nothing}}(nothing)
 active_script_log() = _ACTIVE_SCRIPT_LOG[]
 
 """
+Default log path for a Kite `account` slot: account 1 keeps `path` unchanged;
+account N ≥ 2 inserts `.accountN` before the extension (`collect_bse_ohlcv.log`
+→ `collect_bse_ohlcv.account2.log`). Two parallel jobs of the same script on
+different accounts therefore never interleave lines in one file. Only for
+DEFAULT paths — an explicit `--log-file` is always used as given.
+
+# Arguments
+- `path`: the script's default log file
+- `account`: Kite API-key slot (see `kite_account_from_args`)
+
+# Returns
+- `String`: the path to open
+"""
+function account_log_path(path::String, account::Int)::String
+    account == 1 && return path
+    base, ext = splitext(path)
+    return "$base.account$account$ext"
+end
+
+"""
 Open (append) a script's persistent log file and write a run-start banner
 recording the timestamp and `ARGS`. Append, not overwrite — a script's log
 accumulates across runs so past runs stay inspectable; the banner is what

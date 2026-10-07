@@ -35,6 +35,7 @@ Usage:
   julia --project=packages/StockSwingPredictor scripts/collect_bse_ohlcv.jl --symbol RELIANCE
   julia --project=packages/StockSwingPredictor scripts/collect_bse_ohlcv.jl --refresh
   julia --project=packages/StockSwingPredictor scripts/collect_bse_ohlcv.jl --from 2015-01-01
+  julia --project=packages/StockSwingPredictor scripts/collect_bse_ohlcv.jl --account 2   # second API key
 """
 
 using StockSwingPredictor, Dates
@@ -75,6 +76,7 @@ function parse_args()
         "symbol"          => nothing,
         "from"            => DEFAULT_FROM,
         "log_file"        => DEFAULT_LOG_FILE,
+        "account"         => 1,
     )
     i = 1
     while i <= length(ARGS)
@@ -106,7 +108,11 @@ Flags:
   --symbol SYM        Fetch only this BSE tradingsymbol (e.g. --symbol RELIANCE)
   --refresh           Re-fetch all even if CSV already exists
   --from DATE         History start date, all granularities (default: 2010-01-04)
-  --log-file PATH     Full per-symbol detail (default: $DEFAULT_LOG_FILE)
+  --log-file PATH     Full per-symbol detail (default: $DEFAULT_LOG_FILE;
+                      with --account N>=2: <name>.accountN.log, so parallel jobs don't share a file)
+  --account N         Kite API-key slot: 1 = KITE_HISTORICAL_*, 2 = KITE_HISTORICAL2_*, …
+                      Rate limits are per key, so two jobs on different accounts run in parallel.
+                      Each account needs its own login: node sidecar/kite_login.js --account N
   -h, --help          Show this message
 """)
             exit(0)
@@ -127,6 +133,8 @@ Flags:
             args["from"] = Date(ARGS[i+1]); i += 2
         elseif a == "--log-file" && i + 1 <= length(ARGS)
             args["log_file"] = ARGS[i+1]; i += 2
+        elseif a == "--account" && i + 1 <= length(ARGS)
+            args["account"] = parse(Int, ARGS[i+1]); i += 2
         else
             @warn "Unknown argument: $a"; i += 1
         end
@@ -136,9 +144,11 @@ end
 
 function main()
     args    = parse_args()
+    args["log_file"] == DEFAULT_LOG_FILE &&
+        (args["log_file"] = account_log_path(DEFAULT_LOG_FILE, args["account"]))
     slog    = open_script_log(args["log_file"])
     @info "Logging full per-symbol detail to: $(args["log_file"])"
-    session = load_kite_session(REPO_ROOT)
+    session = load_kite_session(REPO_ROOT; account=args["account"])
     refresh = args["refresh"]
 
     mkpath(BSE_DIR)

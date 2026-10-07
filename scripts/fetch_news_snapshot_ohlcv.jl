@@ -129,10 +129,13 @@ Flags:
                     1-minute coverage is patchy before ~2017 — see the module
                     docstring; --from 2017-01-01 is a reasonable start.
   --to DATE        Only fetch events on/before this date (yyyy-mm-dd)
+  --account N      Kite API-key slot (1 = KITE_HISTORICAL_*, 2 = KITE_HISTORICAL2_*, …)
   --dry-run        Print symbol/event/call counts, no API calls or writes
   -h, --help       Show this message
 """)
             exit(0)
+        elseif a == "--account" && i + 1 <= length(ARGS)
+            i += 2   # read by kite_account_from_args() when the session loads
         elseif a == "--symbol" && i + 1 <= length(ARGS)
             push!(args["symbols"], ARGS[i+1]); i += 2
         elseif a == "--role" && i + 1 <= length(ARGS)
@@ -290,7 +293,7 @@ function main()
 
     n_needed == 0 && (@info "Nothing to do."; return)
 
-    session   = load_kite_session(REPO_ROOT)
+    session   = load_kite_session(REPO_ROOT; account=kite_account_from_args())
     @info "Loading NSE instrument list from Kite…"
     instr     = load_instruments(session; exchange="NSE", refresh=true)
     token_map = build_token_map(instr; exchange="NSE")

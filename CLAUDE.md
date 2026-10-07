@@ -344,6 +344,29 @@ node sidecar/server_http.js              # default port 3001
 PORT=3002 node sidecar/server_http.js   # custom port
 ```
 
+### Two API keys, two parallel jobs
+
+Kite's rate limits are per API key. `.env` can hold a second Kite Connect app
+(`KITE_HISTORICAL2_API_KEY`/`_SECRET`; a third would be `KITE_HISTORICAL3_*`),
+selected with `--account N` (default 1) on `collect_nse_ohlcv.jl`,
+`collect_bse_ohlcv.jl`, `update_ohlcv.jl`, `backfill_ohlcv.jl`,
+`fetch_news_snapshot_ohlcv.jl` and `kite_relogin.jl`. Same trading user
+(id/password/TOTP); each account has its own session file
+(`sidecar/kite_session.json`, `kite_session2.json`, …, all gitignored) and its
+own automatic 403 relogin. Log in once per account per day:
+
+```bash
+node sidecar/kite_login.js              # account 1
+node sidecar/kite_login.js --account 2  # account 2
+julia --project=packages/StockSwingPredictor scripts/collect_nse_ohlcv.jl --1min-only --account 1
+julia --project=packages/StockSwingPredictor scripts/collect_bse_ohlcv.jl --1min-only --account 2
+```
+
+Run the two jobs on **different data** — different exchanges or granularities.
+Two jobs writing the same CSVs or the same `earliest_trading_day.json`/
+`confirmed_floor.json` files (e.g. both `update_ohlcv.jl` runs on the same
+exchange) would race on them.
+
 ### Kite token expiry during long-running jobs
 
 The Kite access token is valid for one trading day. `load_kite_session`
@@ -1099,6 +1122,8 @@ loads it automatically; Julia code can use `DotEnv.jl` or read it manually.
 | `KITE_USER_ID` | `kite_login.js` | Zerodha trading account client ID (e.g. AB1234) |
 | `KITE_PASSWORD` | `kite_login.js` | Zerodha trading account password |
 | `KITE_TOTP_SECRET` | `kite_login.js` | Base32 TOTP secret from authenticator app |
+| `KITE_HISTORICAL2_API_KEY` | `kite_login.js --account 2`, `kite_data.jl` | Second Kite app key (separate rate limit) |
+| `KITE_HISTORICAL2_API_SECRET` | `kite_login.js --account 2` | Second Kite app secret |
 | `KITE_CONNECT_ID` | — | Kite developer portal login (not used in code) |
 | `KITE_CONNECT_PASSWORD` | — | Kite developer portal password (not used in code) |
 | `PORT` | sidecar | HTTP port (default 3001) |

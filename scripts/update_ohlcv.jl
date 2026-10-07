@@ -583,7 +583,10 @@ Flags:
   --skip-15min    Skip the 15-minute pass (overrides --15min-only if both given).
   --skip-1min     Skip the 1-minute pass (overrides --1min-only if both given).
   --dry-run       Report what would be fetched without making any API calls.
-  --log-file PATH Full per-symbol detail (default: $DEFAULT_LOG_FILE).
+  --log-file PATH Full per-symbol detail (default: $DEFAULT_LOG_FILE;
+                  with --account N>=2: <name>.accountN.log).
+  --account N     Kite API-key slot (1 = KITE_HISTORICAL_*, 2 = KITE_HISTORICAL2_*, …);
+                  rate limits are per key. Needs: node sidecar/kite_login.js --account N.
                   The terminal only shows stage headers, a progress
                   heartbeat every $HEARTBEAT_INTERVAL symbols, and warnings —
                   tail -f the log file for live per-symbol status instead.
@@ -633,7 +636,8 @@ a big gap in one go, not a race against data disappearing.
     sym_filter = (!isnothing(sym_idx) && sym_idx < length(ARGS)) ? ARGS[sym_idx + 1] : nothing
 
     log_idx  = findfirst(==("--log-file"), ARGS)
-    log_path = (!isnothing(log_idx) && log_idx < length(ARGS)) ? ARGS[log_idx + 1] : DEFAULT_LOG_FILE
+    log_path = (!isnothing(log_idx) && log_idx < length(ARGS)) ? ARGS[log_idx + 1] :
+               account_log_path(DEFAULT_LOG_FILE, kite_account_from_args())
     slog     = open_script_log(log_path)
     @info "Logging full per-symbol detail to: $log_path"
 
@@ -645,7 +649,7 @@ a big gap in one go, not a race against data disappearing.
 
     # ── Load session (skipped in dry-run) ─────────────────────────────────────
     session = dry_run ? (api_key="", access_token="") :
-                        load_kite_session(REPO_ROOT)
+                        load_kite_session(REPO_ROOT; account=kite_account_from_args())
 
     nse_token_map = if !run_nse || dry_run
         Dict{String, Int}()

@@ -30,6 +30,7 @@ kite_login.js` directly.
 
 Usage:
   julia --project=packages/StockSwingPredictor scripts/kite_relogin.jl
+  julia --project=packages/StockSwingPredictor scripts/kite_relogin.jl --account 2
 """
 
 using StockSwingPredictor
@@ -38,7 +39,7 @@ const REPO_ROOT = joinpath(@__DIR__, "..")
 
 function main()
     @info "Re-authenticating with Kite (launches a browser)…"
-    session = relogin_kite!(REPO_ROOT)
+    session = relogin_kite!(REPO_ROOT; account=kite_account_from_args())
     @info "Kite session refreshed — api_key=$(first(session.api_key, 6))… " *
           "token=$(first(session.access_token, 6))…"
 end

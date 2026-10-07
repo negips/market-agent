@@ -3,7 +3,7 @@ node_modules/
 # git clone of tijori-finance-mcp — set up manually per CLAUDE.md
 sidecar/tijori-finance-mcp/
 # Kite access token — regenerated daily, never commit
-sidecar/kite_session.json
+sidecar/kite_session*.json
 .env
 
 # ── Claude Code internal ──────────────────────────────────────────────────────

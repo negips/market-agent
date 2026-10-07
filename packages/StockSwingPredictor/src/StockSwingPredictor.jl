@@ -81,10 +81,11 @@ export
     N_HOURLY_BARS, N_HOURS_PER_DAY, N_PRED_DAYS, N_PRED_HOURS,
 
     # script_log
-    ScriptLog, open_script_log, close_script_log, logf, logboth, active_script_log,
+    ScriptLog, open_script_log, close_script_log, logf, logboth, active_script_log, account_log_path,
 
     # kite_data
     load_kite_session, load_instruments, build_token_map, KiteSession, relogin_kite!,
+    kite_account_from_args, kite_session_path,
     fetch_ohlcv, collect_ohlcv, load_cached_ohlcv,
     fetch_ohlcv_hourly, collect_ohlcv_hourly, load_cached_ohlcv_hourly,
     fetch_ohlcv_5min, collect_ohlcv_5min, load_cached_ohlcv_5min,

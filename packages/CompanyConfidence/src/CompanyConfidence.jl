@@ -75,6 +75,7 @@ include("forensics.jl")
 include("surveillance.jl")
 include("score.jl")
 include("display.jl")
+include("serialize.jl")
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -90,7 +91,7 @@ export ConfidenceReport, BeneishResult, CashflowResult, PledgingResult
 export ForensicsResult, SurveillanceResult
 export BENEISH_THRESHOLD, PASS_THRESHOLD
 
-export analyze
+export analyze, report_to_dict
 export beneish_score, cashflow_check, pledging_check, forensics_check, surveillance_check
 
 end # module CompanyConfidence

@@ -73,24 +73,66 @@ mutable struct KiteSession
     api_key      :: String
     access_token :: String
     repo_root    :: String
+    account      :: Int
+end
+
+KiteSession(api_key::String, access_token::String, repo_root::String) =
+    KiteSession(api_key, access_token, repo_root, 1)
+
+"""
+Kite rate limits are per API key, so a second Kite Connect app (`KITE_HISTORICAL2_API_KEY`
+/ `_SECRET` in `.env`) gives a second, independent request budget — two jobs
+on two accounts never compete for it. `account` is the 1-based slot: 1 is
+`KITE_HISTORICAL_*` with the session in `sidecar/kite_session.json`; N ≥ 2 is
+`KITE_HISTORICAL{N}_*` with `sidecar/kite_session{N}.json`. Same trading
+account (user id, password, TOTP) throughout — only the app key/secret differ.
+"""
+function kite_session_path(repo_root::String, account::Int=1)
+    account >= 1 || error("Kite account must be >= 1, got $account")
+    return joinpath(repo_root, "sidecar", account == 1 ? "kite_session.json" : "kite_session$(account).json")
 end
 
 """
-Read the Kite session from kite_session.json.
-Throws if not found. Warns (does not throw) if the saved date doesn't match
+Read `--account N` from a script's command-line arguments (default 1). Shared
+by every Kite-backed script so each one selects its API-key slot identically.
+
+# Arguments
+- `args`: argument vector, default `ARGS`
+
+# Returns
+- `Int`: the account slot
+
+# Example
+```julia
+session = load_kite_session(REPO_ROOT; account=kite_account_from_args())
+```
+"""
+function kite_account_from_args(args::AbstractVector{<:AbstractString}=ARGS)::Int
+    i = findfirst(==("--account"), args)
+    isnothing(i) && return 1
+    i < length(args) || error("--account given with no number after it")
+    n = tryparse(Int, args[i + 1])
+    (isnothing(n) || n < 1) && error("--account expects an integer >= 1, got '$(args[i + 1])'")
+    return n
+end
+
+"""
+Read the Kite session for `account` (see `kite_session_path`; default 1,
+`kite_session.json`). Throws if not found. Warns (does not throw) if the saved date doesn't match
 today — the token itself may still be valid for a few hours past midnight;
 `_kite_get`'s automatic 403-retry is what actually catches genuine expiry.
 """
-function load_kite_session(repo_root::String)::KiteSession
-    path = joinpath(repo_root, "sidecar", "kite_session.json")
-    isfile(path) || error("No Kite session found. Run: node sidecar/kite_login.js")
+function load_kite_session(repo_root::String; account::Int=1)::KiteSession
+    path = kite_session_path(repo_root, account)
+    login_cmd = account == 1 ? "node sidecar/kite_login.js" : "node sidecar/kite_login.js --account $account"
+    isfile(path) || error("No Kite session found for account $account. Run: $login_cmd")
     s = JSON3.read(read(path, String))
     date_str = string(get(s, :date, ""))
     if date_str != string(today())
-        @warn "Kite session is from $date_str — token may be stale. " *
-              "Run: node sidecar/kite_login.js"
+        @warn "Kite session (account $account) is from $date_str — token may be stale. " *
+              "Run: $login_cmd"
     end
-    return KiteSession(string(s.api_key), string(s.access_token), repo_root)
+    return KiteSession(string(s.api_key), string(s.access_token), repo_root, account)
 end
 
 function _kite_headers(session)
@@ -115,15 +157,15 @@ docstring). This is what `_kite_get` calls automatically on a 403; call it
 directly to force a refresh proactively (e.g. right before an overnight job
 you know will span the token's expiry).
 """
-function relogin_kite!(repo_root::String)::KiteSession
+function relogin_kite!(repo_root::String; account::Int=1)::KiteSession
     login_script = joinpath(repo_root, "sidecar", "kite_login.js")
     isfile(login_script) || error("relogin_kite!: not found: $login_script")
-    run(`node $login_script`)
-    return load_kite_session(repo_root)
+    run(`node $login_script --account $account`)
+    return load_kite_session(repo_root; account)
 end
 
 function relogin_kite!(session::KiteSession)::KiteSession
-    fresh = relogin_kite!(session.repo_root)
+    fresh = relogin_kite!(session.repo_root; account=session.account)
     session.api_key      = fresh.api_key
     session.access_token = fresh.access_token
     return session
@@ -364,6 +406,15 @@ carry cryptic, non-descriptive names (e.g. `773CG2034` named just
    has a space immediately after the leading digit run, which neither
    pattern's `[A-Za-z]`/digit-run requirement can cross.
 
+9. `_BSE_GSEC_SYM_RE` — G-Sec/strip/floating-rate-bond codes that start with
+   letters, so every digit-prefix rule above misses them: `GS02JAN27C`,
+   `GS12DEC2034`, `GS151226C` (government securities, `GS` + maturity date
+   + optional cumulative `C`), `CS12DEC35` (coupon strips), `FRBGOI2035`
+   (floating-rate bonds) and `GSEC190962`. BSE gives them `EQ` type, tick
+   size 0.01 and a `name` identical to the symbol, so nothing else flags
+   them. Verified against the full dump: 347 matches, none a company
+   (real `GS…` tickers like `GSFC`/`GSPL` have no digit right after `GS`).
+
 Neither of the two BSE-only checks before this one is needed for NSE:
 verified NSE has zero `EQ` rows with `tick_size == 0`, and every NSE debt
 instrument with a non-empty name already matches `_DEBT_NAME_RE`.
@@ -371,6 +422,7 @@ instrument with a non-empty name already matches `_DEBT_NAME_RE`.
 const _BSE_DEBT_RE            = r"^0|^SGB|^[\d.]+[A-Za-z].*\d$|^\d{3,}[A-Za-z].*\d|\s"
 const _BSE_DEBT_CODE_SYM_RE   = r"^\d{2,}[A-Za-z]+\d+[A-Za-z]?$"
 const _BSE_DEBT_CODE_NAME_RE  = r"^[\d.]+[A-Za-z].*\d$"
+const _BSE_GSEC_SYM_RE        = r"^(?:GS|CS)\d|^FRBGOI|^GSEC\d"
 const _DEBT_NAME_RE      = r"\bSDL\b|\bGOI\b|TBILL|GOLD\s?BONDS?|\bNCD\b|DEBENTURE|\bBOND\b"i
 const _EXCLUDED_SUFFIXES = ("-RR", "-IV", "-E1", "-BE", "-BZ", "-BL", "-ST")
 const _TRUST_NAME_RE     = r"\bREIT\b|\bINVIT\b"i
@@ -398,6 +450,7 @@ function build_token_map(instruments::DataFrame; exchange::String="NSE")::Dict{S
                     get(row, :tick_size, 1.0) == 0.0               && continue
                     !isnothing(match(_BSE_DEBT_CODE_SYM_RE, sym))  && continue
                     !isnothing(match(_BSE_DEBT_CODE_NAME_RE, name)) && continue
+                    !isnothing(match(_BSE_GSEC_SYM_RE, sym))       && continue
                 end
             end
             map[sym] = Int(row.instrument_token)
