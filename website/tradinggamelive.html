@@ -65,6 +65,15 @@
     cursor: pointer; user-select: none; white-space: nowrap;
   }
   .trade-toggle input { accent-color: var(--accent); cursor: pointer; }
+  .step-btn {
+    width: 22px; height: 22px; line-height: 1; padding: 0; font-size: 14px; cursor: pointer;
+    background: var(--surface2); color: var(--text-dim); border: 1px solid var(--border); border-radius: 4px;
+  }
+  .step-btn:hover { color: var(--text); border-color: var(--accent); }
+  .trade-toggle select {
+    background: var(--surface, transparent); color: var(--text-dim); font: inherit;
+    border: 1px solid var(--border, #444); border-radius: 4px; padding: 1px 4px; cursor: pointer;
+  }
   .canvas-wrap { position: relative; height: 260px; margin-top: 14px; }
   .canvas-wrap.small { height: 180px; margin-top: 2px; }
 
@@ -175,6 +184,27 @@ function loadShowTrades() {
 }
 function saveShowTrades(v) {
   try { localStorage.setItem('tgLiveShowTrades', v ? 'on' : 'off'); } catch {}
+}
+const VAL_DIST_BIN_PCT = 1;        // histogram bin width, in percentage points
+const VAL_DIST_MIN_RECENT = 5;   // smallest "last N" window on the slider; slider max = all runs (stored as 0)
+let valDistRecentN = 0;
+function loadValDistRecent() {
+  try {
+    const v = localStorage.getItem('tgValDistRecent');
+    if (v === 'on') return 50;   // legacy checkbox value
+    const n = parseInt(v, 10);
+    return n >= VAL_DIST_MIN_RECENT ? n : 0;
+  } catch { return 0; }
+}
+function saveValDistRecent(n) {
+  try { localStorage.setItem('tgValDistRecent', String(n)); } catch {}
+}
+const VAL_DIST_SKIP_RUNS = 50;     // warm-up runs dropped when the "Skip first 50" toggle is on
+function loadValDistSkip() {
+  try { return localStorage.getItem('tgValDistSkip') === 'on'; } catch { return false; }
+}
+function saveValDistSkip(v) {
+  try { localStorage.setItem('tgValDistSkip', v ? 'on' : 'off'); } catch {}
 }
 function loadShowValTrades() {
   try { return localStorage.getItem('tgValShowTrades') !== 'off'; } catch { return true; }
@@ -325,8 +355,19 @@ function revealLayout() {
     <div class="chart-card">
       <div class="chart-header">
         <div class="chart-title">Held-out validation — return distribution</div>
-        <div class="chart-sub" id="val-dist-sub"></div>
+        <div style="display:flex; align-items:center; gap:14px">
+          <label class="trade-toggle">
+            <input type="checkbox" id="val-dist-skip-toggle"> Skip first ${VAL_DIST_SKIP_RUNS}
+          </label>
+          <label class="trade-toggle">
+            <button type="button" class="step-btn" id="val-dist-recent-minus" title="Show one fewer run" aria-label="Decrease">−</button>
+            <input type="range" id="val-dist-recent-range" min="${VAL_DIST_MIN_RECENT}" max="${VAL_DIST_MIN_RECENT}" step="1" style="width:140px">
+            <button type="button" class="step-btn" id="val-dist-recent-plus" title="Show one more run" aria-label="Increase">+</button>
+            <span id="val-dist-recent-label" style="min-width:64px"></span>
+          </label>
+        </div>
       </div>
+      <div class="chart-sub" id="val-dist-sub" style="margin-top:4px"></div>
       <div class="canvas-wrap"><canvas id="val-dist-chart"></canvas></div>
     </div>
 
@@ -359,6 +400,29 @@ function revealLayout() {
     });
     valueChart.update();
   });
+
+  const distSkipToggle = document.getElementById('val-dist-skip-toggle');
+  distSkipToggle.checked = loadValDistSkip();
+  distSkipToggle.addEventListener('change', () => {
+    saveValDistSkip(distSkipToggle.checked);
+    renderValDistChart(lastValRuns);
+  });
+
+  valDistRecentN = loadValDistRecent();
+  const distRange = document.getElementById('val-dist-recent-range');
+  distRange.addEventListener('input', () => {
+    const v = parseInt(distRange.value, 10);
+    valDistRecentN = v >= parseInt(distRange.max, 10) ? 0 : v;
+    saveValDistRecent(valDistRecentN);
+    renderValDistChart(lastValRuns);
+  });
+  const stepDistRange = (delta) => {
+    const next = Math.min(parseInt(distRange.max, 10), Math.max(VAL_DIST_MIN_RECENT, parseInt(distRange.value, 10) + delta));
+    distRange.value = next;
+    distRange.dispatchEvent(new Event('input'));
+  };
+  document.getElementById('val-dist-recent-minus').addEventListener('click', () => stepDistRange(-1));
+  document.getElementById('val-dist-recent-plus').addEventListener('click', () => stepDistRange(1));
 
   const valToggle = document.getElementById('show-val-trades-toggle');
   valToggle.checked = loadShowValTrades();
@@ -848,20 +912,31 @@ const valDistMeanPlugin = {
 
 // Distribution of (final value - initial value) / initial value across every
 // held-out validation run in val_runs.jsonl — one sample per run. Bin width is
-// the smallest "nice" step (1/2/5 x 10^k percent) giving <= ~12 bins, with
-// bin edges anchored at 0 so a bar never straddles break-even.
-function renderValDistChart(runs) {
+// VAL_DIST_BIN_PCT, with bin edges anchored at 0 so a bar never straddles
+// break-even.
+function renderValDistChart(allRuns) {
   const sub = document.getElementById('val-dist-sub');
   if (!sub) return;
+  const skipFirst = document.getElementById('val-dist-skip-toggle').checked;
+  let runs = skipFirst ? allRuns.slice(VAL_DIST_SKIP_RUNS) : allRuns;
+  const range = document.getElementById('val-dist-recent-range');
+  const rangeMax = Math.max(VAL_DIST_MIN_RECENT, runs.length);
+  range.max = rangeMax;
+  const recentN = valDistRecentN && valDistRecentN < rangeMax ? valDistRecentN : 0;
+  range.value = recentN || rangeMax;
+  document.getElementById('val-dist-recent-label').textContent = recentN ? `last ${recentN}` : `all (${runs.length})`;
+  if (recentN) runs = runs.slice(-recentN);
   if (!runs.length || !initialCash) {
-    sub.textContent = runs.length ? 'Waiting for run config (initial cash)' : 'No held-out evaluation completed yet';
+    sub.textContent = runs.length ? 'Waiting for run config (initial cash)'
+      : allRuns.length ? `No runs left after skipping the first ${VAL_DIST_SKIP_RUNS} (${allRuns.length} so far)`
+      : 'No held-out evaluation completed yet';
+    if (valDistChart) { valDistChart.data.labels = []; valDistChart.data.datasets[0].data = [];
+                        valDistChart.options.plugins.valDistMean = {}; valDistChart.update('none'); }
     return;
   }
   const rets = runs.map(r => (r.final_value - initialCash) / initialCash * 100);
   const lo = Math.min(...rets), hi = Math.max(...rets);
-  const span = Math.max(hi - lo, 0.5);
-  const raw = span / 12, mag = Math.pow(10, Math.floor(Math.log10(raw)));
-  const step = [1, 2, 5, 10].map(m => m * mag).find(w => w >= raw);
+  const step = VAL_DIST_BIN_PCT;
   const first = Math.floor(lo / step), last = Math.max(Math.floor(hi / step), first);
   const counts = new Array(last - first + 1).fill(0);
   rets.forEach(v => counts[Math.floor(v / step) - first]++);
@@ -882,13 +957,13 @@ function renderValDistChart(runs) {
   const yMax = Math.max(...counts, fit ? fit.n * step / (sigma * Math.sqrt(2 * Math.PI)) : 0) * 1.1;
   const fitNote = fit ? ` · normal fit σ ${sigma.toFixed(2)}% (curve)`
                       : ` · fitted curve appears at ${VAL_DIST_FIT_MIN_RUNS} runs`;
-  sub.textContent = `${runs.length} run${runs.length === 1 ? '' : 's'} · mean ${sg(mean)} (dashed line) · median ${sg(median)} · ` +
+  sub.textContent = `${runs.length}${runs.length < allRuns.length ? ` of ${allRuns.length}` : ''} run${runs.length === 1 ? '' : 's'} · mean ${sg(mean)} (dashed line) · median ${sg(median)} · ` +
     `${pos}/${runs.length} profitable (${(pos / runs.length * 100).toFixed(0)}%) · range ${sg(lo)} … ${sg(hi)}${fitNote}`;
 
   if (!valDistChart) {
     valDistChart = new Chart(document.getElementById('val-dist-chart'), {
       type: 'bar',
-      data: { labels, datasets: [{ data: counts, backgroundColor: colors }] },
+      data: { labels, datasets: [{ data: counts, backgroundColor: colors, categoryPercentage: 1, barPercentage: 1 }] },
       plugins: [valDistMeanPlugin],
       options: {
         responsive: true, maintainAspectRatio: false,
@@ -925,6 +1000,17 @@ function paramItem(label, value) {
 // RESUMABLE_KEYS entries — the RAW --train-start/etc. override if one was
 // given, null otherwise — not what actually ran; always read the
 // resolved_train_*/resolved_val_* fields for display.
+// --val-days is only used when the validation window is derived from the end
+// of the data (trailing mode with no explicit --val-start/--val-end, e.g. no
+// date_window.json); otherwise the real span is whatever the resolved dates say.
+function valDaysLabel(cfg) {
+  const derived = cfg.val_window === 'trailing' && cfg.val_start == null && cfg.val_end == null;
+  if (derived && cfg.val_days != null) return `${cfg.val_days}`;
+  const a = Date.parse(cfg.resolved_val_start), b = Date.parse(cfg.resolved_val_end);
+  if (isNaN(a) || isNaN(b)) return cfg.val_days != null ? `${cfg.val_days}` : '—';
+  return `${Math.round((b - a) / 86400000)}`;
+}
+
 function renderRunConfig(cfg) {
   if (cfg.initial_cash && cfg.initial_cash !== initialCash) {
     initialCash = cfg.initial_cash;
@@ -947,7 +1033,7 @@ function renderRunConfig(cfg) {
       ${paramItem('Learning rate', cfg.lr ?? '—')}
       ${paramItem('Entropy coef', cfg.entropy_coef ?? '—')}
       ${paramItem('Eval every', cfg.eval_every != null ? cfg.eval_every + ' iters' : '—')}
-      ${paramItem('Val days', cfg.val_days ?? '—')}
+      ${paramItem('Val days', valDaysLabel(cfg))}
       ${paramItem('Val window', cfg.val_window ?? '—')}
       ${paramItem('Initial cash', cfg.initial_cash != null ? fmtRupee(cfg.initial_cash) : '—')}
       ${paramItem('Seed', cfg.seed ?? 'none')}
