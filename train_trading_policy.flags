@@ -1,1 +1,1 @@
---no-news --iterations 500 --minibatch 64 --eval-every 1 --entropy 0.01 --resume
+--no-news --iterations 500 --minibatch 64 --eval-every 1 --entropy 0.005 --init-from /home/prabal/workstation/git/Agents/website/data/trading_game/policy.bson
