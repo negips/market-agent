@@ -16,12 +16,12 @@ const MAX_POSITION_FRACTION = 0.15            # rule 12: a single symbol can't e
 
 """Rule 13: the ceiling on distinct symbols held at once, N_MAX, is defined as
 a fraction of the candidate universe size N (not a fixed constant) — see
-`n_max_holdings`. `N_MAX_HOLDINGS_FRACTION` is the `0.25` from the rule text
-itself."""
-const N_MAX_HOLDINGS_FRACTION = 0.25
+`n_max_holdings`. `N_MAX_HOLDINGS_FRACTION` started as the `0.25` from the rule
+text and is now tuned to `0.5`."""
+const N_MAX_HOLDINGS_FRACTION = 0.5
 
-"""Rule 13's N_MAX for a universe of `n_candidates` symbols: `round(0.25 *
-n_candidates)`, floored at 1 so a tiny universe (e.g. a 3-symbol test fixture)
+"""Rule 13's N_MAX for a universe of `n_candidates` symbols: `round(N_MAX_HOLDINGS_FRACTION
+* n_candidates)`, floored at 1 so a tiny universe (e.g. a 3-symbol test fixture)
 still allows at least one position — the rule text doesn't specify a rounding
 convention or a minimum, and zero would make the game unplayable, which
 contradicts every other rule's premise that stocks can be held at all."""
@@ -43,11 +43,11 @@ const MAX_CASH_FRACTION = 0.30
 *every* bar's reward — unlike the log-return term (see `TRAINING_REWARD_MODE`
 and `REWARD_INTERVAL_DAYS`, neither of which this penalty depends on), this
 penalty is never windowed, under either reward mode. Scaled to the same
-order as `ENTROPY_COEF` — small enough not to swamp a reward window's
-genuine portfolio-value signal, large enough that sitting at 100% cash
-(excess=0.70) costs -0.007/bar, a real, learnable incentive to deploy
-capital even between reward windows."""
-const CASH_CEILING_PENALTY_COEF = 0.01
+order of `ENTROPY_COEF` (0.01), and 5x it — small enough not to swamp a
+reward window's genuine portfolio-value signal, large enough that sitting at
+100% cash (excess=0.70) costs -0.035/bar, a real, learnable incentive to
+deploy capital even between reward windows."""
+const CASH_CEILING_PENALTY_COEF = 0.05
 
 """Rule 15: once a symbol is sold (voluntarily or via the rule-9 forced exit —
 the rule text doesn't distinguish, and `_execute_sell!` already treats both
