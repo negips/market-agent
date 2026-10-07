@@ -142,6 +142,25 @@
   }
   .param-item .l { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
   .param-item .v { font-size: 13px; font-family: var(--mono); color: var(--text); margin-top: 2px; }
+  .hp-card summary { cursor: pointer; list-style: none; display: flex; align-items: baseline; gap: 10px; }
+  .hp-card summary::-webkit-details-marker { display: none; }
+  .hp-card summary::before { content: '▸'; color: var(--muted); font-size: 11px; }
+  .hp-card[open] summary::before { content: '▾'; }
+  .hp-intro { font-size: 12px; color: var(--text-dim); line-height: 1.6; margin: 12px 0 4px; }
+  .hp-intro code, .hp-table code { font-family: var(--mono); font-size: 11px; color: var(--text); }
+  .hp-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }
+  .hp-table th {
+    text-align: left; font-size: 10px; font-weight: 600; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .04em; padding: 6px 10px 6px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .hp-table td { padding: 10px 10px 10px 0; border-bottom: 1px solid var(--border); vertical-align: top; line-height: 1.55; color: var(--text-dim); }
+  .hp-table tr:last-child td { border-bottom: none; }
+  .hp-table .hp-name { font-weight: 600; color: var(--text); white-space: nowrap; }
+  .hp-table .hp-name small { display: block; font-weight: 400; color: var(--muted); font-family: var(--mono); font-size: 10.5px; margin-top: 2px; }
+  .hp-table .hp-val { font-family: var(--mono); color: var(--accent); white-space: nowrap; }
+  .hp-note { font-size: 11.5px; color: var(--text-dim); line-height: 1.6; margin-top: 12px; padding: 10px 12px; border-left: 2px solid var(--accent); background: rgba(255,255,255,.02); }
+  @media (max-width: 900px) { .hp-table { display: block; overflow-x: auto; } }
 </style>
 </head>
 <body>
@@ -281,6 +300,112 @@ function revealLayout() {
       </div>
       <div id="run-config-body" style="margin-top:4px"></div>
     </div>
+
+    <details class="chart-card hp-card" id="hp-card">
+      <summary>
+        <div class="chart-title">PPO hyperparameters explained</div>
+        <div class="chart-sub">what each knob does and which way to turn it</div>
+      </summary>
+
+      <div class="hp-intro">
+        One <b>iteration</b> = one full training episode played with the current policy
+        (every decision bar of the train window; the sampled actions, rewards and critic values are
+        stored), followed by an update on that data: advantages are computed with <b>GAE</b>,
+        normalised to zero mean / unit std across the episode, and the policy is trained for
+        <code>K</code> passes of shuffled minibatches on the <b>clipped PPO objective</b>:
+        <code>loss = −min(r·A, clip(r, 1−ε, 1+ε)·A) + c<sub>v</sub>·(V − return)² − c<sub>e</sub>·entropy</code>,
+        where <code>r</code> is the new/old probability ratio of the actions that were taken.
+        The action log-probability and entropy are <i>summed over all candidate stocks</i>, so a
+        step's single advantage is shared by every candidate's decision in that step.
+      </div>
+
+      <table class="hp-table">
+        <thead><tr><th>Parameter</th><th>This run</th><th>What it does</th><th>Turning it up / down</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="hp-name">Learning rate<small>--lr · Adam</small></td>
+            <td class="hp-val" id="hp-lr">—</td>
+            <td>Size of each gradient step for the whole network (actor and critic share one optimiser).
+                There is no schedule and no gradient clipping.</td>
+            <td>Higher learns faster but can destabilise the policy (val return swings, entropy collapses suddenly).
+                Lower is steadier but slow. Lower it when resuming or warm-starting from a good checkpoint.</td>
+          </tr>
+          <tr>
+            <td class="hp-name">Minibatch<small>--minibatch</small></td>
+            <td class="hp-val" id="hp-minibatch">—</td>
+            <td>Decision steps per gradient update. Each epoch shuffles the episode's steps and slices them into
+                minibatches, so updates per iteration = <code>K × ⌈steps / minibatch⌉</code>.</td>
+            <td>Smaller means more, noisier updates per iteration (and slower on GPU). Larger means fewer, smoother
+                updates; pair with a slightly higher learning rate.</td>
+          </tr>
+          <tr>
+            <td class="hp-name">PPO epochs K<small>fixed default</small></td>
+            <td class="hp-val" id="hp-k">4</td>
+            <td>How many times the same rollout is reused for updates. Not a command-line flag; set by
+                <code>DEFAULT_K_EPOCHS</code> in <code>train.jl</code>.</td>
+            <td>More reuse extracts more from each expensive episode but lets the policy drift further from the one
+                that collected the data, where the clip is the only safeguard. There is no KL early stop.</td>
+          </tr>
+          <tr>
+            <td class="hp-name">Clip ε<small>CLIP_EPS</small></td>
+            <td class="hp-val" id="hp-clip">—</td>
+            <td>Trust region: the probability ratio is clamped to <code>[1−ε, 1+ε]</code>, so once an action has become
+                ε more (or less) likely there is no extra gradient reward for pushing further.</td>
+            <td>Smaller is more conservative and stable. Larger allows bigger policy changes per iteration and risks
+                collapse. 0.1–0.3 is the usual range.</td>
+          </tr>
+          <tr>
+            <td class="hp-name">Discount γ<small>GAMMA</small></td>
+            <td class="hp-val" id="hp-gamma">—</td>
+            <td>Per-<i>bar</i> discount on future reward (bars are hourly, ~7 per trading day). Effective horizon
+                <code>1/(1−γ)</code> bars; at 0.99 a reward one week ahead (~49 bars) still counts ~60%, and one at the
+                max-hold limit (~98 bars) ~37%.</td>
+            <td>Lower makes the agent short-sighted; it would undervalue holding for the full hold period.
+                Higher values the long run but raise variance. Keep the horizon at least as long as the max hold.</td>
+          </tr>
+          <tr>
+            <td class="hp-name">GAE λ<small>GAE_LAMBDA</small></td>
+            <td class="hp-val" id="hp-lambda">—</td>
+            <td>Bias/variance dial for the advantage estimate. λ=0 trusts the critic one step ahead (low variance, biased
+                by critic errors); λ=1 uses the actual rewards to the episode end (unbiased, very noisy). Credit from a
+                reward fades by <code>(γλ)</code> per bar, an effective horizon of <code>1/(1−γλ)</code> ≈
+                <span id="hp-gl-horizon">—</span> bars.</td>
+            <td>The reward is paid at the end of each reward window, much further out than that horizon, so early bars of a
+                window are credited mostly through the critic. Raising λ passes more of the real window return back
+                to those bars at the cost of noise.</td>
+          </tr>
+          <tr>
+            <td class="hp-name">Value loss coef<small>VALUE_LOSS_COEF</small></td>
+            <td class="hp-val" id="hp-vf">—</td>
+            <td>Weight of the critic's squared error against the actor's policy loss in the combined loss. The critic
+                predicts the discounted return; it supplies the baseline in every advantage.</td>
+            <td>Higher fits the critic faster, which helps when advantages look like noise, but can dominate shared layers
+                and starve the policy. Lower does the opposite.</td>
+          </tr>
+          <tr>
+            <td class="hp-name">Entropy coef<small>--entropy</small></td>
+            <td class="hp-val" id="hp-entropy">—</td>
+            <td>Bonus for keeping the per-candidate buy/hold/sell distribution spread out. Entropy is summed over all
+                candidates, so its pull grows with universe size.</td>
+            <td>Higher keeps exploring longer (noisier rollouts, slower convergence). Lower lets the policy commit sooner
+                and risks locking into "do nothing". If entropy in the iteration chart collapses early, raise it.</td>
+          </tr>
+          <tr>
+            <td class="hp-name">Eval every<small>--eval-every</small></td>
+            <td class="hp-val" id="hp-eval">—</td>
+            <td>Run a greedy (argmax-action) episode on the held-out validation window every N iterations. The
+                validation return drives checkpointing.</td>
+            <td>Smaller gives a finer picture and a denser distribution chart but costs a full episode each time.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="hp-note">
+        Fixed rather than tunable: advantage normalisation (always on), the optimiser (Adam), and
+        no gradient clipping. The reward itself (weekly windowed log-return minus the cash-ceiling penalty) is
+        set by constants in <code>constants.jl</code>, listed under <i>Rule-derived constants</i> above.
+      </div>
+    </details>
 
     <div class="chart-card">
       <div class="chart-header">
@@ -1058,6 +1183,22 @@ function renderRunConfig(cfg) {
       ${paramItem('Value loss coef', rc.value_loss_coef ?? '—')}
     </div>
   `;
+  renderHyperparamValues(cfg);
+}
+
+function renderHyperparamValues(cfg) {
+  const rc = cfg.rule_constants || {};
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v ?? '—'; };
+  set('hp-lr', cfg.lr);
+  set('hp-minibatch', cfg.resolved_minibatch ?? cfg.minibatch);
+  set('hp-clip', rc.clip_eps);
+  set('hp-gamma', rc.gamma);
+  set('hp-lambda', rc.gae_lambda);
+  set('hp-vf', rc.value_loss_coef);
+  set('hp-entropy', cfg.entropy_coef);
+  set('hp-eval', cfg.eval_every != null ? cfg.eval_every + ' iters' : null);
+  const gl = (rc.gamma ?? NaN) * (rc.gae_lambda ?? NaN);
+  set('hp-gl-horizon', isFinite(gl) && gl < 1 ? (1 / (1 - gl)).toFixed(1) : null);
 }
 
 async function pollLive() {
