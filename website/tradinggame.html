@@ -142,6 +142,22 @@
     .open-item .oi-mark { color: var(--yellow); font-size: 14px; line-height: 1.5; flex-shrink: 0; }
     .open-item .oi-title { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 3px; }
     .open-item .oi-desc { font-size: 12px; color: var(--text-dim); line-height: 1.6; }
+    /* ── Call sequence (validation decision step) ── */
+    .seq-phase {
+      font-size: 11px; font-weight: 600; color: var(--text-dim);
+      margin: 22px 0 8px; display: flex; align-items: center; gap: 8px;
+    }
+    .seq-phase small { font-weight: 400; color: var(--muted); }
+    .seq { display: grid; grid-template-columns: 38px minmax(210px, 300px) 1fr; gap: 0; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--surface); }
+    .seq > div { padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 12px; line-height: 1.6; color: var(--text-dim); }
+    .seq > div:nth-last-child(-n+3) { border-bottom: none; }
+    .seq .sq-n { font-family: var(--mono); font-size: 11px; font-weight: 700; color: var(--accent); text-align: center; padding-left: 4px; padding-right: 4px; }
+    .seq .sq-fn { font-family: var(--mono); font-size: 12px; font-weight: 700; color: var(--text); }
+    .seq .sq-fn small { display: block; font-weight: 400; color: var(--muted); font-size: 10.5px; margin-top: 1px; }
+    .seq .sq-sub { padding-left: 28px; }
+    .seq .sq-sub-n { color: var(--muted); }
+    .seq code, .rule-text code { font-family: var(--mono); font-size: 11px; color: var(--text); }
+    @media (max-width: 760px) { .seq { grid-template-columns: 34px 1fr; } .seq > div:nth-child(3n) { grid-column: 1 / -1; padding-top: 0; } }
   </style>
 </head>
 <body>
@@ -287,7 +303,7 @@
         <div class="section-title" style="margin-top:0">Observation shape</div>
         <table class="data-table">
           <tbody>
-            <tr><td>Hourly window</td><td class="num mono">120 bars × 3 ch</td></tr>
+            <tr><td>Hourly window</td><td class="num mono">120 bars × 2 ch</td></tr>
             <tr><td>Macro context</td><td class="num mono">10 days × 9 series</td></tr>
             <tr><td>News features</td><td class="num mono">2 / stock</td></tr>
             <tr><td>Holding state</td><td class="num mono">3 / stock</td></tr>
@@ -309,6 +325,136 @@
           </tbody>
         </table>
       </div>
+    </div>
+
+    <!-- ── Game v2 ───────────────────────────────────────────────────────── -->
+    <div class="section-title" id="game-v2">Game v2 vs the original (v1)</div>
+    <div class="section-note">
+      Select with <code>--game-version 2</code> on <code>train_trading_policy.jl</code> (default <code>1</code>).
+      The version is carried by <code>EpisodeConfig.rules</code> (a <code>GameRules</code>), so one simulator serves both.
+      A checkpoint is tied to its version — v2 adds a cash token to the network — so <code>--resume</code> /
+      <code>--init-from</code> across versions stops with a clear error.
+    </div>
+    <div class="tbl-wrap">
+      <table class="data-table">
+        <thead><tr><th class="no-sort">Aspect</th><th class="no-sort">v1 (original)</th><th class="no-sort">v2</th></tr></thead>
+        <tbody>
+          <tr><td>Fill price</td><td>Decision on bar t fills at bar t+1’s close</td><td><strong>Same bar</strong>: fills at bar t’s own close — the stand-in for a live instantaneous price. The reward for the decision is the move from bar t to t+1.</td></tr>
+          <tr><td>Holding limit</td><td>Forced exit after <code>MAX_HOLD_DAYS</code> (14) trading days</td><td><strong>No forced exit.</strong> A lot held <code>MAX_HOLD_DAYS_V2</code> (7)+ days costs <code>--hold-penalty × (share of portfolio value in such lots)</code> per bar. Default <code>0.0</code> = off.</td></tr>
+          <tr><td>Cash ceiling</td><td>Penalty <code>CASH_CEILING_PENALTY_COEF × max(0, cash/value − MAX_CASH_FRACTION)</code> per bar</td><td>Same formula, coefficient from <code>--cash-penalty</code>, default <code>0.0</code> = off (under v1, <code>--cash-penalty</code> overrides the constant).</td></tr>
+          <tr><td>Cash in the model</td><td>Only two scalars in the portfolio token</td><td><strong>Cash is a pseudo-stock</strong>: an extra token in the attention set, embedded from [cash/value, reserved/value, cap utilisation = cash/value ÷ <code>MAX_CASH_FRACTION</code>, days spent over the cap ÷ 7]. Cash has a cap fraction (<code>MAX_CASH_FRACTION</code>) mirroring a stock’s (<code>MAX_POSITION_FRACTION</code>) and an “age”, like a lot’s days held. It conditions the stocks and the critic; it has no action of its own — the agent raises cash by selling stocks.</td></tr>
+          <tr><td>Observation</td><td>4 portfolio scalars</td><td>6 portfolio scalars (adds cap utilisation and days-over-cap); a stock’s “remaining hold” fraction counts down from 7 days</td></tr>
+          <tr><td>Unchanged</td><td colspan="2">Fees, settlement, 1-day lock-up, rebuy cooldown, holdings cap, per-stock position cap, reward window, PPO, masks-after-argmax</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="section-note" style="margin-top:10px">
+      Order inside a v2 step: settle reserved cash → mask and fill the action at the current close → advance the clock →
+      settle again for the new date → mark value → reward minus the penalties. The sequence below describes v1; in v2 steps
+      6a–6c change as above (fill before the clock moves, no forced-exit step).
+    </div>
+
+    <!-- ── Validation decision step ───────────────────────────────────────── -->
+    <div class="section-title" id="validation-step">Validation: one decision step</div>
+    <div class="section-note">
+      A validation run is the <em>same</em> rollout code as a training episode, run once every
+      <code>--eval-every</code> iterations over the held-out date window with <code>greedy=true</code>:
+      each candidate takes its single most-likely action instead of a sampled one, and nothing is
+      learned. Its summed reward is <code>val_return</code>, which alone decides whether
+      <code>policy.bson</code> is checkpointed. Below is exactly what runs, in order. Rule numbers
+      refer to <code>constants.jl</code>.
+    </div>
+
+    <div class="seq-phase">A · Once per validation episode <small>— <code>train.jl</code> → <code>ppo.jl</code> → <code>env.jl</code></small></div>
+    <div class="seq">
+      <div class="sq-n">1</div>
+      <div class="sq-fn">train_policy!<small>train.jl</small></div>
+      <div>When <code>iter % eval_every == 0</code> it calls <code>start_episode!</code> (clears the live tracker, tags the phase <code>val</code>), then <code>collect_rollout(env, policy, val_config; greedy=true, live_cb=…)</code>.</div>
+      <div class="sq-n">2</div>
+      <div class="sq-fn">collect_rollout<small>ppo.jl</small></div>
+      <div>Takes a CPU copy of the policy (single-bar forward passes are ~10× slower on GPU), calls <code>reset!</code>, and preallocates one observation tensor per bar for the whole episode (<code>T = end_hour_idx − current_hour_idx</code> decision bars).</div>
+      <div class="sq-n">3</div>
+      <div class="sq-fn">reset!<small>env.jl</small></div>
+      <div>Cash ← initial cash; empties holdings, reserved cash and rebuy cooldowns; finds the first and last hourly bar of the window; loads the <em>validation</em> candidate universe from <code>val_config</code>.</div>
+    </div>
+
+    <div class="seq-phase">B · Every hourly bar <small>— the loop inside <code>collect_rollout</code>; one pass = one decision</small></div>
+    <div class="seq">
+      <div class="sq-n">1</div>
+      <div class="sq-fn">assemble_observation!<small>observation.jl</small></div>
+      <div>Writes the state at the <em>current</em> bar into the preallocated views: per candidate a 120-bar close window divided by its first valid close (+ the previous trading day’s (H−L)/C range), the news features, the holding state (held flag, unrealised %, remaining-hold fraction of the most urgent lot), 10 days × 9 macro series, and 4 portfolio ratios (cash, reserved, value/initial, stocks). Nothing after this bar is visible.</div>
+      <div class="sq-n">2</div>
+      <div class="sq-fn">stack_observations<small>observation.jl</small></div>
+      <div>Adds a batch dimension (B = 1) so the observation matches the network’s input shape.</div>
+      <div class="sq-n">3</div>
+      <div class="sq-fn">policy(…) — ActorCriticPolicy<small>policy.jl</small></div>
+      <div>Hourly GRU encodes each stock (last timestep kept) → fused with its news + holding features → a “portfolio token” built from the macro encoder and portfolio ratios is appended → one <code>MultiHeadAttention</code> pass over all N+1 tokens, so every stock sees every other and the cash state → actor head gives 3 logits (HOLD/SELL/BUY) and 1 buy-weight logit per stock; critic gives V(s).</div>
+      <div class="sq-n">4</div>
+      <div class="sq-fn">softmax → argmax<small>ppo.jl</small></div>
+      <div>Logits become probabilities <code>(3, N)</code>. With <code>greedy=true</code> each candidate independently takes <code>argmax</code> of its three. The buy weight is <code>sigmoid(buy_weight_logit)</code>. <strong>No rule is applied yet</strong> — the policy can choose SELL for a stock it doesn’t hold.</div>
+      <div class="sq-n">5</div>
+      <div class="sq-fn">RawAction list<small>ppo.jl</small></div>
+      <div>One <code>RawAction(sym_idx, kind, weight)</code> per candidate is built and handed to <code>step!</code>.</div>
+      <div class="sq-n">6</div>
+      <div class="sq-fn">step!<small>env.jl</small></div>
+      <div>Runs sub-steps 6a–6f below and returns a <code>StepResult(reward, done, info)</code>.</div>
+      <div class="sq-n sq-sub-n">6a</div>
+      <div class="sq-fn sq-sub">_advance_clock!<small>env.jl</small></div>
+      <div>Moves to the <em>next</em> hourly bar. Every price used from here on is that bar’s, so a decision made on bar t trades at bar t+1’s price.</div>
+      <div class="sq-n sq-sub-n">6b</div>
+      <div class="sq-fn sq-sub">_settle_reserved_cash!<small>env.jl</small></div>
+      <div>Reserved-cash lots whose settlement date has arrived (sale + 2 trading days, rule 4) move into spendable cash — before anything else, so settled cash is usable this bar.</div>
+      <div class="sq-n sq-sub-n">6c</div>
+      <div class="sq-fn sq-sub">_force_exit_stale_holdings!<small>env.jl</small></div>
+      <div>Any lot held ≥ <code>MAX_HOLD_DAYS</code> is sold unconditionally (rule 9, exempt from the lock-up) via <code>_execute_sell!</code> with kind <code>forced_exit</code>: proceeds minus 0.5% fee go to a new reserved-cash lot, and that symbol’s rebuy cooldown starts. This runs <em>before</em> the policy’s action is applied.</div>
+      <div class="sq-n sq-sub-n">6d</div>
+      <div class="sq-fn sq-sub">resolve_actions<small>action.jl</small></div>
+      <div>The only place the rules mask the policy’s choice (see the list below). A masked action silently becomes HOLD; surviving BUYs are sized from the cash pool.</div>
+      <div class="sq-n sq-sub-n">6e</div>
+      <div class="sq-fn sq-sub">_apply_actions!<small>env.jl</small></div>
+      <div>Executes the surviving trades. SELL: every lot of that symbol past the lock-up is sold at the bar’s price (<code>_execute_sell!</code>). BUY: whole shares only, <code>floor(notional / price)</code>, debits cash by notional + 0.5% fee and opens a new <code>Holding</code>.</div>
+      <div class="sq-n sq-sub-n">6f</div>
+      <div class="sq-fn sq-sub">portfolio_breakdown → reward<small>env.jl</small></div>
+      <div>Value = stocks + cash + reserved. <code>_log_return_reward!</code> pays 0 until <code>REWARD_INTERVAL_DAYS</code> trading days have passed, then the whole window’s <code>log(V / V_window_start)</code> (the last bar flushes a shorter tail). The rule-14 penalty <code>coef × max(0, cash/value − 30%)</code> is subtracted on <em>every</em> bar.</div>
+      <div class="sq-n">7</div>
+      <div class="sq-fn">_annotate_trade_probs!<small>ppo.jl</small></div>
+      <div>Stamps each trade event of this bar with the actor’s p(hold)/p(sell)/p(buy) for that stock — the record of what the policy itself wanted, including at forced exits.</div>
+      <div class="sq-n">8</div>
+      <div class="sq-fn">RolloutStep + live_cb<small>ppo.jl · live.jl</small></div>
+      <div>The step is stored in the buffer. The live callback appends the bar to the tracker’s value curve and trade list and rewrites <code>live_status.json</code> every 5 bars.</div>
+    </div>
+
+    <div class="seq-phase">C · After the last bar <small>— back in <code>train_policy!</code></small></div>
+    <div class="seq">
+      <div class="sq-n">1</div>
+      <div class="sq-fn">val_return, val_value<small>train.jl</small></div>
+      <div><code>val_return</code> = sum of every bar’s reward over the episode (telescopes to <code>log(V_final / V_initial)</code> minus the cash penalties); <code>val_value</code> = final portfolio value.</div>
+      <div class="sq-n">2</div>
+      <div class="sq-fn">save_val_run!<small>live.jl</small></div>
+      <div>Appends one line — value curve, every trade, final holdings — to <code>val_runs.jsonl</code> (never overwritten). This is what the live page’s validation charts and trades table read.</div>
+      <div class="sq-n">3</div>
+      <div class="sq-fn">checkpoint check<small>train.jl</small></div>
+      <div>If <code>val_return</code> beats the best so far, the policy is saved to <code>policy.bson</code>. Training return never checkpoints when a validation window exists.</div>
+    </div>
+
+    <div class="seq-phase">What <code>resolve_actions</code> masks <small>— in this order, after the policy has already chosen</small></div>
+    <div class="rule-grid">
+      <div class="rule-card"><span class="rule-num">SELL</span><div class="rule-text">Not held, or every lot still inside the 1-day lock-up (rule 10) → HOLD. Selling closes <em>all</em> eligible lots of that stock.</div></div>
+      <div class="rule-card"><span class="rule-num">BUY · universe</span><div class="rule-text">Symbol not in this episode’s candidate list → HOLD.</div></div>
+      <div class="rule-card"><span class="rule-num">BUY · cooldown</span><div class="rule-text">Opening a <em>new</em> position in a stock sold within the last <code>REBUY_COOLDOWN_DAYS</code> (rule 15) → HOLD. Adding to a stock still held is exempt.</div></div>
+      <div class="rule-card"><span class="rule-num">BUY · holdings cap</span><div class="rule-text">If the portfolio already holds <code>n_max_holdings(N)</code> symbols (rule 13), new positions beyond the free slots are dropped — <strong>chosen at random</strong> (uses the rollout RNG), not by list order.</div></div>
+      <div class="rule-card"><span class="rule-num">BUY · cash</span><div class="rule-text">Surviving buys split the cash held <em>at the start of this bar</em> in proportion to their buy weights, net of the fee (rule 5). Same-bar sale proceeds and reserved cash are not spendable.</div></div>
+      <div class="rule-card"><span class="rule-num">BUY · size cap</span><div class="rule-text">Each buy is capped so that stock’s value is at most <code>MAX_POSITION_FRACTION</code> of the portfolio (rule 12). Cash freed by the cap is left unspent, not redistributed.</div></div>
+    </div>
+
+    <div class="seq-phase">Things worth remembering</div>
+    <div class="rule-grid">
+      <div class="rule-card new"><span class="rule-num">Timing</span><div class="rule-text">The policy sees bar t and trades at bar t+1’s hourly close, not the price it was shown. Channel 2 (daily range) uses the <em>previous</em> trading day, so nothing after the decision bar is visible. (It used to read the current day’s complete range and volume, a look-ahead leak; the volume channel was removed.)</div></div>
+      <div class="rule-card new"><span class="rule-num">Masks come last</span><div class="rule-text">The network is never told which actions are blocked. A high p(sell) with zero executed sells can mean the lock-up or “not held” mask is eating it; compare <code>p_sell</code> in the trades table with what actually happened.</div></div>
+      <div class="rule-card new"><span class="rule-num">All-at-once buying</span><div class="rule-text">Every candidate whose argmax is BUY is bought on the same bar, splitting the whole cash pool. With many BUYs on the first bar the portfolio goes fully invested immediately (each position then capped at 15%).</div></div>
+      <div class="rule-card new"><span class="rule-num">Forced exit first</span><div class="rule-text">The 14-day exit runs before the policy’s action, so a stock can be force-sold and the same bar’s BUY for it is blocked by the fresh cooldown.</div></div>
+      <div class="rule-card new"><span class="rule-num">Greedy ≠ training</span><div class="rule-text">Training samples from the probabilities, so exploration can try SELL even when it is not the argmax. Validation never does — a policy that never ranks SELL first will never sell in validation, whatever training saw.</div></div>
+      <div class="rule-card new"><span class="rule-num">Where to look</span><div class="rule-text"><a href="tradinggamelive.html" style="color:var(--accent)">Live Training</a> → “Held-out validation — trades” lists every decision of a run with P&amp;L and the actor’s probabilities.</div></div>
     </div>
 
     <!-- ── Build stages ──────────────────────────────────────────────────── -->

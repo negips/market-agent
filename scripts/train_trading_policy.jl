@@ -131,7 +131,27 @@ actually trained on would corrupt the train/val split just as surely as
 `val_days` reverting to its default would."""
 const RESUMABLE_KEYS = ("initial_cash", "val_days", "eval_every", "lr", "entropy_coef", "seed", "device", "minibatch",
                          "val_window", "train_start", "train_end", "val_start", "val_end",
-                         "use_macro", "use_news", "news_db")
+                         "use_macro", "use_news", "news_db", "game_version", "cash_penalty", "hold_penalty")
+
+"""`--game-version` accepts `1`, `2`, `v1`, `v2`."""
+function _parse_game_version(raw::AbstractString)::Int
+    v = lowercase(strip(raw))
+    v in ("1", "v1") && return 1
+    v in ("2", "v2") && return 2
+    error("Unknown --game-version '$raw'. Expected: 1, 2, v1, v2")
+end
+
+"""The `GameRules` selected by `opts` — `rules_v1`/`rules_v2` with the penalty
+flags applied. `--hold-penalty` is meaningless under v1 (it has a forced exit
+instead), so a non-zero value there is a warning, not silently ignored."""
+function build_rules(opts::Dict)::GameRules
+    if opts["game_version"] == 2
+        return rules_v2(cash_penalty=something(opts["cash_penalty"], 0.0), hold_penalty=opts["hold_penalty"])
+    end
+    opts["hold_penalty"] != 0.0 &&
+        @warn "--hold-penalty only applies to --game-version 2 (v1 force-exits at MAX_HOLD_DAYS instead); ignoring"
+    return rules_v1(cash_penalty=opts["cash_penalty"])
+end
 
 function parse_args()
     opts = Dict{String, Any}(
@@ -155,6 +175,9 @@ function parse_args()
         "use_macro"   => true,
         "use_news"    => true,
         "news_db"     => NEWS_DB_FILE,
+        "game_version" => 1,
+        "cash_penalty"      => nothing,
+        "hold_penalty" => 0.0,
     )
     explicit = Set{String}()
     i = 1
@@ -194,6 +217,17 @@ Options:
                         placeholder instead, same as before this flag existed
   --no-news             Don't load news features — zero placeholder instead
   --news-db PATH        Classified-signals DB (default: $(opts["news_db"]))
+  --game-version V      1 (default, the original game) or 2: cash is a token
+                        in the policy, decisions fill at the SAME bar's close,
+                        and a stock held MAX_HOLD_DAYS_V2+ days is penalised
+                        instead of force-sold. Accepts 1/2/v1/v2. A v1
+                        checkpoint can't be resumed/warm-started as v2.
+  --cash-penalty X           Cash-ceiling penalty coefficient: per bar, X * max(0,
+                        cash/value - MAX_CASH_FRACTION). Default 0.0 under v2
+                        (off); under v1 default is CASH_CEILING_PENALTY_COEF
+                        ($(CASH_CEILING_PENALTY_COEF)) unless given.
+  --hold-penalty X      v2 only: per bar, X * (share of portfolio value in
+                        stocks held MAX_HOLD_DAYS_V2+ days). Default 0.0 (off).
 """)
             exit(0)
         elseif a == "--iterations";   opts["iterations"]   = parse(Int, ARGS[i+1]); push!(explicit, "iterations"); i += 2
@@ -216,6 +250,9 @@ Options:
         elseif a == "--no-macro";     opts["use_macro"]    = false; push!(explicit, "use_macro"); i += 1
         elseif a == "--no-news";      opts["use_news"]     = false; push!(explicit, "use_news"); i += 1
         elseif a == "--news-db";      opts["news_db"]      = ARGS[i+1]; push!(explicit, "news_db"); i += 2
+        elseif a == "--game-version"; opts["game_version"] = _parse_game_version(ARGS[i+1]); push!(explicit, "game_version"); i += 2
+        elseif a == "--cash-penalty";      opts["cash_penalty"]      = parse(Float64, ARGS[i+1]); push!(explicit, "cash_penalty"); i += 2
+        elseif a == "--hold-penalty"; opts["hold_penalty"] = parse(Float64, ARGS[i+1]); push!(explicit, "hold_penalty"); i += 2
         else; i += 1
         end
     end
@@ -282,6 +319,9 @@ function _print_training_params(opts::Dict, device::Symbol, minibatch::Int,
     @printf("  %-22s %s\n",  "init_from:",    isempty(opts["init_from"]) ? "none" : opts["init_from"])
     @printf("  %-22s %s\n",  "use_macro:",    opts["use_macro"])
     @printf("  %-22s %s\n",  "use_news:",     opts["use_news"])
+    @printf("  %-22s %s\n",  "game_version:", opts["game_version"])
+    @printf("  %-22s %s\n",  "cash_penalty:", something(opts["cash_penalty"], opts["game_version"] == 2 ? 0.0 : CASH_CEILING_PENALTY_COEF))
+    @printf("  %-22s %s\n",  "hold_penalty:", opts["game_version"] == 2 ? opts["hold_penalty"] : "n/a (v1)")
     @printf("  %-22s %d\n",  "n_candidates (train):", n_candidates_train)
     @printf("  %-22s %d\n",  "n_candidates (val):",   n_candidates_val)
     println("  train window:          $train_start .. $train_end")
@@ -291,7 +331,8 @@ function _print_training_params(opts::Dict, device::Symbol, minibatch::Int,
     @printf("  %-26s %s\n",     "FEE_RATE:",                  FEE_RATE)
     @printf("  %-26s %s\n",     "SETTLEMENT_DAYS:",           SETTLEMENT_DAYS)
     @printf("  %-26s %s\n",     "MIN_HOLD_DAYS:",             MIN_HOLD_DAYS)
-    @printf("  %-26s %s\n",     "MAX_HOLD_DAYS:",             MAX_HOLD_DAYS)
+    @printf("  %-26s %s\n",     "MAX_HOLD_DAYS (v1):",        MAX_HOLD_DAYS)
+    @printf("  %-26s %s\n",     "MAX_HOLD_DAYS_V2:",          MAX_HOLD_DAYS_V2)
     @printf("  %-26s %s\n",     "MAX_POSITION_FRACTION:",     MAX_POSITION_FRACTION)
     @printf("  %-26s %s (→ N_MAX = %d train / %d val)\n",
                                  "N_MAX_HOLDINGS_FRACTION:",  N_MAX_HOLDINGS_FRACTION, n_max_train, n_max_val)
@@ -302,6 +343,16 @@ function _print_training_params(opts::Dict, device::Symbol, minibatch::Int,
     @printf("  %-26s %s\n",     "CLIP_EPS:",                  CLIP_EPS)
     @printf("  %-26s %s\n",     "VALUE_LOSS_COEF:",           VALUE_LOSS_COEF)
     println("═"^64)
+end
+
+"""A checkpoint is only usable under the game version it was built for: v2's
+policy has a cash token and a wider portfolio input that a v1 checkpoint lacks
+(and vice versa), so loading across versions can't work."""
+function _check_policy_matches_rules(policy::ActorCriticPolicy, rules::GameRules, path::String)
+    has_token = policy.cash_encoder !== nothing
+    has_token == rules.cash_token && return nothing
+    error("$path was trained under game v$(has_token ? 2 : 1) but this run is v$(rules.version) — " *
+          "start a fresh policy (drop --resume/--init-from) or pass --game-version $(has_token ? 2 : 1)")
 end
 
 """Highest `iteration` field logged in `log_path`, or 0 if it doesn't exist
@@ -368,11 +419,14 @@ function save_run_config(opts::Dict, path::String, n_candidates_train::Int, n_ca
                 "fee_rate"                  => FEE_RATE,
                 "settlement_days"           => SETTLEMENT_DAYS,
                 "min_hold_days"             => MIN_HOLD_DAYS,
-                "max_hold_days"             => MAX_HOLD_DAYS,
+                "max_hold_days"             => (opts["game_version"] == 2 ? MAX_HOLD_DAYS_V2 : MAX_HOLD_DAYS),
                 "max_position_fraction"     => MAX_POSITION_FRACTION,
                 "n_max_holdings_fraction"   => N_MAX_HOLDINGS_FRACTION,
                 "max_cash_fraction"         => MAX_CASH_FRACTION,
-                "cash_ceiling_penalty_coef" => CASH_CEILING_PENALTY_COEF,
+                "cash_ceiling_penalty_coef" => (opts["game_version"] == 2 ? something(opts["cash_penalty"], 0.0) :
+                                                  something(opts["cash_penalty"], CASH_CEILING_PENALTY_COEF)),
+                "hold_penalty_coef"         => (opts["game_version"] == 2 ? opts["hold_penalty"] : 0.0),
+                "game_version"              => opts["game_version"],
                 "rebuy_cooldown_days"       => REBUY_COOLDOWN_DAYS,
                 "gamma"                     => GAMMA,
                 "gae_lambda"                => GAE_LAMBDA,
@@ -476,10 +530,13 @@ function main()
     @info "Train window: $train_start .. $train_end"
     @info "Val window:   $val_start .. $val_end"
 
+    rules = build_rules(opts)
+    @info "Game v$(rules.version): same-bar execution=$(rules.same_bar_execution), forced exit=$(rules.forced_exit), " *
+          "max hold $(rules.max_hold_days)d, cash penalty=$(rules.cash_penalty_coef), hold penalty=$(rules.hold_penalty_coef)"
     train_config = EpisodeConfig(initial_cash=opts["initial_cash"], start_date=train_start,
-                                  end_date=train_end, candidate_universe=universe.train)
+                                  end_date=train_end, candidate_universe=universe.train, rules=rules)
     val_config   = EpisodeConfig(initial_cash=opts["initial_cash"], start_date=val_start,
-                                  end_date=val_end, candidate_universe=universe.val)
+                                  end_date=val_end, candidate_universe=universe.val, rules=rules)
 
     macro_cache = nothing
     if opts["use_macro"]
@@ -530,12 +587,14 @@ function main()
         isfile(checkpoint_path) ||
             error("--resume requested but no checkpoint found at $checkpoint_path")
         policy, hp, _ = load_policy(checkpoint_path)
+        _check_policy_matches_rules(policy, rules, checkpoint_path)
         iteration_offset = _last_completed_iteration(episode_log_path)
         @info "Resumed policy — last completed iteration: $iteration_offset"
     elseif !isempty(opts["init_from"])
         isfile(opts["init_from"]) ||
             error("--init-from: not found: $(opts["init_from"])")
         policy, hp, _ = load_policy(opts["init_from"])
+        _check_policy_matches_rules(policy, rules, opts["init_from"])
         @info "Fresh run, weights warm-started from $(opts["init_from"])"
         # Fresh iteration numbering and log, unlike --resume — see the module
         # docstring's --init-from vs --resume note. val_runs.jsonl follows the
@@ -544,7 +603,7 @@ function main()
         isfile(episode_log_path) && rm(episode_log_path)
         isfile(val_curve_path) && rm(val_curve_path)
     else
-        policy = ActorCriticPolicy(seed=opts["seed"])
+        policy = ActorCriticPolicy(seed=opts["seed"], cash_token=rules.cash_token)
         hp = (embed_dim=64, macro_embed_dim=16, attn_heads=4, critic_hidden=[64, 32])
         @info "Fresh policy" * (opts["seed"] === nothing ? "" : " (seed=$(opts["seed"]))")
         # episode_log.jsonl/val_runs.jsonl are both opened in append mode

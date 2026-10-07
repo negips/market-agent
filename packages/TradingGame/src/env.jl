@@ -33,6 +33,7 @@ function reset!(env::TradingGameEnv, config::EpisodeConfig)
 
     env.reward_window_start_date_idx = env.cache.date_index[env.current_date]
     env.reward_window_start_value    = config.initial_cash
+    env.cash_over_since_date_idx     = env.reward_window_start_date_idx   # episodes start at 100% cash, above any cap < 1
 
     env.daily_value_base_date_idx = env.reward_window_start_date_idx
     empty!(env.daily_values)
@@ -132,12 +133,14 @@ its own `rng` here instead so a given seed covers the whole rollout.
 function step!(env::TradingGameEnv, raw_actions::JointAction=RawAction[];
                 rng::AbstractRNG=Random.default_rng())::StepResult
     env.config === nothing && error("TradingGameEnv.step!: call reset! before step!")
+    rules = env.config.rules
+    rules.same_bar_execution && return _step_same_bar!(env, raw_actions, rules; rng=rng)
 
     _advance_clock!(env)
     date_idx = env.cache.date_index[env.current_date]
 
     n_settled = _settle_reserved_cash!(env.portfolio, date_idx)
-    forced, forced_events = _force_exit_stale_holdings!(env, date_idx)
+    forced, forced_events = _force_exit_stale_holdings!(env, date_idx; max_hold_days=rules.max_hold_days)
 
     n_executed    = 0
     voluntary_events = TradeEvent[]
@@ -161,7 +164,7 @@ function step!(env::TradingGameEnv, raw_actions::JointAction=RawAction[];
     # Independent of the log-return term's cadence above — always every bar.
     cash_fraction = value > 0 ? env.portfolio.cash / value : 0.0
     cash_excess   = max(0.0, cash_fraction - MAX_CASH_FRACTION)
-    reward -= CASH_CEILING_PENALTY_COEF * cash_excess
+    reward -= rules.cash_penalty_coef * cash_excess
 
     info = Dict{String, Any}(
         "portfolio_value"       => value,
@@ -249,11 +252,86 @@ end
 """Rule 8: any holding at or past `MAX_HOLD_DAYS` is sold unconditionally at
 the current bar's price, before the voluntary action is applied. Exempt from
 rule 10's lock-up — a forced exit is not a voluntary sale."""
-function _force_exit_stale_holdings!(env::TradingGameEnv, date_idx::Int)
-    stale = filter(h -> date_idx - h.entry_date_idx >= MAX_HOLD_DAYS, env.portfolio.holdings)
+function _force_exit_stale_holdings!(env::TradingGameEnv, date_idx::Int; max_hold_days::Int=MAX_HOLD_DAYS)
+    stale = filter(h -> date_idx - h.entry_date_idx >= max_hold_days, env.portfolio.holdings)
     events = [_execute_sell!(env, h, date_idx; reason="forced_exit") for h in stale]
-    filter!(h -> !(date_idx - h.entry_date_idx >= MAX_HOLD_DAYS), env.portfolio.holdings)
+    filter!(h -> !(date_idx - h.entry_date_idx >= max_hold_days), env.portfolio.holdings)
     return stale, events
+end
+
+"""Game v2's `step!` (`rules.same_bar_execution`). The decision made on the
+current bar is filled at THIS bar's close — the stand-in for a live system's
+instantaneous price — and only then does the clock advance to mark the
+result, so the reward for bar t's decision is the price move from bar t to
+t+1. Order: settle reserved cash (rule 4) → apply the masked action → advance
+the clock → settle again for the new date (so the next observation's cash
+matches what `resolve_actions` will see) → mark value → reward minus the soft
+penalties. There is no forced exit: lots held `rules.max_hold_days`+ days only
+cost `rules.hold_penalty_coef` times their share of portfolio value per bar,
+the stock analogue of the cash penalty."""
+function _step_same_bar!(env::TradingGameEnv, raw_actions::JointAction, rules::GameRules;
+                          rng::AbstractRNG=Random.default_rng())::StepResult
+    date_idx = env.cache.date_index[env.current_date]
+    n_settled = _settle_reserved_cash!(env.portfolio, date_idx)
+
+    n_executed = 0
+    events = TradeEvent[]
+    if is_decision_bar(env)
+        resolved = resolve_actions(env, raw_actions, date_idx; rng=rng)
+        events = _apply_actions!(env, resolved, date_idx)
+        n_executed = length(resolved)
+    end
+
+    _advance_clock!(env)
+    new_date_idx = env.cache.date_index[env.current_date]
+    n_settled += _settle_reserved_cash!(env.portfolio, new_date_idx)
+
+    breakdown = portfolio_breakdown(env)
+    value = breakdown.value
+    done  = env.current_hour_idx >= env.end_hour_idx
+
+    reward = _log_return_reward!(env, new_date_idx, value, done)
+
+    cash_fraction = value > 0 ? env.portfolio.cash / value : 0.0
+    cash_excess   = max(0.0, cash_fraction - MAX_CASH_FRACTION)
+    reward -= rules.cash_penalty_coef * cash_excess
+    if cash_excess > 0
+        env.cash_over_since_date_idx == 0 && (env.cash_over_since_date_idx = new_date_idx)
+    else
+        env.cash_over_since_date_idx = 0
+    end
+
+    overdue_fraction = overdue_stock_fraction(env, new_date_idx, value, rules.max_hold_days)
+    reward -= rules.hold_penalty_coef * overdue_fraction
+
+    info = Dict{String, Any}(
+        "portfolio_value"       => value,
+        "stocks_value"          => breakdown.stocks_value,
+        "cash_value"            => breakdown.cash_value,
+        "cash_fraction"         => cash_fraction,
+        "cash_ceiling_violated" => cash_excess > 0,
+        "overdue_fraction"      => overdue_fraction,
+        "forced_exits"          => 0,
+        "reserved_settled"      => n_settled,
+        "actions_executed"      => n_executed,
+        "trades"                => events,
+    )
+    return StepResult(reward, done, info)
+end
+
+"""Share of portfolio value held in lots at least `max_hold_days` trading days
+old, at the current bar's prices — the stock-side input to game v2's soft hold
+penalty (`GameRules.hold_penalty_coef`), the analogue of `cash_fraction` for
+the cash penalty."""
+function overdue_stock_fraction(env::TradingGameEnv, date_idx::Int, value::Float64, max_hold_days::Int)::Float64
+    value > 0 || return 0.0
+    overdue = 0.0
+    for h in env.portfolio.holdings
+        date_idx - h.entry_date_idx >= max_hold_days || continue
+        price = current_price(env, h.sym_idx)
+        isnan(price) || (overdue += h.quantity * price)
+    end
+    return overdue / value
 end
 
 """Sell one lot at the current hourly close, crediting proceeds-minus-fee into
@@ -270,8 +348,13 @@ function _execute_sell!(env::TradingGameEnv, h::Holding, date_idx::Int; reason::
     push!(env.portfolio.reserved,
           ReservedCashLot(proceeds - fee, date_idx + SETTLEMENT_DAYS, h.symbol))
     env.portfolio.rebuy_cooldown[h.sym_idx] = date_idx + REBUY_COOLDOWN_DAYS
+    cost_basis = h.quantity * h.entry_price + h.entry_fee
+    pnl        = proceeds - fee - cost_basis
     return (kind=reason, symbol=h.symbol, price=price, quantity=h.quantity, notional=proceeds, fee=fee,
-            date=string(env.current_date), t=string(env.cache.hourly_datetimes[env.current_hour_idx]))
+            date=string(env.current_date), t=string(env.cache.hourly_datetimes[env.current_hour_idx]),
+            entry_price=h.entry_price, pnl=pnl, ret=cost_basis > 0 ? pnl / cost_basis : 0.0,
+            days_held=date_idx - h.entry_date_idx,
+            p_hold=UNRECORDED_PROB, p_sell=UNRECORDED_PROB, p_buy=UNRECORDED_PROB)
 end
 
 """Execute an already-masked set of trades (see `resolve_actions`). Buys are
@@ -319,7 +402,9 @@ function _apply_actions!(env::TradingGameEnv, resolved::Vector{ResolvedTrade}, d
                 entry_fee      = fee,
             ))
             push!(events, (kind="buy", symbol=symbol, price=price, quantity=qty, notional=notional, fee=fee,
-                           date=string(env.current_date), t=string(env.cache.hourly_datetimes[env.current_hour_idx])))
+                           date=string(env.current_date), t=string(env.cache.hourly_datetimes[env.current_hour_idx]),
+                           entry_price=price, pnl=0.0, ret=0.0, days_held=0,
+                           p_hold=UNRECORDED_PROB, p_sell=UNRECORDED_PROB, p_buy=UNRECORDED_PROB))
         end
     end
     return events

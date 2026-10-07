@@ -53,6 +53,23 @@ end
 
 const _ACTION_TYPES = (HOLD, SELL, BUY)   # index i ↔ ActionType, matches the actor head's 3 logits
 
+"""Stamp this bar's trade events with the actor's HOLD/SELL/BUY probabilities
+for each event's own candidate (`probs` is `(3, N)`, `cand_pos` maps symbol →
+candidate column). Forced exits get them too — the probability the policy
+itself put on selling a position the rules were about to close anyway is the
+clearest read on whether it ever chooses to sell. Replaces
+`result.info["trades"]` in place; no-op on a bar with no trades."""
+function _annotate_trade_probs!(result::StepResult, probs::AbstractMatrix{<:Real}, cand_pos::Dict{String, Int})
+    trades = result.info["trades"]::Vector{TradeEvent}
+    isempty(trades) && return nothing
+    result.info["trades"] = TradeEvent[
+        merge(ev, (p_hold=Float64(probs[1, cand_pos[ev.symbol]]),
+                   p_sell=Float64(probs[2, cand_pos[ev.symbol]]),
+                   p_buy =Float64(probs[3, cand_pos[ev.symbol]])))
+        for ev in trades]
+    return nothing
+end
+
 """
 Run one full episode (`reset!` then `step!` until `done`), sampling actions
 from `policy` at every decision step and recording a `RolloutStep` per step.
@@ -116,12 +133,13 @@ function collect_rollout(env::TradingGameEnv, policy::ActorCriticPolicy, config:
     T <= 0 && error("collect_rollout: episode has no decision bars — check start_date/end_date")
     N = length(env.candidate_order)
     candidates = copy(env.candidate_order)   # invariant for the whole episode — one shared copy
+    cand_pos   = Dict(env.cache.companies[s] => i for (i, s) in enumerate(candidates))
 
     hourly_buf    = Array{Float32}(undef, N_HOURLY_BARS_SHORT, N_PRICE_CHANNELS, N, T)
     macro_buf     = Array{Float32}(undef, N_MACRO_DAYS, N_MACRO_SERIES, T)
     news_buf      = Array{Float32}(undef, N_NEWS_FEATURES, N, T)
     holding_buf   = Array{Float32}(undef, N_HOLDING_FEATURES, N, T)
-    portfolio_buf = Array{Float32}(undef, N_PORTFOLIO_SCALARS, T)
+    portfolio_buf = Array{Float32}(undef, n_portfolio_scalars(config.rules), T)
     action_idx_buf = Array{Int}(undef, N, T)
     buy_weight_buf = Array{Float32}(undef, N, T)
 
@@ -169,6 +187,7 @@ function collect_rollout(env::TradingGameEnv, policy::ActorCriticPolicy, config:
         raw = RawAction[RawAction(sym_idx, _ACTION_TYPES[action_idx_view[i]], buy_weight_view[i])
                          for (i, sym_idx) in enumerate(obs.candidates)]
         result = step!(env, raw; rng=rng)
+        _annotate_trade_probs!(result, probs, cand_pos)
 
         buffer[t] = RolloutStep(obs, action_idx_view, buy_weight_view, logprob, Float32(value[1]),
                                  Float32(result.reward), result.done)

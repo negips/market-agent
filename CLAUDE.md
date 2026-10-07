@@ -140,7 +140,13 @@ architecture write-ups (design proposals, complexity analysis, anything that wan
 equations/diagrams/citations), not day-to-day API docs. Written in LaTeX; `.tex`,
 `.bib`, and the built `.pdf` are all tracked in git (unlike `papers/`, which is
 downloaded reference material and is gitignored). First instance:
-`packages/TradingGame/docs/tradinggame_scaling.tex`. Module-level docstrings describe
+`packages/TradingGame/docs/tradinggame_scaling.tex`. `TradingGame` also has a
+Documenter.jl site generated from its docstrings (`docs/make.jl`, `docs/src/*.md`,
+`docs/Project.toml`; output in the gitignored `docs/build/`) — build it with
+`julia --project=packages/TradingGame/docs packages/TradingGame/docs/make.jl` and open
+`packages/TradingGame/docs/build/index.html`. The API pages are `@autodocs` blocks per
+source file, so new docstrings appear automatically; add a new source file to the
+matching `docs/src/*.md` page. Module-level docstrings describe
 each package's role in the pipeline and link to related packages with
 `See also: [OtherModule](@ref)`.
 
@@ -955,7 +961,21 @@ julia --project=packages/TradingGame scripts/train_trading_policy.jl --entropy 0
 julia --project=packages/TradingGame scripts/train_trading_policy.jl --val-window same
 julia --project=packages/TradingGame scripts/train_trading_policy.jl --val-start 2024-06-01 --val-end 2024-12-31
 julia --project=packages/TradingGame scripts/train_trading_policy.jl --no-macro --no-news
+julia --project=packages/TradingGame scripts/train_trading_policy.jl --game-version 2 --cash-penalty 0.02 --hold-penalty 0.02
 ```
+
+`--game-version {1,2}` (default `1`) selects the rule set, carried per episode by
+`EpisodeConfig.rules` (`GameRules`; `rules_v1()`/`rules_v2()`). **v2**: cash is a
+pseudo-stock — an extra attention token built from cash/value, reserved/value, cap
+utilisation (`cash/value ÷ MAX_CASH_FRACTION`) and days spent over the cap; decisions
+fill at the **same bar's close** instead of the next bar's; there is **no forced exit**
+— a lot held `MAX_HOLD_DAYS_V2` (7)+ days costs `--hold-penalty × (share of portfolio
+value in such lots)` per bar; and the cash-ceiling penalty is `--cash-penalty` (both
+default `0.0`, i.e. off; under v1 `--cash-penalty` overrides `CASH_CEILING_PENALTY_COEF`
+and `--hold-penalty` is ignored with a warning). The version, `--cash-penalty` and
+`--hold-penalty` are `--resume`-restored via `run_config.json`. v2 policies carry the
+cash token, so a checkpoint can only be resumed / warm-started under the version it
+was trained with (a mismatch stops with an error). v1 behaviour is unchanged.
 
 `--val-window MODE` (default `trailing`) picks how the train/val date windows are
 derived: `trailing` is the original behavior — val is the last `--val-days` of the

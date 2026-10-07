@@ -145,6 +145,11 @@ function assemble_observation!(hourly::AbstractArray{Float32,3}, macro_ctx::Abst
     N = length(env.candidate_order)
     t = env.current_hour_idx
     date_idx = env.cache.date_index[env.current_date]
+    rules    = env.config.rules
+    max_hold = rules.max_hold_days
+    length(portfolio) == n_portfolio_scalars(rules) ||
+        error("assemble_observation!: portfolio vector has $(length(portfolio)) entries, " *
+              "game v$(rules.version) needs $(n_portfolio_scalars(rules))")
 
     # ── Per-stock hourly sequence ────────────────────────────────────────────
     lo = t - N_HOURLY_BARS_SHORT + 1
@@ -166,12 +171,12 @@ function assemble_observation!(hourly::AbstractArray{Float32,3}, macro_ctx::Abst
         else
             hourly[:, 1, col] .= 0f0
         end
-        # channels 2/3 are daily-granularity in InferenceCache (no intraday vol
-        # series exists) — broadcast today's value across the hourly window.
-        v  = env.cache.vols[date_idx, sym_idx]
-        rv = env.cache.rel_vols[date_idx, sym_idx]
-        hourly[:, 2, col] .= isnan(v)  ? 0f0 : v
-        hourly[:, 3, col] .= isnan(rv) ? 1f0 : rv
+        # channel 2 is daily-granularity in InferenceCache (no intraday vol
+        # series exists) — broadcast across the hourly window. Uses the
+        # PREVIOUS trading day's (H-L)/C: today's daily bar isn't complete at
+        # an intraday decision bar, so its range would leak the rest of the day.
+        v = date_idx > 1 ? env.cache.vols[date_idx - 1, sym_idx] : NaN32
+        hourly[:, 2, col] .= isnan(v) ? 0f0 : v
     end
 
     # ── News (neutral zero by default) ───────────────────────────────────────
@@ -198,7 +203,7 @@ function assemble_observation!(hourly::AbstractArray{Float32,3}, macro_ctx::Abst
         val_sum[col]  += h.quantity * price
         cost_sum[col] += h.quantity * h.entry_price
         days_held = date_idx - h.entry_date_idx
-        remaining = Float32(clamp((MAX_HOLD_DAYS - days_held) / MAX_HOLD_DAYS, 0, 1))
+        remaining = Float32(clamp((max_hold - days_held) / max_hold, 0, 1))
         min_remaining[col] = min(min_remaining[col], remaining)
     end
     for col in 1:N
@@ -225,6 +230,11 @@ function assemble_observation!(hourly::AbstractArray{Float32,3}, macro_ctx::Abst
     portfolio[2] = reserved_frac
     portfolio[3] = value_ratio
     portfolio[4] = stocks_frac
+    if rules.cash_token
+        days_over = env.cash_over_since_date_idx > 0 ? date_idx - env.cash_over_since_date_idx : 0
+        portfolio[5] = Float32(clamp(cash_frac / MAX_CASH_FRACTION, 0, 3))
+        portfolio[6] = Float32(clamp(days_over / max_hold, 0, 1))
+    end
 
     return nothing
 end
@@ -250,7 +260,7 @@ function assemble_observation(env::TradingGameEnv;
     macro_ctx = zeros(Float32, N_MACRO_DAYS, N_MACRO_SERIES)
     news      = zeros(Float32, N_NEWS_FEATURES, N)
     holding   = zeros(Float32, N_HOLDING_FEATURES, N)
-    portfolio = zeros(Float32, N_PORTFOLIO_SCALARS)
+    portfolio = zeros(Float32, n_portfolio_scalars(env.config.rules))
     assemble_observation!(hourly, macro_ctx, news, holding, portfolio, env;
                            macro_cache=macro_cache, news_fn=news_fn)
     return Observation(hourly, macro_ctx, news, holding, portfolio, copy(env.candidate_order))

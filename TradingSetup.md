@@ -152,7 +152,7 @@ julia --project=packages/TradingGame scripts/prepare_training_data.jl \
 julia --project=packages/TradingGame scripts/train_trading_policy.jl \
     --no-news --iterations 500 --minibatch 64 --eval-every 1 --entropy 0.01 --resume
 ```
-(contents of `train_trading_policy.flags`; drop `--resume` for a fresh run). Watch it at
+(contents of `train_trading_policy.flags`; drop `--resume` for a fresh run). Add `--game-version 2` (optionally with `--cash-penalty X` / `--hold-penalty X`, both default 0.0) to train the v2 rules; a v1 checkpoint cannot be resumed or warm-started as v2, so v2 needs a fresh policy. Watch it at
 `website/tradinggamelive.html` (`./serve.sh website/tradinggamelive.html`), check progress with
 `julia --project=packages/TradingGame scripts/training_status.jl`, and stop with
 `touch website/data/trading_game/STOP` (saves a checkpoint) or `STOP_NOW` (no save).

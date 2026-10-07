@@ -26,6 +26,7 @@ struct ActorCriticPolicy
     attn              :: Flux.MultiHeadAttention
     actor_head        :: Dense
     critic_head       :: Chain
+    cash_encoder      :: Union{Nothing, Dense}   # game v2 only — embeds the cash token (see `GameRules.cash_token`)
 end
 
 Flux.@layer ActorCriticPolicy
@@ -35,6 +36,15 @@ Build a fresh `ActorCriticPolicy`. `embed_dim` is the per-stock embedding
 width used throughout (hourly encoder output, fusion output, attention
 embedding); `macro_embed_dim` is the macro-GRU's output width before it's
 concatenated with the portfolio scalars.
+
+`cash_token=true` (game v2) adds `cash_encoder` and widens the portfolio input
+to `N_PORTFOLIO_SCALARS_V2`: cash becomes one more token in the attention set,
+built from `[cash/value, reserved/value, cap utilisation, days-over-cap]`
+(portfolio vector entries 1, 2, 5, 6), so each stock can attend to how much
+cash there is and how long it has sat idle exactly as it attends to other
+stocks. Its own output is not used — it only conditions the stocks and the
+critic. Checkpoints record this (`save_policy`), so `load_policy` rebuilds
+the matching architecture.
 
 Every weight is Glorot-uniform, every bias zero — Flux's defaults for
 `Dense`/`GRU`/`MultiHeadAttention`, since no `init=` is passed anywhere here.
@@ -48,13 +58,15 @@ Omit `seed` for the previous non-deterministic behaviour.
 """
 function ActorCriticPolicy(; embed_dim::Int=64, macro_embed_dim::Int=16,
                             attn_heads::Int=4, critic_hidden::Vector{Int}=[64, 32],
-                            seed::Union{Nothing, Int}=nothing)
+                            seed::Union{Nothing, Int}=nothing,
+                            cash_token::Bool=false)
     seed !== nothing && Random.seed!(seed)
+    n_portfolio = cash_token ? N_PORTFOLIO_SCALARS_V2 : N_PORTFOLIO_SCALARS
 
     hourly_encoder    = GRU(N_PRICE_CHANNELS => embed_dim)
     fusion            = Dense(embed_dim + N_NEWS_FEATURES + N_HOLDING_FEATURES => embed_dim, relu)
     macro_encoder     = GRU(N_MACRO_SERIES => macro_embed_dim)
-    portfolio_encoder = Dense(macro_embed_dim + N_PORTFOLIO_SCALARS => embed_dim, relu)
+    portfolio_encoder = Dense(macro_embed_dim + n_portfolio => embed_dim, relu)
     attn              = MultiHeadAttention(embed_dim; nheads=attn_heads)
     actor_head        = Dense(embed_dim => 4)   # 3 action-type logits + 1 buy-weight logit
 
@@ -67,8 +79,10 @@ function ActorCriticPolicy(; embed_dim::Int=64, macro_embed_dim::Int=16,
     push!(critic_layers, Dense(in_dim => 1))
     critic_head = Chain(critic_layers...)
 
+    cash_encoder = cash_token ? Dense(N_CASH_TOKEN_FEATURES => embed_dim, relu) : nothing
+
     return ActorCriticPolicy(hourly_encoder, fusion, macro_encoder, portfolio_encoder,
-                              attn, actor_head, critic_head)
+                              attn, actor_head, critic_head, cash_encoder)
 end
 
 """
@@ -110,10 +124,16 @@ function (m::ActorCriticPolicy)(hourly::AbstractArray{<:Real, 4}, news::Abstract
     port_tok  = reshape(port_tok, embed_dim, 1, B)
 
     # ── Cross-candidate attention (the "joint" decision) ─────────────────────
-    seq = cat(stock_emb, port_tok; dims=2)                  # (embed, N+1, B)
-    attended, _ = m.attn(seq)                                # (embed, N+1, B)
+    if m.cash_encoder === nothing
+        seq = cat(stock_emb, port_tok; dims=2)                  # (embed, N+1, B)
+    else
+        cash_in  = portfolio[[1, 2, 5, 6], :]                    # (N_CASH_TOKEN_FEATURES, B)
+        cash_tok = reshape(m.cash_encoder(cash_in), embed_dim, 1, B)
+        seq = cat(stock_emb, cash_tok, port_tok; dims=2)         # (embed, N+2, B)
+    end
+    attended, _ = m.attn(seq)
     stock_out = attended[:, 1:N, :]
-    port_out  = attended[:, N + 1, :]
+    port_out  = attended[:, end, :]
 
     # ── Heads ─────────────────────────────────────────────────────────────────
     actor_out = m.actor_head(reshape(stock_out, embed_dim, N * B))   # (4, N*B)
@@ -138,7 +158,8 @@ function save_policy(policy::ActorCriticPolicy, path::String;
                       embed_dim::Int, macro_embed_dim::Int, attn_heads::Int,
                       critic_hidden::Vector{Int}, meta::Dict=Dict())
     state = Flux.state(cpu(policy))
-    BSON.@save path state embed_dim macro_embed_dim attn_heads critic_hidden meta
+    cash_token = policy.cash_encoder !== nothing
+    BSON.@save path state embed_dim macro_embed_dim attn_heads critic_hidden meta cash_token
     @info "Policy saved → $path"
 end
 
@@ -150,10 +171,13 @@ checkpoint with the same architecture (see that function's docstring for why
 it needs these at all — `ActorCriticPolicy` doesn't carry them as a field)."""
 function load_policy(path::String)
     BSON.@load path state embed_dim macro_embed_dim attn_heads critic_hidden meta
+    d = BSON.load(path)
+    cash_token = get(d, :cash_token, false)   # absent in checkpoints written before game v2
     policy = ActorCriticPolicy(embed_dim=embed_dim, macro_embed_dim=macro_embed_dim,
-                                attn_heads=attn_heads, critic_hidden=critic_hidden)
+                                attn_heads=attn_heads, critic_hidden=critic_hidden,
+                                cash_token=cash_token)
     Flux.loadmodel!(policy, state)
     hyperparams = (embed_dim=embed_dim, macro_embed_dim=macro_embed_dim,
-                   attn_heads=attn_heads, critic_hidden=critic_hidden)
+                   attn_heads=attn_heads, critic_hidden=critic_hidden, cash_token=cash_token)
     return policy, hyperparams, meta
 end

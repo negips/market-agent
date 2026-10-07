@@ -19,6 +19,25 @@
         @test obs.candidates == env.candidate_order
     end
 
+    @testset "Volatility channel reads the PREVIOUS day's range (no intraday look-ahead)" begin
+        env = make_test_env(n_days=30)
+        env.cache.vols .= Float32.(1:size(env.cache.vols, 1))   # day i's (H-L)/C := i, unmistakable
+        @test N_PRICE_CHANNELS == 2
+
+        obs0 = assemble_observation(env)
+        d0 = env.cache.date_index[env.current_date]
+        @test all(obs0.hourly[:, 2, :] .== (d0 > 1 ? d0 - 1 : 0))
+
+        for _ in 1:40   # cross at least one day boundary
+            step!(env, RawAction[])
+        end
+        d = env.cache.date_index[env.current_date]
+        @test d > d0
+        obs = assemble_observation(env)
+        @test all(obs.hourly[:, 2, :] .== d - 1)
+        @test !any(obs.hourly[:, 2, :] .== d)
+    end
+
     @testset "News feature defaults to zero; a custom news_fn is honoured" begin
         env = make_test_env(n_days=30)
         step!(env, RawAction[])

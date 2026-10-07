@@ -254,14 +254,14 @@ end
     end
 
     @testset "At most n_max_holdings(N) distinct symbols held at once (rule 13)" begin
-        # n_max_holdings(40) = round(0.25*40) = 10, exact — no rounding
+        # n_max_holdings(40) = round(0.5*40) = 20, exact — no rounding
         # ambiguity, and large enough that each accepted buy's equal-weight
-        # share (1/10 = 10%) stays under MAX_POSITION_FRACTION's 15% cap, so
+        # share (1/20 = 5%) stays under MAX_POSITION_FRACTION's 15% cap, so
         # rule 12 doesn't also clip these positions and eat the headroom the
         # later "adding to an already-held symbol" check needs.
         symbols = ["S$i" for i in 1:40]
         n_max   = n_max_holdings(length(symbols))
-        @test n_max == 10
+        @test n_max == 20
         cache   = make_test_cache(symbols=symbols)
         env     = TradingGameEnv(cache)
         reset!(env, EpisodeConfig(initial_cash=10_000_000.0, start_date=cache.dates[1],
@@ -291,11 +291,11 @@ end
     end
 
     @testset "n_max_holdings scales with universe size and floors at 1 (rule 13)" begin
-        @test n_max_holdings(100) == 25    # the live run's actual universe size
-        @test n_max_holdings(60)  == 15    # N_CANDIDATE_STOCKS default
-        @test n_max_holdings(20)  == 5
-        @test n_max_holdings(3)   == 1     # would round to 0.75→1 anyway, but the floor guarantees it
-        @test n_max_holdings(1)   == 1
+        @test n_max_holdings(100) == 50
+        @test n_max_holdings(60)  == 30    # N_CANDIDATE_STOCKS default
+        @test n_max_holdings(40)  == 20    # the live run's actual universe size
+        @test n_max_holdings(3)   == 2     # round(1.5) → 2 (half to even)
+        @test n_max_holdings(1)   == 1     # round(0.5) = 0, so only the floor keeps this playable
     end
 
     @testset "A sold symbol can't be newly bought again for REBUY_COOLDOWN_DAYS (rule 15)" begin

@@ -12,7 +12,7 @@ const SETTLEMENT_DAYS       = 2               # rule 4: reserved-cash → cash d
 const MIN_HOLD_DAYS         = 1               # rule 10: lock-up before a voluntary sale
 const MAX_HOLD_DAYS         = 14              # rule 9: forced exit after this many trading days
 const DECISION_INTERVAL_MIN = 15              # rule 8: minimum minutes between decisions
-const MAX_POSITION_FRACTION = 0.15            # rule 12: a single symbol can't exceed this share of portfolio value
+const MAX_POSITION_FRACTION = 0.30            # rule 12: a single symbol can't exceed this share of portfolio value
 
 """Rule 13: the ceiling on distinct symbols held at once, N_MAX, is defined as
 a fraction of the candidate universe size N (not a fixed constant) — see
@@ -59,6 +59,14 @@ ill-defined the way rule 14's cash constraint had. Only blocks *opening a new
 position*; adding to a symbol that's still currently held (a separate,
 not-yet-sold lot) is unaffected — see `resolve_actions`'s docstring."""
 const REBUY_COOLDOWN_DAYS = 7
+
+"""Game v2 (see `GameRules` in `types.jl`): holding a stock past this many
+trading days is no longer force-exited (v1's rule 9, `MAX_HOLD_DAYS`) but
+costs a soft per-bar reward penalty instead, mirroring rule 14's cash penalty
+— `hold_penalty_coef * (share of portfolio value in lots held >= this many
+days)`. Kept separate from `MAX_HOLD_DAYS` so v1's forced exit stays at 14
+days and v1 results remain comparable."""
+const MAX_HOLD_DAYS_V2 = 7
 
 """
 Which algorithm computes the reward's log-return term each bar — see `step!`
@@ -137,7 +145,7 @@ const MIN_CONFIDENCE_SCORE = 40.0
 # ── Observation shape (observation.jl) ───────────────────────────────────────
 
 const N_HOURLY_BARS_SHORT = 120   # ~17 trading days of hourly bars — actor-critic encoder window
-const N_PRICE_CHANNELS    = 3     # normalised close, daily (H-L)/C vol, relative volume
+const N_PRICE_CHANNELS    = 2     # normalised close, PREVIOUS day's (H-L)/C vol
 
 const N_MACRO_DAYS   = 10
 const N_MACRO_SERIES = 9   # SP500, US_VIX, USD_INR, INDIA_VIX, CRUDE_OIL, GOLD, SILVER, NATURAL_GAS, COPPER
@@ -158,6 +166,17 @@ see `assemble_observation`'s portfolio-scalar section for why): [cash/value,
 reserved/value, value/initial_cash, stocks_value/value]."""
 const N_PORTFOLIO_SCALARS = 4
 
+"""Game v2's portfolio vector: the 4 above plus two cash-token scalars —
+`cash/value ÷ MAX_CASH_FRACTION` (cap utilisation, 1.0 = at the cap) and the
+fraction of `MAX_HOLD_DAYS_V2` that cash has now spent above the cap (the
+cash analogue of a stock's days-held)."""
+const N_PORTFOLIO_SCALARS_V2 = 6
+
+"""Width of v2's cash token before `cash_encoder` embeds it: [cash/value,
+reserved/value, cap utilisation, days-over-cap fraction] — the portfolio
+vector's entries 1, 2, 5 and 6."""
+const N_CASH_TOKEN_FEATURES = 4
+
 # ── RL training (used from Stage 3 onward; declared here as the single source
 #    of truth so `policy.jl`/`ppo.jl`/`train.jl` never redefine them) ───────────
 
@@ -171,8 +190,8 @@ point. Currently a no-op under `TRAINING_DECISION_GRANULARITY == HOURLY`
 kept so the set is populated correctly once `MINUTE_15` lands."""
 const NEWS_DECISION_SEVERITY_THRESHOLD = 0.5
 
-const GAMMA               = 0.99
-const GAE_LAMBDA           = 0.95
+const GAMMA                 = 0.99
+const GAE_LAMBDA            = 0.95
 const CLIP_EPS              = 0.2
 const VALUE_LOSS_COEF       = 0.5
 const ENTROPY_COEF          = 0.01

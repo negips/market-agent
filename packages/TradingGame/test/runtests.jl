@@ -25,4 +25,5 @@ using Test, TradingGame, StockSwingPredictor, Flux, CUDA, JSON3, Dates, Random
 include("test_rules.jl")
 include("test_policy.jl")
 include("test_train.jl")
+include("test_v2.jl")
 include("test_universe.jl")

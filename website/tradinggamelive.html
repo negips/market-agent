@@ -161,6 +161,19 @@
   .hp-table .hp-val { font-family: var(--mono); color: var(--accent); white-space: nowrap; }
   .hp-note { font-size: 11.5px; color: var(--text-dim); line-height: 1.6; margin-top: 12px; padding: 10px 12px; border-left: 2px solid var(--accent); background: rgba(255,255,255,.02); }
   @media (max-width: 900px) { .hp-table { display: block; overflow-x: auto; } }
+  .vt-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin: 12px 0 6px; font-size: 12px; color: var(--text-dim); }
+  .vt-controls select, .vt-controls input[type=text] {
+    background: var(--surface2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px 8px; font-size: 12px;
+  }
+  .vt-controls input[type=text] { width: 110px; }
+  .vt-summary { display: flex; flex-wrap: wrap; gap: 6px 22px; font-size: 12px; color: var(--text-dim); margin: 8px 0 4px; }
+  .vt-summary b { color: var(--text); font-family: var(--mono); font-weight: 600; }
+  .vt-scroll { max-height: 520px; overflow: auto; margin-top: 8px; }
+  .vt-scroll table.data-table thead th { position: sticky; top: 0; background: var(--surface); z-index: 1; }
+  .vt-scroll table.data-table tbody td { padding: 6px 12px; font-size: 12px; text-align: center; font-family: var(--mono); white-space: nowrap; }
+  .vt-scroll table.data-table tbody td:first-child { text-align: left; }
+  .vt-derived { color: var(--muted); font-style: italic; }
 </style>
 </head>
 <body>
@@ -512,7 +525,38 @@ function revealLayout() {
         </table>
       </div>
     </div>
+
+    <div class="chart-card" id="val-trades-card">
+      <div class="chart-header">
+        <div class="chart-title">Held-out validation — trades</div>
+        <div class="chart-sub" id="val-trades-sub"></div>
+      </div>
+      <div class="vt-controls">
+        <label>Run <select id="val-trades-run"></select></label>
+        <label>Show <select id="val-trades-kind">
+          <option value="all">all</option><option value="buy">buys</option>
+          <option value="sell">voluntary sells</option><option value="forced_exit">forced exits</option>
+          <option value="exits">all exits</option></select></label>
+        <label>Symbol <input type="text" id="val-trades-symbol" placeholder="e.g. AVL"></label>
+        <button type="button" class="val-run-bulk" id="val-trades-csv">Download CSV</button>
+      </div>
+      <div class="vt-summary" id="val-trades-summary"></div>
+      <div class="vt-scroll tbl-wrap">
+        <table class="data-table">
+          <thead><tr>
+            <th class="no-sort" style="text-align:left">Time</th><th class="no-sort">Action</th><th class="no-sort">Symbol</th>
+            <th class="no-sort">Price</th><th class="no-sort">Qty</th><th class="no-sort">Notional</th>
+            <th class="no-sort">Fee</th><th class="no-sort">Bought at</th><th class="no-sort">Days held</th>
+            <th class="no-sort">P&amp;L</th><th class="no-sort">Return</th>
+            <th class="no-sort" title="Actor's probability for this candidate at this bar">p(sell)</th>
+            <th class="no-sort" title="Actor's probability for this candidate at this bar">p(buy)</th>
+          </tr></thead>
+          <tbody id="val-trades-body"></tbody>
+        </table>
+      </div>
+    </div>
   `;
+  wireValTrades();
 
   const toggle = document.getElementById('show-trades-toggle');
   toggle.checked = loadShowTrades();
@@ -594,6 +638,129 @@ function revealLayout() {
     saveHiddenValRuns(hiddenValRuns);
     renderValRunsChart(lastValRuns);
   });
+}
+
+// ── Validation trades table ────────────────────────────────────────────────────
+// Runs written before trade P&L/probabilities were logged carry only price/qty/fee;
+// for those, realised P&L is derived here by matching each exit to the earliest
+// still-open buy of the same symbol (the simulator closes a lot whole, and a
+// symbol's lots exit oldest-first by hold clock), shown italic. Probabilities
+// are simply absent (—) for such runs — they can't be reconstructed.
+let valTradesIter = null;   // selected run's iteration; null = follow the latest
+let valTradesSig  = '';     // what the table was last rendered for, to skip no-op re-renders
+
+function valTradesRows(run) {
+  const open = {};
+  // trading-day index per date, from the run's own bar timestamps (the simulator
+  // counts holds in trading days, not calendar days)
+  const dayIdx = new Map();
+  for (const p of run.value_curve || []) { const d = p.t.slice(0, 10); if (!dayIdx.has(d)) dayIdx.set(d, dayIdx.size); }
+  const hasFields = (run.trades || []).some(t => t.pnl != null);
+  return (run.trades || []).map(t => {
+    const row = { ...t, derived: false };
+    if (!hasFields) {
+      const q = open[t.symbol] || (open[t.symbol] = []);
+      if (t.kind === 'buy') { q.push(t); row.entry_price = t.price; }
+      else {
+        const b = q.shift();
+        if (b) {
+          const cost = t.quantity * b.price + b.fee;
+          row.entry_price = b.price;
+          row.pnl = t.notional - t.fee - cost;
+          row.ret = row.pnl / cost;
+          row.days_held = dayIdx.has(t.date) && dayIdx.has(b.date) ? dayIdx.get(t.date) - dayIdx.get(b.date) : null;
+          row.derived = true;
+        }
+      }
+    }
+    return row;
+  });
+}
+
+const KIND_LABEL = { buy: 'Buy', sell: 'Sell', forced_exit: 'Forced exit' };
+const vtNum = (v, d = 2) => v == null ? '—' : v.toLocaleString('en-IN', { minimumFractionDigits: d, maximumFractionDigits: d });
+const vtProb = (p) => (p == null || p < 0) ? '—' : (p * 100).toFixed(1) + '%';
+
+function renderValTrades(force = false) {
+  const runs = lastValRuns;
+  const sel = document.getElementById('val-trades-run');
+  if (!sel) return;
+  if (!runs.length) {
+    document.getElementById('val-trades-sub').textContent = 'No held-out evaluation completed yet';
+    sel.innerHTML = ''; document.getElementById('val-trades-body').innerHTML = '';
+    document.getElementById('val-trades-summary').innerHTML = '';
+    return;
+  }
+  if (valTradesIter == null || !runs.some(r => r.iteration === valTradesIter)) valTradesIter = runs[runs.length - 1].iteration;
+  const kind = document.getElementById('val-trades-kind').value;
+  const symq = document.getElementById('val-trades-symbol').value.trim().toUpperCase();
+  const sig = `${runs.length}|${valTradesIter}|${kind}|${symq}`;
+  if (!force && sig === valTradesSig) return;
+  valTradesSig = sig;
+
+  sel.innerHTML = runs.slice().reverse().map(r =>
+    `<option value="${r.iteration}" ${r.iteration === valTradesIter ? 'selected' : ''}>Iter ${r.iteration} · ${r.val_return >= 0 ? '+' : ''}${(r.val_return * 100).toFixed(2)}%</option>`).join('');
+
+  const run  = runs.find(r => r.iteration === valTradesIter);
+  const all  = valTradesRows(run);
+  const rows = all.filter(t =>
+    (kind === 'all' || (kind === 'exits' ? t.kind !== 'buy' : t.kind === kind)) &&
+    (!symq || t.symbol.toUpperCase().includes(symq)));
+
+  const buys = all.filter(t => t.kind === 'buy').length;
+  const vol  = all.filter(t => t.kind === 'sell').length;
+  const frc  = all.filter(t => t.kind === 'forced_exit').length;
+  const closed = all.filter(t => t.kind !== 'buy' && t.pnl != null);
+  const wins = closed.filter(t => t.pnl > 0).length;
+  const totPnl = closed.reduce((a, t) => a + t.pnl, 0);
+  const avgRet = closed.length ? closed.reduce((a, t) => a + t.ret, 0) / closed.length : null;
+  const pSellExits = all.filter(t => t.kind !== 'buy' && t.p_sell != null && t.p_sell >= 0);
+  const avgPSell = pSellExits.length ? pSellExits.reduce((a, t) => a + t.p_sell, 0) / pSellExits.length : null;
+  document.getElementById('val-trades-sub').textContent =
+    `Iter ${run.iteration} · ${all.length} trades · chronological`;
+  document.getElementById('val-trades-summary').innerHTML = [
+    `Buys <b>${buys}</b>`, `Voluntary sells <b>${vol}</b>`, `Forced exits <b>${frc}</b>`,
+    `Round trips <b>${closed.length}</b> · win rate <b>${closed.length ? (100 * wins / closed.length).toFixed(1) + '%' : '—'}</b>`,
+    `Realised P&amp;L <b class="${totPnl >= 0 ? 'pnl-pos' : 'pnl-neg'}">${fmtRupee(totPnl)}</b>`,
+    `Avg return / trip <b>${avgRet == null ? '—' : (avgRet * 100).toFixed(2) + '%'}</b>`,
+    `Avg p(sell) at exits <b>${avgPSell == null ? '—' : (avgPSell * 100).toFixed(1) + '%'}</b>`,
+  ].map(x => `<span>${x}</span>`).join('');
+
+  document.getElementById('val-trades-body').innerHTML = rows.length ? rows.map(t => {
+    const isExit = t.kind !== 'buy';
+    const d = t.derived ? ' vt-derived' : '';
+    return `<tr>
+      <td>${esc(fmtTradeStamp(t))}</td>
+      <td><span class="trade-kind trade-${esc(t.kind)}">${esc(KIND_LABEL[t.kind] || t.kind)}</span></td>
+      <td style="font-weight:600">${esc(t.symbol)}</td>
+      <td>${vtNum(t.price)}</td><td>${vtNum(t.quantity, 0)}</td><td>${fmtRupee(t.notional)}</td>
+      <td>${vtNum(t.fee)}</td>
+      <td class="${d}">${isExit && t.entry_price != null ? vtNum(t.entry_price) : '—'}</td>
+      <td class="${d}">${isExit && t.days_held != null ? t.days_held : '—'}</td>
+      <td class="${isExit && t.pnl != null ? (t.pnl >= 0 ? 'pnl-pos' : 'pnl-neg') : ''}${d}">${isExit && t.pnl != null ? fmtRupee(t.pnl) : '—'}</td>
+      <td class="${isExit && t.ret != null ? (t.ret >= 0 ? 'pnl-pos' : 'pnl-neg') : ''}${d}">${isExit && t.ret != null ? (t.ret * 100).toFixed(2) + '%' : '—'}</td>
+      <td>${vtProb(t.p_sell)}</td><td>${vtProb(t.p_buy)}</td>
+    </tr>`;
+  }).join('') : `<tr><td colspan="13" class="na" style="padding:14px">No trades match</td></tr>`;
+}
+
+function downloadValTradesCsv() {
+  const run = lastValRuns.find(r => r.iteration === valTradesIter);
+  if (!run) return;
+  const cols = ['t', 'kind', 'symbol', 'price', 'quantity', 'notional', 'fee', 'entry_price', 'days_held', 'pnl', 'ret', 'p_hold', 'p_sell', 'p_buy'];
+  const csv = [cols.join(',')].concat(valTradesRows(run).map(t => cols.map(c => t[c] == null ? '' : t[c]).join(','))).join('\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+  a.download = `val_trades_iter${run.iteration}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function wireValTrades() {
+  document.getElementById('val-trades-run').addEventListener('change', e => { valTradesIter = Number(e.target.value); renderValTrades(); });
+  document.getElementById('val-trades-kind').addEventListener('change', () => renderValTrades());
+  document.getElementById('val-trades-symbol').addEventListener('input', () => renderValTrades());
+  document.getElementById('val-trades-csv').addEventListener('click', downloadValTradesCsv);
 }
 
 const PHASE_LABEL = { train: 'Training', val: 'Held-out eval', update: 'Updating policy' };
@@ -806,6 +973,7 @@ function valRunColor(rank, total) {
 function renderValRunsChart(runs) {
   lastValRuns = runs;
   renderValDistChart(runs);
+  renderValTrades();
   if (!runs.length) {
     document.getElementById('val-chart-sub').textContent = 'No held-out evaluation completed yet';
     document.getElementById('val-run-bulk-row').style.display = 'none';
@@ -1153,6 +1321,7 @@ function renderRunConfig(cfg) {
   document.getElementById('run-config-body').innerHTML = `
     <div class="param-section-label">Run config</div>
     <div class="param-grid">
+      ${paramItem('Game version', 'v' + (rc.game_version ?? cfg.game_version ?? 1))}
       ${paramItem('Device', cfg.resolved_device ?? cfg.device ?? '—')}
       ${paramItem('Minibatch', cfg.resolved_minibatch ?? cfg.minibatch ?? '—')}
       ${paramItem('Learning rate', cfg.lr ?? '—')}
@@ -1177,6 +1346,7 @@ function renderRunConfig(cfg) {
       ${paramItem('Max holdings (val)', cfg.n_max_holdings_val != null ? `${cfg.n_max_holdings_val} (${pct(rc.n_max_holdings_fraction)} of universe)` : '—')}
       ${paramItem('Max cash frac.', pct(rc.max_cash_fraction))}
       ${paramItem('Cash ceiling penalty', rc.cash_ceiling_penalty_coef ?? '—')}
+      ${paramItem('Hold penalty (v2)', rc.game_version === 2 ? (rc.hold_penalty_coef ?? '—') : 'n/a')}
       ${paramItem('Rebuy cooldown', rc.rebuy_cooldown_days != null ? rc.rebuy_cooldown_days + ' days' : '—')}
       ${paramItem('Gamma / GAE λ', (rc.gamma ?? '—') + ' / ' + (rc.gae_lambda ?? '—'))}
       ${paramItem('Clip epsilon', rc.clip_eps ?? '—')}

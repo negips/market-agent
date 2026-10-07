@@ -27,6 +27,30 @@
         @test any(!iszero, [s.reward for s in buffer])
     end
 
+    @testset "collect_rollout: trade events carry round-trip P&L and the actor's probabilities" begin
+        env = make_test_env(n_days=30)
+        config = EpisodeConfig(initial_cash=100_000.0, start_date=env.cache.dates[1],
+                                end_date=env.cache.dates[end], candidate_universe=env.cache.companies)
+        policy = ActorCriticPolicy(embed_dim=8, macro_embed_dim=4, attn_heads=2, critic_hidden=[8])
+        events = TradingGame.TradeEvent[]
+        collect_rollout(env, policy, config; rng=MersenneTwister(3),
+                        live_cb=(e, r) -> append!(events, r.info["trades"]))
+        @test !isempty(events)
+        @test all(ev -> 0 <= ev.p_hold <= 1 && 0 <= ev.p_sell <= 1 && 0 <= ev.p_buy <= 1, events)
+        @test all(ev -> isapprox(ev.p_hold + ev.p_sell + ev.p_buy, 1.0; atol=1e-5), events)
+
+        buys  = filter(ev -> ev.kind == "buy", events)
+        exits = filter(ev -> ev.kind != "buy", events)
+        @test all(ev -> ev.pnl == 0 && ev.days_held == 0 && ev.entry_price == ev.price, buys)
+        @test !isempty(exits)
+        for ev in exits
+            cost = ev.quantity * ev.entry_price + ev.quantity * ev.entry_price * FEE_RATE
+            @test ev.pnl ≈ ev.notional - ev.fee - cost
+            @test ev.ret ≈ ev.pnl / cost
+            @test ev.days_held >= (ev.kind == "forced_exit" ? MAX_HOLD_DAYS : MIN_HOLD_DAYS)
+        end
+    end
+
     @testset "compute_gae: terminal step has no bootstrap term" begin
         rewards = Float32[0.1, -0.05, 0.2]
         values  = Float32[1.0, 1.1, 0.9]
@@ -83,7 +107,7 @@ end
         @test isfile(ckpt)
         loaded, hyperparams, meta = load_policy(ckpt)
         @test meta["checkpoint"] == true
-        @test hyperparams == (embed_dim=8, macro_embed_dim=4, attn_heads=2, critic_hidden=[8])
+        @test hyperparams == (embed_dim=8, macro_embed_dim=4, attn_heads=2, critic_hidden=[8], cash_token=false)
         # train_policy! always reloads best-checkpointed weights before returning,
         # so the returned `policy` and the on-disk checkpoint must match exactly.
         obs = assemble_observation(env)

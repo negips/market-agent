@@ -22,6 +22,23 @@ tradeoffs of each; decision cadence is unaffected either way), and the
 objective is to maximise the total value of the portfolio, evaluated every
 `REWARD_INTERVAL_DAYS` days (rule 16).
 
+## Game versions
+
+Everything above describes **v1**, the original game and the default. **v2**
+(`rules_v2`, selected per episode through `EpisodeConfig(...; rules=rules_v2())`
+or `--game-version 2` on `scripts/train_trading_policy.jl`) changes four things,
+all carried by a [`GameRules`](@ref):
+
+- cash is a pseudo-stock — an extra attention token (cash/value, reserved/value,
+  cap utilisation, days over the cap) with its own cap, `MAX_CASH_FRACTION`;
+- a decision fills at the **same bar's** close instead of the next bar's;
+- there is no forced exit — a lot held `MAX_HOLD_DAYS_V2`+ days costs a soft
+  per-bar penalty (`hold_penalty`, default `0.0`);
+- the cash-ceiling penalty is a flag too (`cash_penalty`, default `0.0`).
+
+A v2 policy carries the cash token, so a checkpoint only loads under the version
+it was trained with.
+
 ## Stages
 
 1. Simulator + rule-compliance tests (`env.jl`, `action.jl`, `baseline_policy.jl`) — done.
@@ -112,11 +129,13 @@ export
     GAMMA, GAE_LAMBDA, CLIP_EPS,
     VALUE_LOSS_COEF, ENTROPY_COEF, DECAY_HALFLIFE_HOURS, N_HOURLY_BARS_SHORT,
     N_PRICE_CHANNELS, N_MACRO_DAYS, N_MACRO_SERIES, MACRO_SERIES_NAMES,
-    N_NEWS_FEATURES, N_HOLDING_FEATURES, N_PORTFOLIO_SCALARS,
+    N_NEWS_FEATURES, N_HOLDING_FEATURES, N_PORTFOLIO_SCALARS, N_PORTFOLIO_SCALARS_V2,
+    N_CASH_TOKEN_FEATURES, MAX_HOLD_DAYS_V2,
 
     # types
     ActionType, HOLD, SELL, BUY, RawAction, ResolvedTrade, JointAction,
     Holding, ReservedCashLot, Portfolio, EpisodeConfig, TradingGameEnv, StepResult,
+    GameRules, rules_v1, rules_v2, n_portfolio_scalars,
     CashConstraintViolation,
 
     # action
