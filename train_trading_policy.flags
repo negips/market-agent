@@ -1,1 +1,1 @@
---game-version v2 --no-news --iterations 500 --minibatch 128 --eval-every 1 --entropy 0.2
+--game-version v3 --no-news --no-macro --iterations 500 --minibatch 128 --eval-every 1 --entropy 0.01 --illegal-penalty 0.0001 --device gpu --reward-window-days 30 --resume
