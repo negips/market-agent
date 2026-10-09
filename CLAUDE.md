@@ -97,7 +97,7 @@ market-agent/
 │   ├── monitor_news.jl                   # real-time BSE + RSS news monitor daemon
 │   ├── backfill_news_signals.jl          # classify historical NSE announcements via local Ollama (resumable)
 │   ├── fetch_news_snapshot_ohlcv.jl      # fetch 1-min OHLCV from Kite for news-event days only (resumable)
-│   ├── build_cache.jl                    # build inference_cache.bson from all OHLCV CSVs (run each morning)
+│   ├── build_cache.jl                    # build inference_cache.bson from OHLCV CSVs (--exchange nse|bse, --granularity hourly|15min)
 │   ├── build_dataset.jl                  # sliding-window dataset assembly; --pred-hours 35|70
 │   ├── train_model.jl                    # train SwingPredictor (v1/v2/v3); auto-selects dataset
 │   ├── build_market_universe_snapshot.jl # TradingGame candidate universe: confidence-filtered, pluggable train/val split
@@ -684,6 +684,35 @@ Outputs (under `website/data/models/{arch.name}/`):
 To stop training cleanly: `touch website/data/models/DualCNN_v3/STOP` (saves checkpoint).
 Hard stop without save: `touch website/data/models/DualCNN_v3/STOP_NOW`.
 
+### build_cache.jl — NSE/hourly or BSE/15-minute
+
+`--exchange nse|bse` (default `nse`) picks the OHLCV tree and the `{nse,bse}_companies_latest.json`
+confidence list; `--granularity hourly|15min` (default `hourly`) picks the intraday bars;
+`--min-mcap CR` and a positional top-N limit the universe; `--out PATH` writes elsewhere.
+The cache records its `exchange` and `bar_minutes`, and everything downstream reads them from it:
+`build_market_universe_snapshot.jl`/`prepare_training_data.jl` use the matching companies file, and
+`TradingGame` decides at **every bar** (`decision_granularity(cache)`: `MINUTE_15` = rule 8's minimum
+interval, or `HOURLY`). Intraday bars outside 09:15–15:15 (BSE Muhurat evening sessions) are dropped.
+The cache's `hourly_closes`/`hourly_datetimes` fields keep their old names but hold whatever bar length
+`bar_minutes` says. For a 15-minute run, `GAMMA`/`GAE_LAMBDA` are rescaled to `x^(bar_minutes/60)` so
+the discount covers the same wall-clock time, and `N_HOURLY_BARS_SHORT` (120) spans ~5 trading days
+instead of ~17. Most BSE small caps barely trade (their 15-minute bars are mostly forward-filled), so
+build with `--min-mcap`, e.g.:
+
+```bash
+julia --project=packages/StockSwingPredictor scripts/build_cache.jl --exchange bse --granularity 15min --min-mcap 500
+julia --project=packages/TradingGame scripts/build_market_universe_snapshot.jl --strategy random --n 40 --disjoint
+julia --project=packages/TradingGame scripts/prepare_training_data.jl --skip-universe
+julia --project=packages/TradingGame scripts/train_trading_policy.jl --game-version v2 --no-news
+```
+
+Select it with `--game-version 3` — v2's rules, but the run errors out unless the cache is BSE 15-minute.
+
+News features and 1-minute snapshots are NSE-only (NSE announcements keyed by NSE symbols), so use
+`--no-news` with a BSE cache; `prepare_training_data.jl` skips both news stages automatically for BSE.
+`--history resample|hourly|none` adds the hourly history axis (default `resample` with `--granularity 15min`: hourly bars aggregated from the 15-minute bars, close = last 15-minute close in the slot — checked equal to Kite's own hourly closes on all 1,882 RELIANCE overlap bars; BSE's hourly files cover only ~25% of companies and many start in 2025, so resampling is the default; `hourly` reads `ohlcv/bse/hourly` instead). Game v3 refuses a cache without it. `build_cache.jl` overwrites `inference_cache.bson`, and a checkpoint trained on one cache cannot sensibly
+be resumed on another (different bar length), so start a fresh run after switching.
+
 ### build_market_universe_snapshot.jl
 
 Builds the `TradingGame` candidate universe: filters `nse_companies_latest.json`'s
@@ -964,7 +993,29 @@ julia --project=packages/TradingGame scripts/train_trading_policy.jl --no-macro 
 julia --project=packages/TradingGame scripts/train_trading_policy.jl --game-version 2 --cash-penalty 0.02 --hold-penalty 0.02
 ```
 
-`--game-version {1,2}` (default `1`) selects the rule set, carried per episode by
+`--game-version {1,2,3}` (default `1`) selects the rule set. **v3** is the v2 rules (same flags) restricted to a BSE 15-minute cache, with the **macro context and news features switched
+off** (`GameRules.use_macro = use_news = false`): they are not loaded or computed and the policy has no
+macro GRU or news inputs. Its price input is **two distinct sets**: (1) a **14-day hourly history** — the newest 70 *completed* hourly bars (`obs_window_days = 10` trading days × 7), as **log-returns** `x_i = 100·ln(c_i/c_{i-1})` over 71 completed closes (`use_volatility = false`, one channel); and (2) an **instantaneous snapshot** per stock — the same return one step on, `s = 100·ln(p_now/c_last)` from the last completed hourly close to the current 15-minute close, joined to the holding features (4 per-stock features, `n_stock_features`; the tensor keeps its `holding` name). The decision clock steps in 15-minute bars and decisions fill at that bar's close; the history axis only advances when an hourly bar completes (`history_end_idx`), so nothing runs ahead. v1/v2 keep the fixed 120-bar, 2-channel window. 28,485 parameters vs 43,301 for v2 (no cash token and no portfolio token either: the six portfolio scalars are repeated beside every stock and concatenated onto its fusion input, `Dense(70+4+6 → 64)`, attention runs over the N stock tokens alone, and the critic reads their mean **plus the six portfolio scalars directly** (`GameRules.portfolio_in_fusion`, `portfolio_to_critic`; the critic MLP is 70 → 64 → 32 → 1). With `--history-encoder direct` (the v3 default; `rules_v3(history_encoder=:direct)`) the 70 returns go **straight into the fusion layer** (no GRU); `--history-encoder gru` keeps the recurrent encoder for comparison (40,389 parameters). The code for both stays; other versions still
+use them. v3 checkpoints are not interchangeable with v2's (different network). v3 also splits rule
+enforcement in two. (1) **Impossible moves are masked before the policy samples**: a SELL on a stock with nothing
+sellable (not held, or inside the 1-day lock-up) is removed from that stock's distribution (`GameRules.premask`,
+`sellable_mask`/`mask_action_logits`), so the HOLD/SELL/BUY probabilities are conditional and PPO's log-probs use
+the same masked distribution (the mask is stored per step in the rollout). (2) **Every other refused move is charged**: `--illegal-penalty` (default `ILLEGAL_PENALTY_COEF_V3` = 0.01, i.e. 1% of portfolio value; v2 default 0,
+v1 ignores it) is subtracted from that bar's reward for each buy with no or too little cash (not enough for one share),
+in rebuy cooldown, beyond the holdings cap (each candidate that gets no slot), or over the 30% position cap (the part
+within the cap still fills); the rest is rejected. Nothing is counted or logged as a rate; the charge is reward only,
+the portfolio itself is untouched. **The v3 reward is paid per reward window** (`GameRules.terminal_reward`, `--reward-mode terminal|stepwise`, default terminal;
+`--reward-window-days N`, default 0): 0 on every bar, and at the end of each window
+`R = (V_end − V_start)/V_start − (penalties accumulated in the window, in rupees)/V_start`, with `V_start` the portfolio value when that window
+began (so each window is normalised by its own start, not by the initial cash). A window is `N` trading days, with a shorter last one flushed
+at the episode's end; `N = 0` makes the whole train/val period one window. Each illegal move adds `--illegal-penalty × (portfolio value at the
+moment of the decision)` to the window's ledger (`env.penalty_accum`); the cash/hold penalties, if set, add their share of the value on each
+bar; the ledger and `V_start` reset at every payout. `train_return`/`val_return` = the sum of the window rewards. PPO's discount follows
+(`discount_factors`): with `N = 0`, `γ = λ = 1` (any discount would shrink an end-of-episode reward to nothing over ~20,000 bars); with `N > 0`
+the bar-scaled `γ` and `λ = 1`. `stepwise` restores the weekly log-return plus per-bar penalties. Caveat: with one episode per iteration and
+few payouts, the advantage is mostly `R − V(s)`; shorter windows (or several episodes per update) give the baseline more to compare v3 ignores `--macro`/`--news`
+settings and loads neither: `reset!` refuses any
+other cache (`build_cache.jl --exchange bse --granularity 15min`), carried per episode by
 `EpisodeConfig.rules` (`GameRules`; `rules_v1()`/`rules_v2()`). **v2**: cash is a
 pseudo-stock — an extra attention token built from cash/value, reserved/value, cap
 utilisation (`cash/value ÷ MAX_CASH_FRACTION`) and days spent over the cap; decisions
@@ -1063,6 +1114,20 @@ this network (host round-trip + 120 individual GRU-step kernel launches per
 call dominate the tiny per-call compute). `--device gpu` therefore only
 accelerates `ppo_update!`'s minibatched passes, where batching actually
 helps.
+
+### Per-step validation logs (`val_steps/`) and `val_steps_summary.jl`
+
+Every held-out validation rollout also writes `website/data/trading_game/val_steps/iter_NNNNN.bson` (`--val-steps-every N`,
+default 1; 0 disables; wiped by a fresh run): one column for **every decision bar, trade or not** — HOLD/SELL/BUY
+probabilities per stock after the sell mask (`probs`, `(3, N, T)`), the SELL probability before the mask (`p_sell_raw`), buy
+weight, chosen action, `sell_ok`/`held` flags, the fill price, the critic's V(s), reward and its illegal-move part, and the
+book after the step (portfolio value, cash, stocks value, holdings, trades). Probabilities are `Float16`; a year of 15-minute
+bars for 40 stocks is about 5 MB per run. Load with `TradingGame.load_val_steps(path)`, or run
+`julia --project=packages/TradingGame scripts/val_steps_summary.jl [iteration | file ...]` for averages by held/not held, by
+15-minute slot of the day, per stock, and the critic against the reward that followed. Each run also gets a small `iter_NNNNN.json` per-bar summary (mean and top probabilities, picks, V(s), penalty, book — about 0.5 MB) that
+`tradinggamelive.html`'s "Held-out validation — trades" table reads to fill in the bars on which nothing was traded ("No action" rows, with the
+probabilities the policy had on that bar); runs without it show those rows with dashes. The validation rollout is greedy
+(argmax), so the probabilities show what the policy believed, not a sample.
 
 ### training_status.jl
 

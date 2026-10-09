@@ -107,7 +107,7 @@ end
         @test isfile(ckpt)
         loaded, hyperparams, meta = load_policy(ckpt)
         @test meta["checkpoint"] == true
-        @test hyperparams == (embed_dim=8, macro_embed_dim=4, attn_heads=2, critic_hidden=[8], cash_token=false)
+        @test hyperparams == (embed_dim=8, macro_embed_dim=4, attn_heads=2, critic_hidden=[8], cash_token=false, use_macro=true, use_news=true, price_channels=2, stock_features=3, history_bars=0, global_in_fusion=0, critic_global=0)
         # train_policy! always reloads best-checkpointed weights before returning,
         # so the returned `policy` and the on-disk checkpoint must match exactly.
         obs = assemble_observation(env)

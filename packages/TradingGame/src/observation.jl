@@ -112,10 +112,10 @@ docstring) without sacrificing concrete, inferrable field types either way.
 struct Observation{H<:AbstractArray{Float32,3}, M<:AbstractMatrix{Float32},
                     NW<:AbstractMatrix{Float32}, HO<:AbstractMatrix{Float32},
                     P<:AbstractVector{Float32}}
-    hourly     :: H    # (N_HOURLY_BARS_SHORT, N_PRICE_CHANNELS, N)
+    hourly     :: H    # (window bars, price channels, N) — see `obs_window_bars`/`n_price_channels`
     macro_ctx  :: M    # (N_MACRO_DAYS, N_MACRO_SERIES)
     news       :: NW   # (N_NEWS_FEATURES, N)
-    holding    :: HO   # (N_HOLDING_FEATURES, N)
+    holding    :: HO   # (n_stock_features, N): held, P&L, hold left [, instantaneous price under use_history]
     portfolio  :: P    # (N_PORTFOLIO_SCALARS,)
     candidates :: Vector{Int}   # sym_idx per column, == env.candidate_order
 end
@@ -151,14 +151,38 @@ function assemble_observation!(hourly::AbstractArray{Float32,3}, macro_ctx::Abst
         error("assemble_observation!: portfolio vector has $(length(portfolio)) entries, " *
               "game v$(rules.version) needs $(n_portfolio_scalars(rules))")
 
-    # ── Per-stock hourly sequence ────────────────────────────────────────────
-    lo = t - N_HOURLY_BARS_SHORT + 1
+    # ── Per-stock price window (length and channel count come from the buffer) ─
+    n_bars = size(hourly, 1)
+    n_ch   = size(hourly, 2)
+    n_ch == n_price_channels(rules) ||
+        error("assemble_observation!: price buffer has $n_ch channel(s), game v$(rules.version) needs $(n_price_channels(rules))")
+    # With `use_history` the window is the newest `n_bars` returns between COMPLETED hourly history
+    # bars (the one in progress is excluded: its close isn't known yet), and the
+    # live 15-minute close goes in separately as `snapshot` below. Otherwise the
+    # window is the cache's own bars ending at the current one.
+    series = rules.use_history ? env.cache.history_closes : env.cache.hourly_closes
+    hi     = rules.use_history ? env.cache.history_end_idx[t] : t
+    lo     = rules.use_history ? hi - n_bars : hi - n_bars + 1   # history needs one extra close for the first return
+    snapshot = Vector{Float32}(undef, length(env.candidate_order))
     for (col, sym_idx) in enumerate(env.candidate_order)
-        if lo >= 1
-            raw = @view env.cache.hourly_closes[lo:t, sym_idx]
+        snapshot[col] = 0f0
+        if lo >= 1 && rules.use_history
+            # Log-returns over the newest completed hourly closes:
+            #   x_i = LOG_RETURN_SCALE * ln(c_i / c_{i-1}),   i = 1..n_bars
+            # and the snapshot is the same quantity one step further, from the
+            # last completed hourly close to this bar's 15-minute close:
+            #   s = LOG_RETURN_SCALE * ln(p_now / c_n_bars)
+            # (0 wherever a close is missing or non-positive).
+            raw = @view series[lo:hi, sym_idx]
+            for i in 1:n_bars
+                hourly[i, 1, col] = _scaled_log_return(raw[i], raw[i + 1])
+            end
+            snapshot[col] = _scaled_log_return(raw[n_bars + 1], current_price(env, sym_idx))
+        elseif lo >= 1
+            raw = @view series[lo:hi, sym_idx]
             anchor_i = findfirst(!isnan, raw)
             anchor = anchor_i === nothing ? 1f0 : max(raw[anchor_i], 1f-6)
-            for i in 1:N_HOURLY_BARS_SHORT
+            for i in 1:n_bars
                 c = raw[i]
                 hourly[i, 1, col] = isnan(c) ? 1f0 : c / anchor
             end
@@ -167,7 +191,7 @@ function assemble_observation!(hourly::AbstractArray{Float32,3}, macro_ctx::Abst
             # of the window — so the policy sees the price it's about to
             # trade at, not the enclosing hour's close.
             ov = _price_override(env, sym_idx)
-            ov !== nothing && (hourly[N_HOURLY_BARS_SHORT, 1, col] = ov / anchor)
+            ov !== nothing && (hourly[n_bars, 1, col] = ov / anchor)
         else
             hourly[:, 1, col] .= 0f0
         end
@@ -175,13 +199,19 @@ function assemble_observation!(hourly::AbstractArray{Float32,3}, macro_ctx::Abst
         # series exists) — broadcast across the hourly window. Uses the
         # PREVIOUS trading day's (H-L)/C: today's daily bar isn't complete at
         # an intraday decision bar, so its range would leak the rest of the day.
-        v = date_idx > 1 ? env.cache.vols[date_idx - 1, sym_idx] : NaN32
-        hourly[:, 2, col] .= isnan(v) ? 0f0 : v
+        if n_ch >= 2
+            v = date_idx > 1 ? env.cache.vols[date_idx - 1, sym_idx] : NaN32
+            hourly[:, 2, col] .= isnan(v) ? 0f0 : v
+        end
     end
 
     # ── News (neutral zero by default) ───────────────────────────────────────
-    for (col, sym_idx) in enumerate(env.candidate_order)
-        news[:, col] .= news_fn(env, sym_idx, t)
+    if rules.use_news
+        for (col, sym_idx) in enumerate(env.candidate_order)
+            news[:, col] .= news_fn(env, sym_idx, t)
+        end
+    else
+        news .= 0f0
     end
 
     # ── Per-holding state — aggregated across concurrent lots of the same stock:
@@ -206,7 +236,11 @@ function assemble_observation!(hourly::AbstractArray{Float32,3}, macro_ctx::Abst
         remaining = Float32(clamp((max_hold - days_held) / max_hold, 0, 1))
         min_remaining[col] = min(min_remaining[col], remaining)
     end
+    size(holding, 1) == n_stock_features(rules) ||
+        error("assemble_observation!: per-stock feature buffer has $(size(holding, 1)) rows, " *
+              "game v$(rules.version) needs $(n_stock_features(rules))")
     for col in 1:N
+        rules.use_history && (holding[4, col] = snapshot[col])
         holding[1, col] = held[col] ? 1f0 : 0f0
         holding[2, col] = (held[col] && cost_sum[col] > 0) ?
                            Float32((val_sum[col] - cost_sum[col]) / cost_sum[col]) : 0f0
@@ -214,7 +248,11 @@ function assemble_observation!(hourly::AbstractArray{Float32,3}, macro_ctx::Abst
     end
 
     # ── Macro context ─────────────────────────────────────────────────────────
-    macro_ctx .= _macro_context(macro_cache, env.current_date)
+    if rules.use_macro
+        macro_ctx .= _macro_context(macro_cache, env.current_date)
+    else
+        macro_ctx .= 0f0
+    end
 
     # ── Global portfolio scalars — all O(1)-scale ratios, never raw rupees.
     #    Feeding cash/value directly (routinely 1e5–1e7 ₹) into a Dense layer
@@ -230,7 +268,7 @@ function assemble_observation!(hourly::AbstractArray{Float32,3}, macro_ctx::Abst
     portfolio[2] = reserved_frac
     portfolio[3] = value_ratio
     portfolio[4] = stocks_frac
-    if rules.cash_token
+    if rules.cash_token || rules.cap_features
         days_over = env.cash_over_since_date_idx > 0 ? date_idx - env.cash_over_since_date_idx : 0
         portfolio[5] = Float32(clamp(cash_frac / MAX_CASH_FRACTION, 0, 3))
         portfolio[6] = Float32(clamp(days_over / max_hold, 0, 1))
@@ -238,6 +276,10 @@ function assemble_observation!(hourly::AbstractArray{Float32,3}, macro_ctx::Abst
 
     return nothing
 end
+
+"""`LOG_RETURN_SCALE * ln(b / a)` as `Float32`, or `0` if either close is missing or non-positive."""
+_scaled_log_return(a::Real, b::Real)::Float32 =
+    (isnan(a) || isnan(b) || a <= 0 || b <= 0) ? 0f0 : Float32(LOG_RETURN_SCALE * log(b / a))
 
 """
 Assemble the current observation for `env`. `macro_cache`/`news_fn` are
@@ -256,10 +298,11 @@ function assemble_observation(env::TradingGameEnv;
                                news_fn::Function=_zero_news)::Observation
     env.config === nothing && error("assemble_observation: call reset! before observing")
     N = length(env.candidate_order)
-    hourly    = zeros(Float32, N_HOURLY_BARS_SHORT, N_PRICE_CHANNELS, N)
+    rules     = env.config.rules
+    hourly    = zeros(Float32, obs_window_bars(rules, env.cache), n_price_channels(rules), N)
     macro_ctx = zeros(Float32, N_MACRO_DAYS, N_MACRO_SERIES)
     news      = zeros(Float32, N_NEWS_FEATURES, N)
-    holding   = zeros(Float32, N_HOLDING_FEATURES, N)
+    holding   = zeros(Float32, n_stock_features(rules), N)
     portfolio = zeros(Float32, n_portfolio_scalars(env.config.rules))
     assemble_observation!(hourly, macro_ctx, news, holding, portfolio, env;
                            macro_cache=macro_cache, news_fn=news_fn)

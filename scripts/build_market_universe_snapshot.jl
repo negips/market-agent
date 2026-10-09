@@ -35,9 +35,10 @@ Usage:
       --strategy random-bucketed --band 0:5000:15 --band 5000:inf:15
 
 Prerequisites:
-  website/data/nse_companies_latest.json  (generate_nse_list.jl, then
-                                            run_confidence_checks.jl)
-  website/data/inference_cache.bson       (build_cache.jl)
+  website/data/{nse,bse}_companies_latest.json  — the file for the cache's exchange
+                                            (generate_nse_list.jl + run_confidence_checks.jl,
+                                            or generate_bse_list.jl + run_bse_confidence_checks.jl)
+  website/data/inference_cache.bson       (build_cache.jl; records its exchange and bar length)
 
 Output: website/data/trading_game/universe_latest.json
   {"strategy": ..., "strategy_params": ..., "train_candidates": [...], "val_candidates": [...]}
@@ -47,7 +48,10 @@ using TradingGame, StockSwingPredictor, Printf
 
 const REPO_ROOT          = joinpath(@__DIR__, "..")
 const CACHE_FILE         = joinpath(REPO_ROOT, "website", "data", "inference_cache.bson")
-const NSE_COMPANIES_FILE = joinpath(REPO_ROOT, "website", "data", "nse_companies_latest.json")
+const DATA_DIR           = joinpath(REPO_ROOT, "website", "data")
+
+"""`--min-mcap`, set by `parse_args`."""
+const MIN_MARKET_CAP_CR = Ref(0.0)
 const OUTPUT_FILE        = joinpath(REPO_ROOT, "website", "data", "trading_game", "universe_latest.json")
 
 """Parse `LO:HI:QUOTA` (HI may be `inf`/`infinity`, case-insensitive) into a
@@ -93,6 +97,8 @@ Options:
   --n-val N             Val-side cap for disjoint-topcap (default: $N_CANDIDATE_STOCKS)
   --band LO:HI:QUOTA    One market-cap band for random-bucketed (repeatable)
   --disjoint            Independent random train/val draws (random, random-bucketed only)
+  --min-mcap CR         Drop companies below this market cap (₹ Cr) before the strategy runs.
+                        Advised for BSE, where thin small caps have mostly forward-filled bars.
   --seed N              Reproducible split/draw (disjoint-topcap, random, random-bucketed)
 
 Output: $OUTPUT_FILE
@@ -103,6 +109,7 @@ Output: $OUTPUT_FILE
         elseif a == "--n-train";  n_train = parse(Int, ARGS[i+1]); i += 2
         elseif a == "--n-val";    n_val   = parse(Int, ARGS[i+1]); i += 2
         elseif a == "--disjoint"; disjoint = true; i += 1
+        elseif a == "--min-mcap"; MIN_MARKET_CAP_CR[] = parse(Float64, ARGS[i+1]); i += 2
         elseif a == "--seed";     seed = parse(Int, ARGS[i+1]); i += 2
         elseif a == "--band";     push!(bands, _parse_band(ARGS[i+1])); i += 2
         else; @warn "Unknown argument: $a"; i += 1
@@ -135,21 +142,22 @@ end
 function main()
     strategy = parse_args()
 
-    isfile(NSE_COMPANIES_FILE) || error(
-        "Not found: $NSE_COMPANIES_FILE\nRun: julia scripts/generate_nse_list.jl && " *
-        "julia --project=packages/CompanyConfidence scripts/run_confidence_checks.jl")
     isfile(CACHE_FILE) || error(
         "Not found: $CACHE_FILE\nRun: julia --project=packages/StockSwingPredictor scripts/build_cache.jl")
 
     @info "Loading inference cache…"
     cache = load_inference_cache(CACHE_FILE)
-    @info "  $(length(cache.companies)) companies with cached price history"
+    @info "  $(length(cache.companies)) $(uppercase(cache.exchange)) companies with cached price history " *
+          "($(cache.bar_minutes)-minute bars)"
+
+    companies_file = joinpath(DATA_DIR, "$(cache.exchange)_companies_latest.json")
+    isfile(companies_file) || error("Not found: $companies_file\nRun the $(cache.exchange) list + confidence scripts first")
 
     @info "Building eligible pool (confidence >= $MIN_CONFIDENCE_SCORE, ranked by market cap)…"
-    pool = eligible_candidates(cache, NSE_COMPANIES_FILE)
+    pool = eligible_candidates(cache, companies_file; min_market_cap_cr=MIN_MARKET_CAP_CR[])
     isempty(pool) && error(
         "No candidates passed the confidence filter and had cached price history — " *
-        "check $NSE_COMPANIES_FILE and $CACHE_FILE cover the same universe")
+        "check $companies_file and $CACHE_FILE cover the same universe")
     @info "  $(length(pool)) companies eligible"
 
     @info "Applying strategy: $(typeof(strategy))"

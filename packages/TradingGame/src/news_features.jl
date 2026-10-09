@@ -13,7 +13,7 @@ immediately on a news release":
    classified signal at or above `NEWS_DECISION_SEVERITY_THRESHOLD` maps its
    real `published_at` timestamp onto the hourly bar it falls in
    (`find_hourly_end`, the same mapping `reset!` uses for episode starts).
-   Under `TRAINING_DECISION_GRANULARITY == HOURLY` every bar is already a
+   Every bar of the cache (hourly or 15-minute) is already a
    decision bar (see `env.jl`'s module docstring), so this alone doesn't
    change decision *cadence* — the hour was already going to be a decision
    bar regardless.

@@ -19,7 +19,8 @@ across the whole training process, not just whichever one is currently live.
 using Dates, JSON3
 
 """Preallocated size of `LiveTracker.curve_t`/`curve_v`, not a display window
-— a full 5-year training episode at hourly cadence is ~8,600 bars, so this
+— a full 5-year training episode at hourly cadence is ~8,600 bars (~31,000 at
+15-minute cadence), so this
 only exists to bound memory/JSON size against a pathological config (e.g. a
 decades-long window), never expected to bind in practice. It must stay well
 above any real episode length: capping it near or below one means the chart's
@@ -34,7 +35,7 @@ FIFO-eviction semantics in that pathological, never-expected-to-bind case for
 a much simpler, allocation-free hot path (see `make_live_callback`'s
 docstring for why the per-bar allocation this replaces mattered a lot more
 than this edge-case trade-off does)."""
-const LIVE_VALUE_CURVE_CAP = 20_000
+const LIVE_VALUE_CURVE_CAP = 80_000
 
 """Same safety-ceiling reasoning as `LIVE_VALUE_CURVE_CAP` — not a display
 window. Measured directly on a real (untrained, exploratory) policy: several

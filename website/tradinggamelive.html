@@ -76,6 +76,7 @@
   }
   .canvas-wrap { position: relative; height: 260px; margin-top: 14px; }
   .canvas-wrap.small { height: 180px; margin-top: 2px; }
+  .canvas-wrap.tall  { height: 380px; margin-top: 2px; }
 
   .subplot-label {
     font-size: 10px; font-weight: 600; color: var(--muted);
@@ -124,6 +125,8 @@
   .trade-buy         { background: rgba(61,214,140,.12); color: var(--green); }
   .trade-sell        { background: rgba(245,200,66,.12); color: var(--yellow); }
   .trade-forced_exit { background: rgba(247,111,111,.12); color: var(--red); }
+  .trade-hold        { background: rgba(148,163,184,.10); color: var(--muted); }
+  .vt-hold td        { color: var(--muted); }
   .trade-date { color: var(--muted); font-size: 10.5px; width: 90px; flex-shrink: 0; font-family: var(--mono); }
   .trade-sym { font-weight: 600; flex: 1; }
   .trade-amt { font-family: var(--mono); color: var(--text-dim); font-size: 11.5px; }
@@ -207,7 +210,7 @@ const VAL_RUNS_URL   = 'data/trading_game/val_runs.jsonl';
 const RUN_CONFIG_URL = 'data/trading_game/run_config.json';
 
 let shown = false;
-let valueChart = null, iterChart = null, valRunsChart = null, valRunsSplitChart = null, valDistChart = null;
+let valueChart = null, iterChart = null, iterValChart = null, valRunsChart = null, valRunsSplitChart = null, valDistChart = null;
 let initialCash = null;   // from run_config.json — the denominator for the validation-return distribution
 let lastValRuns = [];   // most recent renderValRunsChart(runs) argument — re-rendered on a toggle click, no re-fetch needed
 
@@ -433,39 +436,29 @@ function revealLayout() {
       <div class="canvas-wrap"><canvas id="value-chart"></canvas></div>
     </div>
 
-    <div class="two-col">
-      <div class="chart-card" style="margin-bottom:0">
-        <div class="chart-header">
-          <div class="chart-title">Holdings</div>
-          <div class="chart-sub" id="holdings-sub"></div>
-        </div>
-        <div class="tbl-wrap" style="margin-top:12px">
-          <table class="data-table">
-            <thead><tr>
-              <th class="no-sort">Symbol</th><th class="no-sort" style="text-align:center">Qty</th>
-              <th class="no-sort" style="text-align:center">Entry</th><th class="no-sort" style="text-align:center">Current</th>
-              <th class="no-sort" style="text-align:center">Days held</th><th class="no-sort" style="text-align:center">Unrealized P&amp;L</th>
-            </tr></thead>
-            <tbody id="holdings-body"></tbody>
-          </table>
-        </div>
+    <div class="chart-card">
+      <div class="chart-header">
+        <div class="chart-title">Recent decisions</div>
+        <div class="chart-sub">Newest first</div>
       </div>
-      <div class="chart-card" style="margin-bottom:0">
-        <div class="chart-header">
-          <div class="chart-title">Recent decisions</div>
-          <div class="chart-sub">Newest first</div>
-        </div>
-        <div class="trade-feed" id="trade-feed" style="margin-top:8px"></div>
-      </div>
+      <div class="trade-feed" id="trade-feed" style="margin-top:8px"></div>
     </div>
 
     <div class="section-title">Training progress</div>
     <div class="chart-card">
       <div class="chart-header">
-        <div class="chart-title">Episode return per iteration</div>
-        <div class="chart-sub" id="iter-chart-sub">Σ log-return · training rollout vs held-out eval</div>
+        <div class="chart-title">Episode return per iteration — training</div>
+        <div class="chart-sub" id="iter-chart-sub">Σ log-return · training rollout</div>
       </div>
       <div class="canvas-wrap"><canvas id="iter-chart"></canvas></div>
+    </div>
+
+    <div class="chart-card">
+      <div class="chart-header">
+        <div class="chart-title">Episode return per iteration — validation</div>
+        <div class="chart-sub" id="iter-val-chart-sub">Σ log-return · held-out eval</div>
+      </div>
+      <div class="canvas-wrap"><canvas id="iter-val-chart"></canvas></div>
     </div>
 
     <div class="chart-card">
@@ -481,13 +474,18 @@ function revealLayout() {
       <div class="val-run-bulk-row" id="val-run-bulk-row">
         <button type="button" class="val-run-bulk" data-bulk="all">Show all</button>
         <button type="button" class="val-run-bulk" data-bulk="none">Hide all</button>
-        <button type="button" class="val-run-bulk" data-bulk="last5">Last 5 only</button>
+        <label class="trade-toggle">
+          <button type="button" class="step-btn" id="val-runs-recent-minus" title="Show one fewer run" aria-label="Decrease">−</button>
+          <input type="range" id="val-runs-recent-range" min="1" max="1" step="1" style="width:160px">
+          <button type="button" class="step-btn" id="val-runs-recent-plus" title="Show one more run" aria-label="Increase">+</button>
+          <span id="val-runs-recent-label" style="min-width:64px"></span>
+        </label>
       </div>
       <div class="val-run-toggles" id="val-run-toggles"></div>
       <div class="subplot-label">Portfolio value</div>
       <div class="canvas-wrap"><canvas id="val-chart"></canvas></div>
       <div class="subplot-label">Portfolio split — stock vs cash</div>
-      <div class="canvas-wrap small"><canvas id="val-split-chart"></canvas></div>
+      <div class="canvas-wrap tall"><canvas id="val-split-chart"></canvas></div>
     </div>
 
     <div class="chart-card">
@@ -536,7 +534,8 @@ function revealLayout() {
         <label>Show <select id="val-trades-kind">
           <option value="all">all</option><option value="buy">buys</option>
           <option value="sell">voluntary sells</option><option value="forced_exit">forced exits</option>
-          <option value="exits">all exits</option></select></label>
+          <option value="exits">all exits</option><option value="hold">no action only</option></select></label>
+        <label class="trade-toggle"><input type="checkbox" id="val-trades-noaction" checked> Include bars with no action</label>
         <label>Symbol <input type="text" id="val-trades-symbol" placeholder="e.g. AVL"></label>
         <button type="button" class="val-run-bulk" id="val-trades-csv">Download CSV</button>
       </div>
@@ -548,8 +547,15 @@ function revealLayout() {
             <th class="no-sort">Price</th><th class="no-sort">Qty</th><th class="no-sort">Notional</th>
             <th class="no-sort">Fee</th><th class="no-sort">Bought at</th><th class="no-sort">Days held</th>
             <th class="no-sort">P&amp;L</th><th class="no-sort">Return</th>
-            <th class="no-sort" title="Actor's probability for this candidate at this bar">p(sell)</th>
-            <th class="no-sort" title="Actor's probability for this candidate at this bar">p(buy)</th>
+            <th class="no-sort" title="Trade rows: the actor's probability for that candidate at that bar. No-action rows: the mean over all candidates.">p(hold)</th>
+            <th class="no-sort" title="Trade rows: the actor's probability for that candidate at that bar. No-action rows: the mean over all candidates.">p(sell)</th>
+            <th class="no-sort" title="Trade rows: the actor's probability for that candidate at that bar. No-action rows: the mean over all candidates.">p(buy)</th>
+            <th class="no-sort" title="The candidate with the highest buy probability on this bar">Top buy</th>
+            <th class="no-sort" title="How many stocks the policy picked BUY / SELL for on this bar (the rules may have refused them)">Picked B/S</th>
+            <th class="no-sort" title="The critic's value estimate V(s) at this bar">V(s)</th>
+            <th class="no-sort" title="Reward charged on this bar for illegal moves">Penalty</th>
+            <th class="no-sort" title="Portfolio value after this decision bar">Portfolio</th>
+            <th class="no-sort" title="Cash as a share of portfolio value after this bar">Cash</th>
           </tr></thead>
           <tbody id="val-trades-body"></tbody>
         </table>
@@ -616,14 +622,26 @@ function revealLayout() {
     const bulk = e.target.closest('[data-bulk]');
     if (!bulk) return;
     if (bulk.dataset.bulk === 'none') hiddenValRuns = new Set(lastValRuns.map(r => r.iteration));
-    else if (bulk.dataset.bulk === 'last5') {
-      const keep = new Set(lastValRuns.slice(-5).map(r => r.iteration));
-      hiddenValRuns = new Set(lastValRuns.filter(r => !keep.has(r.iteration)).map(r => r.iteration));
-    }
     else hiddenValRuns.clear();
     saveHiddenValRuns(hiddenValRuns);
     renderValRunsChart(lastValRuns);
   });
+
+  // "Last N" slider: shows only the newest N runs (1 … all) and hides the rest.
+  const runsRange = document.getElementById('val-runs-recent-range');
+  runsRange.addEventListener('input', () => {
+    const n = parseInt(runsRange.value, 10);
+    const keep = new Set(lastValRuns.slice(-n).map(r => r.iteration));
+    hiddenValRuns = new Set(lastValRuns.filter(r => !keep.has(r.iteration)).map(r => r.iteration));
+    saveHiddenValRuns(hiddenValRuns);
+    renderValRunsChart(lastValRuns);
+  });
+  const stepRunsRange = (delta) => {
+    runsRange.value = Math.min(parseInt(runsRange.max, 10), Math.max(1, parseInt(runsRange.value, 10) + delta));
+    runsRange.dispatchEvent(new Event('input'));
+  };
+  document.getElementById('val-runs-recent-minus').addEventListener('click', () => stepRunsRange(-1));
+  document.getElementById('val-runs-recent-plus').addEventListener('click', () => stepRunsRange(1));
 
   // Per-run show/hide chips. The chip bar's innerHTML is rebuilt on every
   // renderValRunsChart call (new runs land every eval_every iterations), so
@@ -677,7 +695,61 @@ function valTradesRows(run) {
   });
 }
 
-const KIND_LABEL = { buy: 'Buy', sell: 'Sell', forced_exit: 'Forced exit' };
+const KIND_LABEL = { buy: 'Buy', sell: 'Sell', forced_exit: 'Forced exit', hold: 'No action' };
+
+// Every decision bar of the run, in order, as the table sees it: the trades, plus
+// (when asked) one "No action" row for each bar of the run's value curve on which
+// nothing traded — the curve has one point per decision bar, trade or not. Each
+// row also carries the portfolio value and cash share after that bar and, when the
+// run's per-bar log (`steps`, see `ensureValSteps`) exists, the critic value, picks
+// and penalty; a no-action row gets the mean probabilities and the top buy
+// candidate from it too.
+function valTradesTimeline(run, includeNoAction, steps) {
+  const trades = valTradesRows(run);
+  const curve = run.value_curve || [];
+  const at = new Map(curve.map(p => [p.t, p]));
+  const stepAt = new Map();
+  if (steps) steps.t.forEach((t, i) => stepAt.set(t, i));
+  const withBook = (row) => {
+    const p = at.get(row.t);
+    const i = stepAt.get(row.t);
+    const out = { ...row, portfolio: p ? p.value : null, cash_share: p && p.value > 0 ? p.cash_value / p.value : null };
+    if (i != null) {
+      out.v = steps.v[i]; out.pen = steps.pen[i];
+      out.pick_b = steps.n_pick_buy[i]; out.pick_s = steps.n_pick_sell[i];
+    }
+    return out;
+  };
+  const rows = trades.map(withBook);
+  if (!includeNoAction) return rows;
+  const traded = new Set(trades.map(t => t.t));
+  const holds = curve.filter(p => !traded.has(p.t)).map(p => {
+    const row = withBook({ kind: 'hold', t: p.t, date: p.t.slice(0, 10), symbol: '' });
+    const i = stepAt.get(p.t);
+    if (i != null) {
+      row.p_hold = steps.ph[i]; row.p_sell = steps.ps[i]; row.p_buy = steps.pb[i];
+      row.top_buy = `${steps.symbols[steps.mbs[i] - 1]} ${(steps.mb[i] * 100).toFixed(1)}%`;
+    }
+    return row;
+  });
+  return rows.concat(holds).sort((a, b) => a.t < b.t ? -1 : a.t > b.t ? 1 : 0);
+}
+
+// Per-bar summaries written by the trainer next to each validation run
+// (val_steps/iter_NNNNN.json): mean/top probabilities, critic value, picks and
+// penalty for EVERY decision bar, which is what fills in the no-action rows.
+// undefined = not requested yet, null = none for that run (older runs, or logging off).
+const valStepsCache = new Map();
+function ensureValSteps(iteration) {
+  if (valStepsCache.has(iteration)) return;
+  valStepsCache.set(iteration, undefined);
+  const url = `data/trading_game/val_steps/iter_${String(iteration).padStart(5, '0')}.json`;
+  fetch(url + '?t=' + Date.now(), { cache: 'no-store' })
+    .then(r => r.ok ? r.json() : null).catch(() => null)
+    .then(j => { valStepsCache.set(iteration, j); if (iteration === valTradesIter) renderValTrades(true); });
+}
+const VT_CHUNK = 1000;   // rows rendered at a time; more are appended as the table is scrolled
+let vtMatched = [], vtShown = 0, vtRowHtml = () => '';
 const vtNum = (v, d = 2) => v == null ? '—' : v.toLocaleString('en-IN', { minimumFractionDigits: d, maximumFractionDigits: d });
 const vtProb = (p) => (p == null || p < 0) ? '—' : (p * 100).toFixed(1) + '%';
 
@@ -694,7 +766,10 @@ function renderValTrades(force = false) {
   if (valTradesIter == null || !runs.some(r => r.iteration === valTradesIter)) valTradesIter = runs[runs.length - 1].iteration;
   const kind = document.getElementById('val-trades-kind').value;
   const symq = document.getElementById('val-trades-symbol').value.trim().toUpperCase();
-  const sig = `${runs.length}|${valTradesIter}|${kind}|${symq}`;
+  const incNo = document.getElementById('val-trades-noaction').checked || kind === 'hold';
+  ensureValSteps(valTradesIter);
+  const stepsData = valStepsCache.get(valTradesIter);
+  const sig = `${runs.length}|${valTradesIter}|${kind}|${symq}|${incNo}|${stepsData === undefined ? 'loading' : stepsData ? 'steps' : 'nosteps'}`;
   if (!force && sig === valTradesSig) return;
   valTradesSig = sig;
 
@@ -702,10 +777,12 @@ function renderValTrades(force = false) {
     `<option value="${r.iteration}" ${r.iteration === valTradesIter ? 'selected' : ''}>Iter ${r.iteration} · ${r.val_return >= 0 ? '+' : ''}${(r.val_return * 100).toFixed(2)}%</option>`).join('');
 
   const run  = runs.find(r => r.iteration === valTradesIter);
-  const all  = valTradesRows(run);
-  const rows = all.filter(t =>
-    (kind === 'all' || (kind === 'exits' ? t.kind !== 'buy' : t.kind === kind)) &&
-    (!symq || t.symbol.toUpperCase().includes(symq)));
+  const timeline = valTradesTimeline(run, incNo, stepsData);
+  const all  = timeline.filter(t => t.kind !== 'hold');
+  const nHold = timeline.length - all.length;
+  const matched = timeline.filter(t =>
+    (kind === 'all' || (kind === 'exits' ? t.kind !== 'buy' && t.kind !== 'hold' : t.kind === kind)) &&
+    (!symq || (t.symbol || '').toUpperCase().includes(symq)));
 
   const buys = all.filter(t => t.kind === 'buy').length;
   const vol  = all.filter(t => t.kind === 'sell').length;
@@ -716,17 +793,34 @@ function renderValTrades(force = false) {
   const avgRet = closed.length ? closed.reduce((a, t) => a + t.ret, 0) / closed.length : null;
   const pSellExits = all.filter(t => t.kind !== 'buy' && t.p_sell != null && t.p_sell >= 0);
   const avgPSell = pSellExits.length ? pSellExits.reduce((a, t) => a + t.p_sell, 0) / pSellExits.length : null;
+  const nBars = (run.value_curve || []).length;
   document.getElementById('val-trades-sub').textContent =
-    `Iter ${run.iteration} · ${all.length} trades · chronological`;
+    `Iter ${run.iteration} · ${all.length} trades` + (incNo ? ` + ${nHold} bars with no action` : '') +
+    ` · chronological` + (incNo && stepsData === null ? ' · no per-bar probabilities logged for this run' : '') +
+    (incNo && stepsData === undefined ? ' · loading per-bar log…' : '');
   document.getElementById('val-trades-summary').innerHTML = [
     `Buys <b>${buys}</b>`, `Voluntary sells <b>${vol}</b>`, `Forced exits <b>${frc}</b>`,
+    `Bars with no action <b>${nBars ? nBars - new Set(all.map(t => t.t)).size : '—'}</b> of <b>${nBars || '—'}</b>`,
     `Round trips <b>${closed.length}</b> · win rate <b>${closed.length ? (100 * wins / closed.length).toFixed(1) + '%' : '—'}</b>`,
     `Realised P&amp;L <b class="${totPnl >= 0 ? 'pnl-pos' : 'pnl-neg'}">${fmtRupee(totPnl)}</b>`,
     `Avg return / trip <b>${avgRet == null ? '—' : (avgRet * 100).toFixed(2) + '%'}</b>`,
     `Avg p(sell) at exits <b>${avgPSell == null ? '—' : (avgPSell * 100).toFixed(1) + '%'}</b>`,
   ].map(x => `<span>${x}</span>`).join('');
 
-  document.getElementById('val-trades-body').innerHTML = rows.length ? rows.map(t => {
+  const pct1 = (p) => p == null ? '—' : (p * 100).toFixed(1) + '%';
+  vtRowHtml = (t) => {
+    const book = `<td>${t.portfolio == null ? '—' : fmtRupee(t.portfolio)}</td><td>${t.cash_share == null ? '—' : (t.cash_share * 100).toFixed(0) + '%'}</td>`;
+    const bar = `<td>${t.v == null ? '—' : t.v.toFixed(3)}</td><td>${t.pen ? t.pen.toFixed(3) : (t.pen === 0 ? '0' : '—')}</td>`;
+    const picks = `<td>${t.pick_b == null ? '—' : t.pick_b + ' / ' + t.pick_s}</td>`;
+    if (t.kind === 'hold') {
+      return `<tr class="vt-hold">
+      <td>${esc(fmtTradeStamp(t))}</td>
+      <td><span class="trade-kind trade-hold">No action</span></td>
+      <td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td>
+      <td>${pct1(t.p_hold)}</td><td>${pct1(t.p_sell)}</td><td>${pct1(t.p_buy)}</td><td>${t.top_buy ? esc(t.top_buy) : '—'}</td>
+      ${picks}${bar}${book}
+    </tr>`;
+    }
     const isExit = t.kind !== 'buy';
     const d = t.derived ? ' vt-derived' : '';
     return `<tr>
@@ -739,16 +833,37 @@ function renderValTrades(force = false) {
       <td class="${d}">${isExit && t.days_held != null ? t.days_held : '—'}</td>
       <td class="${isExit && t.pnl != null ? (t.pnl >= 0 ? 'pnl-pos' : 'pnl-neg') : ''}${d}">${isExit && t.pnl != null ? fmtRupee(t.pnl) : '—'}</td>
       <td class="${isExit && t.ret != null ? (t.ret >= 0 ? 'pnl-pos' : 'pnl-neg') : ''}${d}">${isExit && t.ret != null ? (t.ret * 100).toFixed(2) + '%' : '—'}</td>
-      <td>${vtProb(t.p_sell)}</td><td>${vtProb(t.p_buy)}</td>
+      <td>${vtProb(t.p_hold)}</td><td>${vtProb(t.p_sell)}</td><td>${vtProb(t.p_buy)}</td><td>—</td>
+      ${picks}${bar}${book}
     </tr>`;
-  }).join('') : `<tr><td colspan="13" class="na" style="padding:14px">No trades match</td></tr>`;
+  };
+  vtMatched = matched; vtShown = 0;
+  const body = document.getElementById('val-trades-body');
+  body.innerHTML = '';
+  if (!matched.length) body.innerHTML = `<tr><td colspan="20" class="na" style="padding:14px">No rows match</td></tr>`;
+  appendValTradeRows();
+  document.querySelector('#val-trades-card .vt-scroll').scrollTop = 0;
+}
+
+// Rows are rendered a chunk at a time and the next chunk is appended as the table is
+// scrolled near its end, so a year of 15-minute bars (~6,000 rows) opens instantly
+// and every row is still reachable.
+function appendValTradeRows() {
+  if (vtShown >= vtMatched.length) return;
+  const next = vtMatched.slice(vtShown, vtShown + VT_CHUNK);
+  document.getElementById('val-trades-body').insertAdjacentHTML('beforeend', next.map(vtRowHtml).join(''));
+  vtShown += next.length;
+  const sub = document.getElementById('val-trades-sub');
+  sub.dataset.more = vtShown < vtMatched.length ? ` · showing ${vtShown} of ${vtMatched.length} rows, scroll for more` : '';
+  sub.textContent = sub.textContent.replace(/ · showing .*$/, '') + sub.dataset.more;
 }
 
 function downloadValTradesCsv() {
   const run = lastValRuns.find(r => r.iteration === valTradesIter);
   if (!run) return;
-  const cols = ['t', 'kind', 'symbol', 'price', 'quantity', 'notional', 'fee', 'entry_price', 'days_held', 'pnl', 'ret', 'p_hold', 'p_sell', 'p_buy'];
-  const csv = [cols.join(',')].concat(valTradesRows(run).map(t => cols.map(c => t[c] == null ? '' : t[c]).join(','))).join('\n');
+  const cols = ['t', 'kind', 'symbol', 'price', 'quantity', 'notional', 'fee', 'entry_price', 'days_held', 'pnl', 'ret', 'p_hold', 'p_sell', 'p_buy', 'top_buy', 'pick_b', 'pick_s', 'v', 'pen', 'portfolio', 'cash_share'];
+  const incNo = document.getElementById('val-trades-noaction').checked;
+  const csv = [cols.join(',')].concat(valTradesTimeline(run, incNo, valStepsCache.get(run.iteration)).map(t => cols.map(c => t[c] == null ? '' : t[c]).join(','))).join('\n');
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
   a.download = `val_trades_iter${run.iteration}.csv`;
@@ -760,6 +875,11 @@ function wireValTrades() {
   document.getElementById('val-trades-run').addEventListener('change', e => { valTradesIter = Number(e.target.value); renderValTrades(); });
   document.getElementById('val-trades-kind').addEventListener('change', () => renderValTrades());
   document.getElementById('val-trades-symbol').addEventListener('input', () => renderValTrades());
+  document.getElementById('val-trades-noaction').addEventListener('change', () => renderValTrades());
+  const vtScroll = document.querySelector('#val-trades-card .vt-scroll');
+  vtScroll.addEventListener('scroll', () => {
+    if (vtScroll.scrollTop + vtScroll.clientHeight > vtScroll.scrollHeight - 600) appendValTradeRows();
+  });
   document.getElementById('val-trades-csv').addEventListener('click', downloadValTradesCsv);
 }
 
@@ -886,9 +1006,6 @@ function renderStatus(s) {
     valueChart.update('none');
   }
 
-  document.getElementById('holdings-sub').textContent = `Marked at ${s.current_date}`;
-  document.getElementById('holdings-body').innerHTML = holdingsRowsHtml(s.holdings, 'entry_price');
-
   const trades = [...s.recent_trades].reverse();
   document.getElementById('trade-feed').innerHTML = trades.length ? trades.map(t => `
     <div class="trade-row">
@@ -899,37 +1016,45 @@ function renderStatus(s) {
     </div>`).join('') : `<div class="na" style="padding:14px">No trades yet this episode</div>`;
 }
 
+function makeIterChart(canvasId, label, data, labels, color, width, pointRadius) {
+  return new Chart(document.getElementById(canvasId), {
+    type: 'line',
+    data: { labels, datasets: [
+      { label, data, borderColor: color, borderWidth: width, pointRadius, tension: 0, spanGaps: true },
+    ]},
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      scales: {
+        x: { title: { display: true, text: 'Iteration', color: '#6b7280' }, grid: { color: '#1e2338' } },
+        y: { title: { display: true, text: 'Σ log-return', color: '#6b7280' }, grid: { color: '#2e3350' } },
+      },
+      plugins: {
+        legend: { display: true, position: 'top', align: 'end', labels: { boxWidth: 18, boxHeight: 2, color: '#94a3b8', font: { size: 11 } } },
+      },
+    },
+  });
+}
+
 function renderIterChart(rows) {
   const labels = rows.map(r => r.iteration);
   const train  = rows.map(r => r.train_return);
   const val    = rows.map(r => r.val_return);
   const bests = rows.map(r => r.best_return).filter(v => v != null);
-  document.getElementById('iter-chart-sub').textContent =
-    `${rows.length} iteration${rows.length === 1 ? '' : 's'} logged · best return ${bests.length ? Math.max(...bests).toFixed(4) : '—'}`;
+  const n = `${rows.length} iteration${rows.length === 1 ? '' : 's'} logged`;
+  document.getElementById('iter-chart-sub').textContent = `${n} · Σ log-return, training rollout`;
+  document.getElementById('iter-val-chart-sub').textContent =
+    `${n} · best return ${bests.length ? Math.max(...bests).toFixed(4) : '—'}`;
   if (!iterChart) {
-    iterChart = new Chart(document.getElementById('iter-chart'), {
-      type: 'line',
-      data: { labels, datasets: [
-        { label: 'Train return', data: train, borderColor: 'rgba(79,142,247,.5)', borderWidth: 1.5, pointRadius: 0, tension: 0 },
-        { label: 'Held-out (val) return', data: val, borderColor: '#3dd68c', borderWidth: 2, pointRadius: 2, spanGaps: true },
-      ]},
-      options: {
-        responsive: true, maintainAspectRatio: false,
-        interaction: { mode: 'index', intersect: false },
-        scales: {
-          x: { title: { display: true, text: 'Iteration', color: '#6b7280' }, grid: { color: '#1e2338' } },
-          y: { title: { display: true, text: 'Σ log-return', color: '#6b7280' }, grid: { color: '#2e3350' } },
-        },
-        plugins: {
-          legend: { display: true, position: 'top', align: 'end', labels: { boxWidth: 18, boxHeight: 2, color: '#94a3b8', font: { size: 11 } } },
-        },
-      },
-    });
+    iterChart = makeIterChart('iter-chart', 'Train return', train, labels, 'rgba(79,142,247,.8)', 1.5, 0);
+    iterValChart = makeIterChart('iter-val-chart', 'Held-out (val) return', val, labels, '#3dd68c', 2, 2);
   } else {
     iterChart.data.labels = labels;
     iterChart.data.datasets[0].data = train;
-    iterChart.data.datasets[1].data = val;
     iterChart.update('none');
+    iterValChart.data.labels = labels;
+    iterValChart.data.datasets[0].data = val;
+    iterValChart.update('none');
   }
 }
 
@@ -1005,6 +1130,12 @@ function renderValRunsChart(runs) {
   // that file is append-only forever, but defensively) are dropped here so
   // the saved set never grows unboundedly.
   hiddenValRuns = new Set([...hiddenValRuns].filter(it => runs.some(r => r.iteration === it)));
+  const runsRange = document.getElementById('val-runs-recent-range');
+  const visibleN = runs.length - hiddenValRuns.size;
+  runsRange.max = runs.length;
+  runsRange.value = Math.max(1, visibleN);
+  document.getElementById('val-runs-recent-label').textContent =
+    visibleN === runs.length ? `all (${runs.length})` : `${visibleN} of ${runs.length}`;
   document.getElementById('val-run-toggles').innerHTML =
     runs.map((run, i) => {
       const off = hiddenValRuns.has(run.iteration);
@@ -1346,7 +1477,8 @@ function renderRunConfig(cfg) {
       ${paramItem('Max holdings (val)', cfg.n_max_holdings_val != null ? `${cfg.n_max_holdings_val} (${pct(rc.n_max_holdings_fraction)} of universe)` : '—')}
       ${paramItem('Max cash frac.', pct(rc.max_cash_fraction))}
       ${paramItem('Cash ceiling penalty', rc.cash_ceiling_penalty_coef ?? '—')}
-      ${paramItem('Hold penalty (v2)', rc.game_version === 2 ? (rc.hold_penalty_coef ?? '—') : 'n/a')}
+      ${paramItem('Illegal-action penalty', rc.game_version >= 2 ? (rc.illegal_penalty_coef ?? '—') : 'n/a')}
+      ${paramItem('Hold penalty (v2+)', rc.game_version >= 2 ? (rc.hold_penalty_coef ?? '—') : 'n/a')}
       ${paramItem('Rebuy cooldown', rc.rebuy_cooldown_days != null ? rc.rebuy_cooldown_days + ' days' : '—')}
       ${paramItem('Gamma / GAE λ', (rc.gamma ?? '—') + ' / ' + (rc.gae_lambda ?? '—'))}
       ${paramItem('Clip epsilon', rc.clip_eps ?? '—')}

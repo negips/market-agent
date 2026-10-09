@@ -14,7 +14,7 @@ of the candidate universe size `N`) may be held at once, spendable cash should
 not exceed `MAX_CASH_FRACTION` of portfolio value (rule 14, enforced as a
 reward penalty rather than a mask — see `MAX_CASH_FRACTION`'s docstring), a
 sold symbol can't be newly bought again for `REBUY_COOLDOWN_DAYS` trading days
-(rule 15), decisions happen at the `TRAINING_DECISION_GRANULARITY` cadence,
+(rule 15), decisions happen at every bar of the cache (`decision_granularity`: 15-minute or hourly),
 reward is reported every `REWARD_INTERVAL_DAYS` trading days rather than
 every bar, via either of two switchable algorithms (`TRAINING_REWARD_MODE`
 — `SPARSE_WINDOW` or `ROLLING_WINDOW`, see their docstring for the formula/
@@ -27,7 +27,9 @@ objective is to maximise the total value of the portfolio, evaluated every
 Everything above describes **v1**, the original game and the default. **v2**
 (`rules_v2`, selected per episode through `EpisodeConfig(...; rules=rules_v2())`
 or `--game-version 2` on `scripts/train_trading_policy.jl`) changes four things,
-all carried by a [`GameRules`](@ref):
+all carried by a [`GameRules`](@ref); **v3** (`rules_v3`) is v2 played on BSE at a
+15-minute cadence with the macro context and news features switched off, and refuses any
+other cache:
 
 - cash is a pseudo-stock — an extra attention token (cash/value, reserved/value,
   cap utilisation, days over the cap) with its own cap, `MAX_CASH_FRACTION`;
@@ -111,6 +113,7 @@ include("baseline_policy.jl")
 include("observation.jl")
 include("news_features.jl")
 include("policy.jl")
+include("step_log.jl")
 include("ppo.jl")
 include("live.jl")
 include("train.jl")
@@ -124,25 +127,26 @@ export
     MAX_POSITION_FRACTION, N_MAX_HOLDINGS_FRACTION, n_max_holdings,
     MAX_CASH_FRACTION, CASH_CEILING_PENALTY_COEF, REBUY_COOLDOWN_DAYS,
     RewardMode, SPARSE_WINDOW, ROLLING_WINDOW, TRAINING_REWARD_MODE, REWARD_INTERVAL_DAYS,
-    DecisionGranularity, HOURLY, MINUTE_15, TRAINING_DECISION_GRANULARITY,
+    DecisionGranularity, HOURLY, MINUTE_15, bar_scaled, discount_factors,
     N_CANDIDATE_STOCKS, MIN_CONFIDENCE_SCORE, NEWS_DECISION_SEVERITY_THRESHOLD,
     GAMMA, GAE_LAMBDA, CLIP_EPS,
     VALUE_LOSS_COEF, ENTROPY_COEF, DECAY_HALFLIFE_HOURS, N_HOURLY_BARS_SHORT,
-    N_PRICE_CHANNELS, N_MACRO_DAYS, N_MACRO_SERIES, MACRO_SERIES_NAMES,
+    N_PRICE_CHANNELS, N_MACRO_DAYS, N_MACRO_SERIES, MACRO_SERIES_NAMES, LOG_RETURN_SCALE,
     N_NEWS_FEATURES, N_HOLDING_FEATURES, N_PORTFOLIO_SCALARS, N_PORTFOLIO_SCALARS_V2,
-    N_CASH_TOKEN_FEATURES, MAX_HOLD_DAYS_V2,
+    N_CASH_TOKEN_FEATURES, MAX_HOLD_DAYS_V2, ILLEGAL_PENALTY_COEF_V3,
 
     # types
     ActionType, HOLD, SELL, BUY, RawAction, ResolvedTrade, JointAction,
     Holding, ReservedCashLot, Portfolio, EpisodeConfig, TradingGameEnv, StepResult,
-    GameRules, rules_v1, rules_v2, n_portfolio_scalars,
+    GameRules, rules_v1, rules_v2, rules_v3, n_portfolio_scalars,
+    n_price_channels, n_stock_features, obs_window_bars, bars_per_day, OBS_WINDOW_DAYS_V3, HISTORY_BARS_PER_DAY,
     CashConstraintViolation,
 
     # action
-    resolve_actions,
+    resolve_actions, sellable_mask, mask_action_logits, MASKED_LOGIT,
 
     # env
-    reset!, step!, portfolio_value, portfolio_breakdown, is_decision_bar, current_price,
+    reset!, step!, portfolio_value, portfolio_breakdown, is_decision_bar, decision_granularity, current_price,
 
     # baseline_policy
     random_policy, heuristic_policy,
@@ -155,7 +159,7 @@ export
     NEWS_SNAPSHOT_MAX_LAG_MINUTES,
 
     # policy
-    ActorCriticPolicy, save_policy, load_policy,
+    ActorCriticPolicy, save_policy, load_policy, policy_stock_inputs,
 
     # ppo
     RolloutStep, collect_rollout, compute_gae, ppo_update!,
@@ -165,6 +169,7 @@ export
 
     # train
     train_policy!, save_policy_training_log,
+    StepLog, save_step_log, load_val_steps, step_summary, save_step_summary,
 
     # universe
     UniverseEntry, eligible_candidates, build_candidate_universe,

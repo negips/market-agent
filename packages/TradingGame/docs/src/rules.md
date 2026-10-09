@@ -22,12 +22,12 @@ rows = [
     ("CASH_CEILING_PENALTY_COEF", "v1's default cash-penalty coefficient"),
     ("REBUY_COOLDOWN_DAYS",       "Rule 15 — a sold symbol can't be reopened for this many trading days"),
     ("REWARD_INTERVAL_DAYS",      "Reward window length"),
-    ("GAMMA",                     "PPO discount per hourly bar"),
+    ("GAMMA",                     "PPO discount per hourly step (rescaled by `bar_scaled` for 15-minute bars)"),
     ("GAE_LAMBDA",                "GAE bias/variance dial"),
     ("CLIP_EPS",                  "PPO clip range"),
     ("VALUE_LOSS_COEF",           "Critic loss weight"),
     ("ENTROPY_COEF",              "Default entropy bonus weight"),
-    ("N_HOURLY_BARS_SHORT",       "Hourly window length per stock"),
+    ("N_HOURLY_BARS_SHORT",       "Intraday bars in the encoder window (hourly or 15-minute)"),
     ("N_PRICE_CHANNELS",          "Channels per bar: normalised close, previous day's (H−L)/C"),
 ]
 io = IOBuffer()

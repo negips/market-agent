@@ -6,9 +6,21 @@ cash), 10 (1-day lock-up before a voluntary sale), 12 (≤15% of portfolio value
 per symbol), 13 (≤`n_max_holdings(N)` distinct symbols held at once) and 15
 (a symbol can't be newly bought again for `REBUY_COOLDOWN_DAYS` trading days
 after it was last sold) are enforced. The rest of `step!` trusts its output
-unconditionally (see `CashConstraintViolation`) — a policy's raw output should
-never need to *learn* these constraints, only choose among the options this
-masking leaves available.
+unconditionally (see `CashConstraintViolation`).
+
+Rule enforcement is split in two:
+
+1. **Impossible moves are masked before the policy samples** (`sellable_mask`,
+   `mask_action_logits`): a SELL on a stock with nothing sellable is removed from
+   that stock's distribution, so the HOLD/SELL/BUY probabilities are conditional
+   on what can actually be done and the PPO log-probabilities are taken under the
+   same masked distribution.
+2. **Everything else is applied afterwards, here**, and any move the rules refuse
+   is *penalised at once*: `resolve_actions` adds `illegal_cost` (a fraction of
+   portfolio value, `GameRules.illegal_penalty_coef`) to a running `penalty`
+   every time it rejects or trims one — a buy with no or too little cash, in
+   rebuy cooldown, beyond rule 13's holdings cap, or over rule 12's position cap.
+   Under v1/v2 the cost is 0 and the refused moves just vanish, as before.
 
 Rule 14 (cash can't exceed `MAX_CASH_FRACTION` of portfolio value) is
 deliberately NOT masked here — it's enforced as a reward penalty in `env.jl`'s
@@ -54,11 +66,24 @@ Mask and normalise `raw` against the current portfolio and candidate universe.
   redistributed to other buys — same choice already made when a buy is too
   small to afford one share.
 
+# Illegal moves
+Pass `penalty = Ref(0.0)` and `illegal_cost` to have `illegal_cost` added to it
+for every move the rules refuse: a `SELL` with nothing sellable (a policy that
+masks via `sellable_mask` never produces one; baselines can), a `BUY` of a symbol
+in its rebuy cooldown, a `BUY` that finds no slot under rule 13's holdings cap, a
+`BUY` with no cash to spend, a `BUY` the remaining cash cannot fund even one
+share of, and a `BUY` that would exceed rule 12's position cap (the part within
+the cap still executes). The caller (`step!`) subtracts the total from that
+bar's reward straight away.
+
 # Returns
 `Vector{ResolvedTrade}` — ready to pass to `apply_actions!` as-is.
 """
 function resolve_actions(env::TradingGameEnv, raw::JointAction, date_idx::Int;
-                          rng::AbstractRNG=Random.default_rng())::Vector{ResolvedTrade}
+                          rng::AbstractRNG=Random.default_rng(),
+                          penalty::Union{Nothing, Base.RefValue{Float64}}=nothing,
+                          illegal_cost::Float64=0.0)::Vector{ResolvedTrade}
+    bump!() = penalty === nothing || (penalty[] += illegal_cost)
     sellable = Set{Int}()
     for h in env.portfolio.holdings
         (date_idx - h.entry_date_idx >= MIN_HOLD_DAYS) && push!(sellable, h.sym_idx)
@@ -75,7 +100,7 @@ function resolve_actions(env::TradingGameEnv, raw::JointAction, date_idx::Int;
 
     for a in raw
         if a.kind == SELL
-            a.sym_idx in sellable && push!(resolved, ResolvedTrade(a.sym_idx, SELL, 0.0))
+            a.sym_idx in sellable ? push!(resolved, ResolvedTrade(a.sym_idx, SELL, 0.0)) : bump!()
         elseif a.kind == BUY
             a.sym_idx in env.candidate_sym_idx || continue
             if a.sym_idx in held_symbols
@@ -83,6 +108,8 @@ function resolve_actions(env::TradingGameEnv, raw::JointAction, date_idx::Int;
             elseif date_idx >= get(env.portfolio.rebuy_cooldown, a.sym_idx, typemin(Int)) && !(a.sym_idx in seen_new)
                 push!(new_positions, a)
                 push!(seen_new, a.sym_idx)
+            else
+                bump!()
             end
             # else: still inside its rule-15 rebuy cooldown — masked to HOLD
         end
@@ -96,11 +123,16 @@ function resolve_actions(env::TradingGameEnv, raw::JointAction, date_idx::Int;
     # picked uniformly at random rather than by list order (see docstring).
     remaining_slots = max(0, n_max - n_held)
     length(new_positions) > remaining_slots && shuffle!(rng, new_positions)
+    for _ in 1:max(0, length(new_positions) - remaining_slots)
+        bump!()
+    end
     append!(buys, view(new_positions, 1:min(length(new_positions), remaining_slots)))
 
     if !isempty(buys)
         total_weight = sum(max(0.0, b.weight) for b in buys)
-        if total_weight > 0
+        if env.portfolio.cash <= 0
+            for _ in buys; bump!(); end   # nothing to spend: every buy is illegal, then rejected
+        elseif total_weight > 0
             cash        = env.portfolio.cash
             total_value = portfolio_value(env)
             for b in buys
@@ -110,7 +142,15 @@ function resolve_actions(env::TradingGameEnv, raw::JointAction, date_idx::Int;
                 existing_value = sum(h.quantity * current_price(env, h.sym_idx)
                                       for h in env.portfolio.holdings if h.sym_idx == b.sym_idx; init=0.0)
                 room     = MAX_POSITION_FRACTION * total_value - existing_value
+                flagged = notional > max(0.0, room) + 1e-9
+                flagged && bump!()   # rule 12: the buy would take this symbol over its position cap
                 notional = min(notional, max(0.0, room))
+
+                price = current_price(env, b.sym_idx)
+                if notional > 0 && !flagged && (isnan(price) || price <= 0 || floor(notional / price) < 1)
+                    bump!()   # not enough cash for even one share
+                    continue
+                end
 
                 notional > 0 && push!(resolved, ResolvedTrade(b.sym_idx, BUY, notional))
             end
@@ -118,4 +158,36 @@ function resolve_actions(env::TradingGameEnv, raw::JointAction, date_idx::Int;
     end
 
     return resolved
+end
+
+
+# ── Pre-sampling mask (impossible moves) ────────────────────────────────────────
+
+"""`(N,)` Bool: `true` where candidate `c` (in `env.candidate_order` order) has at
+least one lot that may be sold now (held and past the `MIN_HOLD_DAYS` lock-up).
+A SELL on any other stock is impossible, so it is removed from the policy's
+distribution before sampling — see `mask_action_logits`."""
+function sellable_mask(env::TradingGameEnv, date_idx::Int)::Vector{Bool}
+    sellable = Set{Int}()
+    for h in env.portfolio.holdings
+        (date_idx - h.entry_date_idx >= MIN_HOLD_DAYS) && push!(sellable, h.sym_idx)
+    end
+    return Bool[sym_idx in sellable for sym_idx in env.candidate_order]
+end
+
+"""Logit value for a masked action. Large and negative rather than `-Inf`, so
+`logsoftmax`/`softmax` and their gradients stay finite (`exp(-1e4)` underflows to
+exactly `0` in `Float32`)."""
+const MASKED_LOGIT = -1f4
+
+"""`(3, N, B)` action logits with each non-sellable stock's SELL logit (row 2,
+`ActionType` order HOLD/SELL/BUY) replaced by `MASKED_LOGIT`. `sell_ok` is
+`(N, B)`. The softmax of the result is the policy's distribution *conditional on
+the move being possible*."""
+function mask_action_logits(logits::AbstractArray{<:Real}, sell_ok::AbstractArray{Bool})
+    size(logits, 1) == 3 || error("mask_action_logits: expected 3 action rows, got $(size(logits, 1))")
+    ok    = reshape(sell_ok, 1, size(sell_ok, 1), :)                  # (1, N, B)
+    extra = MASKED_LOGIT .* (1f0 .- Float32.(ok))                      # 0 where SELL is possible
+    z     = zero(extra)
+    return logits .+ vcat(z, extra, z)                                  # row 2 = SELL
 end

@@ -54,8 +54,13 @@ split) this already-filtered, already-ranked pool.
 
 # Arguments
 - `cache`: an `InferenceCache` — only symbols in `cache.sym_index` are eligible.
-- `nse_companies_path`: path to `nse_companies_latest.json`.
+- `nse_companies_path`: path to the exchange's companies file —
+  `nse_companies_latest.json` or `bse_companies_latest.json` (same fields:
+  `symbol`, `name`, `market_cap_cr`, `confidence`); it must match `cache.exchange`.
 - `min_confidence`: minimum `confidence.score` to pass.
+- `min_market_cap_cr`: drop companies below this market cap (₹ Cr). Mostly for
+  BSE, where thinly traded small caps have 15-minute bars that are largely
+  forward-filled and not realistically tradable at those prices.
 
 # Returns
 `Vector{UniverseEntry}`, sorted by market cap descending. Symbols with
@@ -64,7 +69,8 @@ are silently excluded. Uncapped — callers (`build_candidate_universe`,
 `UniverseStrategy` subtypes) decide how many of these to actually use.
 """
 function eligible_candidates(cache::InferenceCache, nse_companies_path::String;
-                              min_confidence::Float64=MIN_CONFIDENCE_SCORE)::Vector{UniverseEntry}
+                              min_confidence::Float64=MIN_CONFIDENCE_SCORE,
+                              min_market_cap_cr::Float64=0.0)::Vector{UniverseEntry}
     isfile(nse_companies_path) || error(
         "TradingGame.eligible_candidates: not found: $nse_companies_path\n" *
         "Run: julia scripts/generate_nse_list.jl && " *
@@ -84,6 +90,7 @@ function eligible_candidates(cache::InferenceCache, nse_companies_path::String;
 
         mcap = get(c, :market_cap_cr, nothing)
         mcap === nothing && continue
+        Float64(mcap) >= min_market_cap_cr || continue
 
         push!(entries, UniverseEntry(sym, String(get(c, :name, sym)), Float64(mcap), score))
     end

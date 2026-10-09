@@ -117,7 +117,7 @@ const DATA_DIR    = joinpath(REPO_ROOT, "website", "data", "trading_game")
 const CACHE_FILE  = joinpath(REPO_ROOT, "website", "data", "inference_cache.bson")
 const UNIVERSE_FILE = joinpath(DATA_DIR, "universe_latest.json")
 const MACRO_DIR   = normpath(joinpath(REPO_ROOT, "website", "data", "ohlcv", "macro"))
-const OHLCV_1MIN_DIR = normpath(joinpath(REPO_ROOT, "website", "data", "ohlcv", "nse", "1min"))
+const OHLCV_1MIN_DIR = normpath(joinpath(REPO_ROOT, "website", "data", "ohlcv", "nse", "1min"))   # news snapshots are NSE-only
 const NEWS_DB_FILE = normpath(joinpath(REPO_ROOT, "website", "data", "news_signals.db"))
 
 """Opts persisted to/restored from `run_config.json` on `--resume` — training
@@ -131,22 +131,30 @@ actually trained on would corrupt the train/val split just as surely as
 `val_days` reverting to its default would."""
 const RESUMABLE_KEYS = ("initial_cash", "val_days", "eval_every", "lr", "entropy_coef", "seed", "device", "minibatch",
                          "val_window", "train_start", "train_end", "val_start", "val_end",
-                         "use_macro", "use_news", "news_db", "game_version", "cash_penalty", "hold_penalty")
+                         "use_macro", "use_news", "news_db", "game_version", "cash_penalty", "hold_penalty", "illegal_penalty", "history_encoder", "reward_mode", "reward_window_days")
 
-"""`--game-version` accepts `1`, `2`, `v1`, `v2`."""
+"""`--game-version` accepts `1`, `2`, `3`, `v1`, `v2`, `v3`."""
 function _parse_game_version(raw::AbstractString)::Int
     v = lowercase(strip(raw))
     v in ("1", "v1") && return 1
     v in ("2", "v2") && return 2
-    error("Unknown --game-version '$raw'. Expected: 1, 2, v1, v2")
+    v in ("3", "v3") && return 3
+    error("Unknown --game-version '$raw'. Expected: 1, 2, 3, v1, v2, v3")
 end
 
 """The `GameRules` selected by `opts` — `rules_v1`/`rules_v2` with the penalty
 flags applied. `--hold-penalty` is meaningless under v1 (it has a forced exit
 instead), so a non-zero value there is a warning, not silently ignored."""
 function build_rules(opts::Dict)::GameRules
-    if opts["game_version"] == 2
-        return rules_v2(cash_penalty=something(opts["cash_penalty"], 0.0), hold_penalty=opts["hold_penalty"])
+    if opts["game_version"] == 3
+        return rules_v3(cash_penalty=something(opts["cash_penalty"], 0.0), hold_penalty=opts["hold_penalty"],
+                        illegal_penalty=something(opts["illegal_penalty"], ILLEGAL_PENALTY_COEF_V3),
+                        history_encoder=Symbol(something(opts["history_encoder"], :direct)),
+                        terminal_reward=(something(opts["reward_mode"], "terminal") == "terminal"),
+                        reward_window_days=opts["reward_window_days"])
+    elseif opts["game_version"] == 2
+        return rules_v2(cash_penalty=something(opts["cash_penalty"], 0.0), hold_penalty=opts["hold_penalty"],
+                        illegal_penalty=something(opts["illegal_penalty"], 0.0))
     end
     opts["hold_penalty"] != 0.0 &&
         @warn "--hold-penalty only applies to --game-version 2 (v1 force-exits at MAX_HOLD_DAYS instead); ignoring"
@@ -178,6 +186,11 @@ function parse_args()
         "game_version" => 1,
         "cash_penalty"      => nothing,
         "hold_penalty" => 0.0,
+        "illegal_penalty" => nothing,
+        "val_steps_every" => 1,
+        "history_encoder" => nothing,
+        "reward_mode" => nothing,
+        "reward_window_days" => 0,
     )
     explicit = Set{String}()
     i = 1
@@ -217,7 +230,10 @@ Options:
                         placeholder instead, same as before this flag existed
   --no-news             Don't load news features — zero placeholder instead
   --news-db PATH        Classified-signals DB (default: $(opts["news_db"]))
-  --game-version V      1 (default, the original game) or 2: cash is a token
+  --game-version V      1 (default, the original game), 2, or 3. 3 = the v2 rules
+                        on a BSE 15-minute cache only (any other cache is
+                        refused); checkpoints are interchangeable with v2's.
+                        v2: cash is a token
                         in the policy, decisions fill at the SAME bar's close,
                         and a stock held MAX_HOLD_DAYS_V2+ days is penalised
                         instead of force-sold. Accepts 1/2/v1/v2. A v1
@@ -226,6 +242,37 @@ Options:
                         cash/value - MAX_CASH_FRACTION). Default 0.0 under v2
                         (off); under v1 default is CASH_CEILING_PENALTY_COEF
                         ($(CASH_CEILING_PENALTY_COEF)) unless given.
+  --val-steps-every N   Write the full per-decision-step log (probabilities, action,
+                        value, book state, price for every 15-min bar) of every Nth
+                        validation run to website/data/trading_game/val_steps/
+                        iter_NNNNN.bson. Default 1 (every run, ~4 MB each for a
+                        year of 15-min bars); 0 disables. Read with
+                        TradingGame.load_val_steps / scripts/val_steps_summary.jl.
+  --reward-mode M       v3 only: terminal (default) = 0 on every bar and, at the end
+                        of each reward window, (V_end - V_start)/V_start minus the
+                        penalties accumulated in that window in rupees (each illegal
+                        move costs its --illegal-penalty share of the portfolio value
+                        when it was attempted), over V_start, the portfolio value at
+                        the start of the window. stepwise = the weekly log-return
+                        plus per-bar penalties.
+  --reward-window-days N  terminal reward: trading days per reward window (a shorter
+                        last window is flushed at the episode's end). 0 (default) =
+                        one window, the whole train/val period. Each window is
+                        normalised by the value at its own start. With 0, PPO uses
+                        discount 1; with N > 0 the bar-scaled gamma and lambda = 1.
+  --history-encoder E   v3 only: how the 70-return price history enters the policy.
+                        direct (default): straight into the fusion layer, no
+                        recurrence. gru: through the GRU encoder first.
+  --illegal-penalty X   v2/v3: charge for each illegal move, as a fraction of portfolio
+                        value (0.01 = 1%): under v3's terminal reward it is added to the
+                        window's penalty ledger, otherwise taken from that bar's reward. Illegal = a move
+                        the rules refuse: buy with no / too little cash, in rebuy
+                        cooldown, beyond the holdings cap, or over the position
+                        cap (the in-cap part still fills). The trade is rejected
+                        either way. Default 0.0 under v2, $(ILLEGAL_PENALTY_COEF_V3) under v3;
+                        v1 ignores it. v3 also masks sells of stocks with
+                        nothing sellable out of the policy's distribution before
+                        it samples.
   --hold-penalty X      v2 only: per bar, X * (share of portfolio value in
                         stocks held MAX_HOLD_DAYS_V2+ days). Default 0.0 (off).
 """)
@@ -252,6 +299,11 @@ Options:
         elseif a == "--news-db";      opts["news_db"]      = ARGS[i+1]; push!(explicit, "news_db"); i += 2
         elseif a == "--game-version"; opts["game_version"] = _parse_game_version(ARGS[i+1]); push!(explicit, "game_version"); i += 2
         elseif a == "--cash-penalty";      opts["cash_penalty"]      = parse(Float64, ARGS[i+1]); push!(explicit, "cash_penalty"); i += 2
+        elseif a == "--val-steps-every"; opts["val_steps_every"] = parse(Int, ARGS[i+1]); i += 2
+        elseif a == "--reward-window-days"; opts["reward_window_days"] = parse(Int, ARGS[i+1]); push!(explicit, "reward_window_days"); i += 2
+        elseif a == "--reward-mode"; (ARGS[i+1] in ("terminal", "stepwise") || error("--reward-mode must be terminal or stepwise")); opts["reward_mode"] = ARGS[i+1]; push!(explicit, "reward_mode"); i += 2
+        elseif a == "--history-encoder"; opts["history_encoder"] = Symbol(lowercase(ARGS[i+1])); push!(explicit, "history_encoder"); i += 2
+        elseif a == "--illegal-penalty"; opts["illegal_penalty"] = parse(Float64, ARGS[i+1]); push!(explicit, "illegal_penalty"); i += 2
         elseif a == "--hold-penalty"; opts["hold_penalty"] = parse(Float64, ARGS[i+1]); push!(explicit, "hold_penalty"); i += 2
         else; i += 1
         end
@@ -320,8 +372,9 @@ function _print_training_params(opts::Dict, device::Symbol, minibatch::Int,
     @printf("  %-22s %s\n",  "use_macro:",    opts["use_macro"])
     @printf("  %-22s %s\n",  "use_news:",     opts["use_news"])
     @printf("  %-22s %s\n",  "game_version:", opts["game_version"])
-    @printf("  %-22s %s\n",  "cash_penalty:", something(opts["cash_penalty"], opts["game_version"] == 2 ? 0.0 : CASH_CEILING_PENALTY_COEF))
-    @printf("  %-22s %s\n",  "hold_penalty:", opts["game_version"] == 2 ? opts["hold_penalty"] : "n/a (v1)")
+    @printf("  %-22s %s\n",  "cash_penalty:", something(opts["cash_penalty"], opts["game_version"] >= 2 ? 0.0 : CASH_CEILING_PENALTY_COEF))
+    @printf("  %-22s %s\n",  "illegal_penalty:", opts["game_version"] >= 2 ? something(opts["illegal_penalty"], opts["game_version"] == 3 ? ILLEGAL_PENALTY_COEF_V3 : 0.0) : "n/a (v1)")
+    @printf("  %-22s %s\n",  "hold_penalty:", opts["game_version"] >= 2 ? opts["hold_penalty"] : "n/a (v1)")
     @printf("  %-22s %d\n",  "n_candidates (train):", n_candidates_train)
     @printf("  %-22s %d\n",  "n_candidates (val):",   n_candidates_val)
     println("  train window:          $train_start .. $train_end")
@@ -345,14 +398,40 @@ function _print_training_params(opts::Dict, device::Symbol, minibatch::Int,
     println("═"^64)
 end
 
+"""Window length fed straight to the policy's fusion layer under `rules`, or 0
+when a GRU encodes the history instead (every non-v3 game, and `--history-encoder gru`)."""
+_history_bars(rules::GameRules, cache)::Int =
+    rules.history_encoder == :direct && rules.use_history ? obs_window_bars(rules, cache) : 0
+
 """A checkpoint is only usable under the game version it was built for: v2's
-policy has a cash token and a wider portfolio input that a v1 checkpoint lacks
-(and vice versa), so loading across versions can't work."""
-function _check_policy_matches_rules(policy::ActorCriticPolicy, rules::GameRules, path::String)
+policy has a cash token and a wider portfolio input that a v1 checkpoint lacks,
+and v3's has no macro branch or news inputs, so loading across versions can't work."""
+function _check_policy_matches_rules(policy::ActorCriticPolicy, rules::GameRules, path::String, cache)
     has_token = policy.cash_encoder !== nothing
-    has_token == rules.cash_token && return nothing
-    error("$path was trained under game v$(has_token ? 2 : 1) but this run is v$(rules.version) — " *
-          "start a fresh policy (drop --resume/--init-from) or pass --game-version $(has_token ? 2 : 1)")
+    has_macro = policy.macro_encoder !== nothing
+    has_news, has_sf = policy_stock_inputs(policy)
+    has_ch    = policy.hourly_encoder === nothing ? 1 : size(policy.hourly_encoder.cell.Wi, 2)
+    has_merged = policy.global_in_fusion > 0
+    has_critic = size(policy.critic_head.layers[1].weight, 2) > size(policy.actor_head.weight, 2)
+    (has_token, has_macro, has_news, has_ch, has_sf, policy.history_bars, has_merged, has_critic) ==
+        (rules.cash_token, rules.use_macro, rules.use_news, n_price_channels(rules), n_stock_features(rules),
+         _history_bars(rules, cache), rules.portfolio_in_fusion, rules.portfolio_to_critic) && return nothing
+    error("$path has cash token=$has_token, macro branch=$has_macro, news inputs=$has_news, $has_ch price channel(s), " *
+          "$has_sf per-stock features, but game v$(rules.version) needs $(rules.cash_token), $(rules.use_macro), " *
+          "$(rules.use_news), $(n_price_channels(rules)), $(n_stock_features(rules)), history window $(_history_bars(rules, cache)) " *
+          "(this one: $(policy.history_bars); 0 = GRU), portfolio scalars in fusion $(rules.portfolio_in_fusion) " *
+          "(this one: $has_merged), portfolio to critic $(rules.portfolio_to_critic) (this one: $has_critic) — v1, v2 and v3 policies are not " *
+          "interchangeable; start a fresh policy (drop --resume/--init-from) or pass the matching --game-version")
+end
+
+"""Remove the per-step validation logs of an earlier run (a fresh run starts the
+history over, like `episode_log.jsonl`/`val_runs.jsonl`)."""
+function _clear_val_steps(dir::String)
+    isdir(dir) || return nothing
+    for f in readdir(dir; join=true)
+        (endswith(f, ".bson") || endswith(f, ".json")) && rm(f)
+    end
+    return nothing
 end
 
 """Highest `iteration` field logged in `log_path`, or 0 if it doesn't exist
@@ -397,7 +476,7 @@ rule-derived constants — the same printout `_print_training_params` puts on
 stdout — without needing console access."""
 function save_run_config(opts::Dict, path::String, n_candidates_train::Int, n_candidates_val::Int,
                           resolved_device::Symbol, resolved_minibatch::Int,
-                          train_start::Date, train_end::Date, val_start::Date, val_end::Date)
+                          train_start::Date, train_end::Date, val_start::Date, val_end::Date, cache)
     resumable = Dict{String, Any}()
     for k in RESUMABLE_KEYS
         v = opts[k]
@@ -407,6 +486,9 @@ function save_run_config(opts::Dict, path::String, n_candidates_train::Int, n_ca
         JSON3.pretty(io, merge(resumable, Dict(
             "n_candidates_train"   => n_candidates_train,
             "n_candidates_val"     => n_candidates_val,
+            "exchange"             => cache.exchange,
+            "has_history"          => has_history(cache),
+            "bar_minutes"          => cache.bar_minutes,
             "resolved_device"      => string(resolved_device),
             "resolved_minibatch"   => resolved_minibatch,
             "resolved_train_start" => string(train_start),
@@ -419,13 +501,16 @@ function save_run_config(opts::Dict, path::String, n_candidates_train::Int, n_ca
                 "fee_rate"                  => FEE_RATE,
                 "settlement_days"           => SETTLEMENT_DAYS,
                 "min_hold_days"             => MIN_HOLD_DAYS,
-                "max_hold_days"             => (opts["game_version"] == 2 ? MAX_HOLD_DAYS_V2 : MAX_HOLD_DAYS),
+                "max_hold_days"             => (opts["game_version"] >= 2 ? MAX_HOLD_DAYS_V2 : MAX_HOLD_DAYS),
                 "max_position_fraction"     => MAX_POSITION_FRACTION,
                 "n_max_holdings_fraction"   => N_MAX_HOLDINGS_FRACTION,
                 "max_cash_fraction"         => MAX_CASH_FRACTION,
-                "cash_ceiling_penalty_coef" => (opts["game_version"] == 2 ? something(opts["cash_penalty"], 0.0) :
+                "cash_ceiling_penalty_coef" => (opts["game_version"] >= 2 ? something(opts["cash_penalty"], 0.0) :
                                                   something(opts["cash_penalty"], CASH_CEILING_PENALTY_COEF)),
-                "hold_penalty_coef"         => (opts["game_version"] == 2 ? opts["hold_penalty"] : 0.0),
+                "hold_penalty_coef"         => (opts["game_version"] >= 2 ? opts["hold_penalty"] : 0.0),
+                "illegal_penalty_coef"      => build_rules(opts).illegal_penalty_coef,
+                "terminal_reward"           => build_rules(opts).terminal_reward,
+                "reward_window_days"        => build_rules(opts).reward_window_days,
                 "game_version"              => opts["game_version"],
                 "rebuy_cooldown_days"       => REBUY_COOLDOWN_DAYS,
                 "gamma"                     => GAMMA,
@@ -514,13 +599,18 @@ function main()
     @info "Loading inference cache…"
     cache = load_inference_cache(CACHE_FILE)
     universe = load_universe_snapshot(UNIVERSE_FILE)
-    @info "  $(length(cache.companies)) companies cached, " *
+    @info "  $(length(cache.companies)) $(uppercase(cache.exchange)) companies cached ($(cache.bar_minutes)-minute bars" *
+          (has_history(cache) ? ", hourly history axis of $(length(cache.history_datetimes)) bars" : "") * ", " *
+          "decisions every bar = $(decision_granularity(cache))), " *
           "$(length(universe.train)) train / $(length(universe.val)) val candidates in universe"
+    if opts["use_news"] && cache.exchange != "nse"
+        @warn "News features read NSE announcements keyed by NSE symbols; on a $(uppercase(cache.exchange)) cache most " *
+              "symbols will have no signals and 1-minute snapshots are unavailable. Pass --no-news."
+    end
 
-    # Hourly axis, not daily — episodes are hourly-only (see env.jl's
-    # TRAINING_DECISION_GRANULARITY), and hourly's real Kite floor is
-    # shallower than daily's. See prepare_training_data.jl's matching
-    # comment for the concrete numbers that motivated this.
+    # Intraday axis, not daily — episodes step through intraday bars, whose
+    # real Kite floor is shallower than daily's. See prepare_training_data.jl's
+    # matching comment for the concrete numbers that motivated this.
     cache_start = Date(first(cache.hourly_datetimes))
     cache_end   = Date(last(cache.hourly_datetimes))
     train_start, train_end, val_start, val_end = resolve_date_windows(
@@ -531,8 +621,16 @@ function main()
     @info "Val window:   $val_start .. $val_end"
 
     rules = build_rules(opts)
+    if !rules.use_macro && opts["use_macro"]
+        @info "Game v$(rules.version) runs without the macro context (not loaded, no macro branch in the policy)"
+        opts["use_macro"] = false
+    end
+    if !rules.use_news && opts["use_news"]
+        @info "Game v$(rules.version) runs without news features (not loaded, no news inputs in the policy)"
+        opts["use_news"] = false
+    end
     @info "Game v$(rules.version): same-bar execution=$(rules.same_bar_execution), forced exit=$(rules.forced_exit), " *
-          "max hold $(rules.max_hold_days)d, cash penalty=$(rules.cash_penalty_coef), hold penalty=$(rules.hold_penalty_coef)"
+          "max hold $(rules.max_hold_days)d, cash penalty=$(rules.cash_penalty_coef), hold penalty=$(rules.hold_penalty_coef), illegal penalty=$(rules.illegal_penalty_coef), reward=$(rules.terminal_reward ? (rules.reward_window_days == 0 ? "terminal (whole period)" : "terminal, every $(rules.reward_window_days) trading days") : "stepwise")"
     train_config = EpisodeConfig(initial_cash=opts["initial_cash"], start_date=train_start,
                                   end_date=train_end, candidate_universe=universe.train, rules=rules)
     val_config   = EpisodeConfig(initial_cash=opts["initial_cash"], start_date=val_start,
@@ -581,20 +679,21 @@ function main()
     checkpoint_path  = joinpath(DATA_DIR, "policy.bson")
     episode_log_path = joinpath(DATA_DIR, "episode_log.jsonl")
     val_curve_path   = joinpath(DATA_DIR, "val_runs.jsonl")
+    val_steps_dir    = joinpath(DATA_DIR, "val_steps")
 
     iteration_offset = 0
     if opts["resume"]
         isfile(checkpoint_path) ||
             error("--resume requested but no checkpoint found at $checkpoint_path")
         policy, hp, _ = load_policy(checkpoint_path)
-        _check_policy_matches_rules(policy, rules, checkpoint_path)
+        _check_policy_matches_rules(policy, rules, checkpoint_path, cache)
         iteration_offset = _last_completed_iteration(episode_log_path)
         @info "Resumed policy — last completed iteration: $iteration_offset"
     elseif !isempty(opts["init_from"])
         isfile(opts["init_from"]) ||
             error("--init-from: not found: $(opts["init_from"])")
         policy, hp, _ = load_policy(opts["init_from"])
-        _check_policy_matches_rules(policy, rules, opts["init_from"])
+        _check_policy_matches_rules(policy, rules, opts["init_from"], cache)
         @info "Fresh run, weights warm-started from $(opts["init_from"])"
         # Fresh iteration numbering and log, unlike --resume — see the module
         # docstring's --init-from vs --resume note. val_runs.jsonl follows the
@@ -602,8 +701,16 @@ function main()
         # fresh held-out-curve history too.
         isfile(episode_log_path) && rm(episode_log_path)
         isfile(val_curve_path) && rm(val_curve_path)
+        _clear_val_steps(val_steps_dir)
     else
-        policy = ActorCriticPolicy(seed=opts["seed"], cash_token=rules.cash_token)
+        policy = ActorCriticPolicy(seed=opts["seed"], cash_token=rules.cash_token,
+                                    portfolio_in_fusion=rules.portfolio_in_fusion,
+                                    portfolio_to_critic=rules.portfolio_to_critic,
+                                    portfolio_scalars=n_portfolio_scalars(rules),
+                                    use_macro=rules.use_macro, use_news=rules.use_news,
+                                    price_channels=n_price_channels(rules),
+                                    stock_features=n_stock_features(rules),
+                                    history_bars=_history_bars(rules, cache))
         hp = (embed_dim=64, macro_embed_dim=16, attn_heads=4, critic_hidden=[64, 32])
         @info "Fresh policy" * (opts["seed"] === nothing ? "" : " (seed=$(opts["seed"]))")
         # episode_log.jsonl/val_runs.jsonl are both opened in append mode
@@ -611,6 +718,7 @@ function main()
         # must clear any stale ones.
         isfile(episode_log_path) && rm(episode_log_path)
         isfile(val_curve_path) && rm(val_curve_path)
+        _clear_val_steps(val_steps_dir)
     end
 
     rng       = opts["seed"] === nothing ? Random.default_rng() : MersenneTwister(opts["seed"])
@@ -618,7 +726,7 @@ function main()
     minibatch = _resolve_minibatch(opts["minibatch"], device)
 
     save_run_config(opts, config_path, length(universe.train), length(universe.val), device, minibatch,
-                     train_start, train_end, val_start, val_end)
+                     train_start, train_end, val_start, val_end, cache)
     _print_training_params(opts, device, minibatch, length(universe.train), length(universe.val),
                             train_start, train_end, val_start, val_end)
 
@@ -631,6 +739,7 @@ function main()
         stop_file=joinpath(DATA_DIR, "STOP"),
         live_path=opts["live"] ? joinpath(DATA_DIR, "live_status.json") : "",
         val_curve_path=opts["live"] ? val_curve_path : "",
+        val_steps_dir=val_steps_dir, val_steps_every=opts["val_steps_every"],
         iteration_offset=iteration_offset,
         macro_cache=macro_cache, news_fn=news_fn,
         embed_dim=hp.embed_dim, macro_embed_dim=hp.macro_embed_dim,

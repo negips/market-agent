@@ -29,8 +29,9 @@ recompute the policy's log-probability under updated weights later.
 Parametric for the same reason `Observation` is (see its docstring):
 `collect_rollout` stores views into a preallocated per-episode tensor here,
 not freshly heap-allocated arrays per step."""
-struct RolloutStep{O<:Observation, AI<:AbstractVector{Int}, BW<:AbstractVector{Float32}}
+struct RolloutStep{O<:Observation, AI<:AbstractVector{Int}, BW<:AbstractVector{Float32}, SO<:AbstractVector{Bool}}
     obs        :: O
+    sell_ok    :: SO   # per candidate: false = a SELL was impossible and masked out of the distribution this step
     action_idx :: AI   # 1=HOLD, 2=SELL, 3=BUY per candidate (ActionType order)
     buy_weight :: BW   # sigmoid(buy_weight_logit) per candidate
     logprob    :: Float32          # Σ categorical log-prob across candidates, under the OLD policy
@@ -124,6 +125,7 @@ function collect_rollout(env::TradingGameEnv, policy::ActorCriticPolicy, config:
                           macro_cache::Union{Nothing, MacroCache}=nothing,
                           news_fn::Function=_zero_news,
                           greedy::Bool=false,
+                          step_log::Union{Nothing, Base.RefValue{Any}}=nothing,
                           live_cb::Union{Nothing, Function}=nothing,
                           rng::AbstractRNG=Random.default_rng())
     policy_cpu = cpu(policy)
@@ -135,12 +137,13 @@ function collect_rollout(env::TradingGameEnv, policy::ActorCriticPolicy, config:
     candidates = copy(env.candidate_order)   # invariant for the whole episode — one shared copy
     cand_pos   = Dict(env.cache.companies[s] => i for (i, s) in enumerate(candidates))
 
-    hourly_buf    = Array{Float32}(undef, N_HOURLY_BARS_SHORT, N_PRICE_CHANNELS, N, T)
+    hourly_buf    = Array{Float32}(undef, obs_window_bars(config.rules, env.cache), n_price_channels(config.rules), N, T)
     macro_buf     = Array{Float32}(undef, N_MACRO_DAYS, N_MACRO_SERIES, T)
     news_buf      = Array{Float32}(undef, N_NEWS_FEATURES, N, T)
-    holding_buf   = Array{Float32}(undef, N_HOLDING_FEATURES, N, T)
+    holding_buf   = Array{Float32}(undef, n_stock_features(config.rules), N, T)
     portfolio_buf = Array{Float32}(undef, n_portfolio_scalars(config.rules), T)
     action_idx_buf = Array{Int}(undef, N, T)
+    sell_ok_buf    = Array{Bool}(undef, N, T)
     buy_weight_buf = Array{Float32}(undef, N, T)
 
     # `RolloutStep`/`Observation` are parametric (see their docstrings) — a
@@ -153,8 +156,11 @@ function collect_rollout(env::TradingGameEnv, policy::ActorCriticPolicy, config:
     ObsType  = Observation{typeof(@view hourly_buf[:, :, :, 1]), typeof(@view macro_buf[:, :, 1]),
                             typeof(@view news_buf[:, :, 1]), typeof(@view holding_buf[:, :, 1]),
                             typeof(@view portfolio_buf[:, 1])}
-    StepType = RolloutStep{ObsType, typeof(@view action_idx_buf[:, 1]), typeof(@view buy_weight_buf[:, 1])}
+    StepType = RolloutStep{ObsType, typeof(@view action_idx_buf[:, 1]), typeof(@view buy_weight_buf[:, 1]),
+                            typeof(@view sell_ok_buf[:, 1])}
     buffer = Vector{StepType}(undef, T)
+    slog = step_log === nothing ? nothing :
+           StepLog(String[env.cache.companies[s] for s in candidates], T)
 
     t = 0
     done = false
@@ -173,7 +179,20 @@ function collect_rollout(env::TradingGameEnv, policy::ActorCriticPolicy, config:
         action_logits, buy_weight_logit, value =
             policy_cpu(batch.hourly, batch.news, batch.holding, batch.macro_ctx, batch.portfolio)
 
-        probs = Flux.softmax(action_logits[:, :, 1]; dims=1)   # (3, N)
+        # Impossible moves are removed before sampling (game v3 `premask`), so
+        # `probs` is the distribution conditional on what can be done, and the
+        # same mask is replayed in `ppo_update!` via `sell_ok`.
+        sell_ok_view = @view sell_ok_buf[:, t]
+        if env.config.rules.premask
+            sell_ok_view .= sellable_mask(env, env.cache.date_index[env.current_date])
+        else
+            sell_ok_view .= true
+        end
+        masked = mask_action_logits(action_logits, reshape(sell_ok_view, N, 1))
+        probs = Flux.softmax(masked[:, :, 1]; dims=1)   # (3, N)
+        slog === nothing || (probs_raw = Flux.softmax(action_logits[:, :, 1]; dims=1))
+        slog === nothing || (decision_dt = string(env.cache.hourly_datetimes[env.current_hour_idx]))
+        slog === nothing || (decision_price = Float32[current_price(env, s) for s in candidates])
 
         action_idx_view = @view action_idx_buf[:, t]
         logprob = 0f0
@@ -189,11 +208,22 @@ function collect_rollout(env::TradingGameEnv, policy::ActorCriticPolicy, config:
         result = step!(env, raw; rng=rng)
         _annotate_trade_probs!(result, probs, cand_pos)
 
-        buffer[t] = RolloutStep(obs, action_idx_view, buy_weight_view, logprob, Float32(value[1]),
+        buffer[t] = RolloutStep(obs, sell_ok_view, action_idx_view, buy_weight_view, logprob, Float32(value[1]),
                                  Float32(result.reward), result.done)
         done = result.done
+        if slog !== nothing
+            info = result.info
+            record_step!(slog, t; datetime=decision_dt, probs=probs, p_sell_raw=probs_raw[2, :],
+                         buy_weight=buy_weight_view, action=action_idx_view, sell_ok=sell_ok_view,
+                         held=holding_view[1, :], price=decision_price, value=value[1], reward=result.reward,
+                         illegal_penalty=get(info, "illegal_penalty", 0.0),
+                         portfolio_value=info["portfolio_value"], cash=info["cash_value"], stocks_value=info["stocks_value"],
+                         n_holdings=length(unique(h.sym_idx for h in env.portfolio.holdings)),
+                         n_trades=length(info["trades"]))
+        end
         live_cb !== nothing && live_cb(env, result)
     end
+    step_log === nothing || (step_log[] = slog)
     t == T || error("collect_rollout: episode ran $t bars, expected exactly $T — " *
                      "preallocated buffer size assumption violated")
     return buffer
@@ -283,6 +313,7 @@ function ppo_update!(policy::ActorCriticPolicy, opt_state, buffer::Vector{<:Roll
     old_logprob = Float32[s.logprob for s in buffer]
     action_idx  = [s.action_idx for s in buffer]
     obs_all     = [s.obs        for s in buffer]
+    sell_ok_all = [s.sell_ok    for s in buffer]
 
     advantages, returns = compute_gae(rewards, values, dones; gamma=gamma, gae_lambda=gae_lambda)
     advantages = (advantages .- mean(advantages)) ./ (std(advantages) + 1f-8)
@@ -304,6 +335,7 @@ function ppo_update!(policy::ActorCriticPolicy, opt_state, buffer::Vector{<:Roll
                 action_mask[action_idx[i][c], c, b] = 1f0
             end
             action_mask = to_dev(action_mask)
+            sell_ok_b   = to_dev(reduce(hcat, (sell_ok_all[i] for i in idxs)))   # (N, B)
             adv_b   = to_dev(advantages[idxs])
             ret_b   = to_dev(returns[idxs])
             oldlp_b = to_dev(old_logprob[idxs])
@@ -311,6 +343,7 @@ function ppo_update!(policy::ActorCriticPolicy, opt_state, buffer::Vector{<:Roll
             loss, grads = Flux.withgradient(policy) do m
                 action_logits, _, value = m(hourly, news, holding, macro_ctx, portfolio)
 
+                action_logits = mask_action_logits(action_logits, sell_ok_b)
                 logp_all = Flux.logsoftmax(action_logits; dims=1)
                 probs    = Flux.softmax(action_logits; dims=1)
                 new_logprob = vec(sum(logp_all .* action_mask; dims=(1, 2)))

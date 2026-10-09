@@ -205,7 +205,7 @@ term.
 
 \code{ActorCriticPolicy} (\code{policy.jl}, current implementation) computes
 an embedding $h_i \in \mathbb{R}^d$ for each candidate independently with a
-weight-shared GRU over its own $T{=}120$-bar, $C{=}3$-channel hourly window,
+weight-shared GRU over its own $T{=}120$-bar, $C{=}2$-channel hourly window (normalised close and previous-day range),
 fuses in per-candidate news and holding-state features, and forms one
 additional \emph{portfolio/macro token} $m$ from the macro time series and
 the global portfolio scalars. The $N{+}1$ embeddings
@@ -229,6 +229,16 @@ its cost scales as
 
 Figure~\ref{fig:graphs}(a) shows this connectivity for a small illustrative
 $N$: every node connects to every other.
+
+\paragraph{Game v2.} The v2 rule set (\code{--game-version 2}) adds a
+\emph{cash token}: cash is treated as a pseudo-stock and embedded from four
+scalars (cash and reserved-cash shares of portfolio value, utilisation of the
+cash cap, and time spent above it), giving $N{+}2$ tokens and
+$\Theta\big((N+2)^2\big)$ attention cost. The asymptotics and the conclusions
+below are unchanged. The GPU measurements in Section~\ref{sec:measurement}
+were taken on the earlier $N{+}1$-token, $C{=}3$ policy; the policy now has
+one fewer input channel and (under v2) one extra token, which shifts the fitted
+coefficients slightly but not the $N^2$ scaling. They have not been re-run.
 
 % ─────────────────────────────────────────────────────────────────────────
 \section{Empirical Characterization of the Baseline}
@@ -329,7 +339,9 @@ parts:
   \item \textbf{Macro token} $m_{\text{macro}}$, from the existing macro-series
         GRU, kept separate rather than pre-fused with portfolio state.
   \item \textbf{Portfolio token} $m_{\text{port}}$, from the global portfolio
-        scalars, likewise kept separate.
+        scalars, likewise kept separate. Under game v2 the cash token is a
+        further fixed context token ($|\mathcal{C}|=K+3$); it is not a
+        candidate, so it adds no $N$-dependent cost.
 \end{itemize}
 \begin{equation}
   \mathcal{C} \;=\; \{h_j : j \in \mathcal{A}\} \,\cup\, \{m_{\text{macro}}, m_{\text{port}}\},

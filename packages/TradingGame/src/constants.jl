@@ -60,6 +60,14 @@ position*; adding to a symbol that's still currently held (a separate,
 not-yet-sold lot) is unaffected — see `resolve_actions`'s docstring."""
 const REBUY_COOLDOWN_DAYS = 7
 
+"""Game v3's default reward charged, immediately, for each *illegal move*: `0.01`,
+i.e. 1% of the current portfolio value (the reward is in portfolio-fraction
+units, so this is `0.01` of reward). An illegal move is one the rules refuse and
+that the policy could not have been prevented from attempting — see
+`resolve_actions`. The trade is rejected and the charge is taken in that same
+bar's reward, not counted or windowed. Override with `--illegal-penalty`."""
+const ILLEGAL_PENALTY_COEF_V3 = 0.01
+
 """Game v2 (see `GameRules` in `types.jl`): holding a stock past this many
 trading days is no longer force-exited (v1's rule 9, `MAX_HOLD_DAYS`) but
 costs a soft per-bar reward penalty instead, mirroring rule 14's cash penalty
@@ -110,17 +118,14 @@ const REWARD_INTERVAL_DAYS = 7
 # ── Decision cadence proxy ───────────────────────────────────────────────────────
 
 """
-Historical Kite 15-minute OHLCV retention caps at ~200 days and 5-minute at ~100
-days (see `packages/StockSwingPredictor/src/kite_data.jl`), so multi-year RL
-training cannot run at rule 8's literal 15-minute cadence. `HOURLY` trains the
-simulator at one decision per hourly bar (or immediately on a news bar) as a
-practical proxy — this is NOT exact rule-8 compliance, only a training-time
-stand-in. `MINUTE_15` is reserved for a future live/rolling-window cache and is
-not yet implemented (`is_decision_bar` raises if selected).
+Decision cadence of a training run, set by the bar length of the `InferenceCache`
+it trains on (`cache.bar_minutes`) — see `decision_granularity`. `MINUTE_15`
+decides at every 15-minute bar, which is rule 8's minimum interval exactly (a
+cache built with `build_cache.jl --granularity 15min`). `HOURLY` decides once per
+hourly bar, a coarser proxy that predates the 15-minute data (Kite's per-request
+span cap once looked like a retention limit, which is why this proxy existed).
 """
 @enum DecisionGranularity HOURLY MINUTE_15
-
-const TRAINING_DECISION_GRANULARITY = HOURLY
 
 # ── Candidate universe ────────────────────────────────────────────────────────
 
@@ -144,8 +149,21 @@ const MIN_CONFIDENCE_SCORE = 40.0
 
 # ── Observation shape (observation.jl) ───────────────────────────────────────
 
-const N_HOURLY_BARS_SHORT = 120   # ~17 trading days of hourly bars — actor-critic encoder window
-const N_PRICE_CHANNELS    = 2     # normalised close, PREVIOUS day's (H-L)/C vol
+"""Game v3's encoder window, in trading days (two weeks). v1/v2 keep the fixed
+`N_HOURLY_BARS_SHORT` bars; a rules set with `obs_window_days > 0` sizes the
+window as that many trading days of bars instead — see `obs_window_bars`."""
+const OBS_WINDOW_DAYS_V3 = 10
+
+"""Hourly history bars per trading session (9:15 … 15:15)."""
+const HISTORY_BARS_PER_DAY = 7
+
+"""Game v3 expresses the price history as log-returns, `x_i = LOG_RETURN_SCALE *
+ln(c_i / c_{i-1})` — i.e. in percent (an hourly move of 0.5% is `0.5`) — so the
+network's inputs are O(1) instead of O(0.005). See `observation.jl`."""
+const LOG_RETURN_SCALE = 100f0
+
+const N_HOURLY_BARS_SHORT = 120   # bars in the actor-critic encoder window: ~17 trading days of hourly bars, ~5 days of 15-minute bars
+const N_PRICE_CHANNELS    = 2     # normalised close, PREVIOUS day's (H-L)/C vol (game v3 uses only the first; see `n_price_channels`)
 
 const N_MACRO_DAYS   = 10
 const N_MACRO_SERIES = 9   # SP500, US_VIX, USD_INR, INDIA_VIX, CRUDE_OIL, GOLD, SILVER, NATURAL_GAS, COPPER
@@ -185,13 +203,30 @@ calibration text: 0.5 = moderate impact, 1.0 = major market-moving) for a
 classified signal to add its hourly bar to `TradingGameEnv.news_hour_indices`
 (`news_features.jl`'s `build_news_feature_cache`) — routine/noise
 announcements (severity ~0.1) don't count as a news-triggered decision
-point. Currently a no-op under `TRAINING_DECISION_GRANULARITY == HOURLY`
-(every bar is already a decision bar — see `env.jl`'s module docstring);
-kept so the set is populated correctly once `MINUTE_15` lands."""
+point. Currently a no-op: every bar of an hourly or 15-minute cache is
+already a decision bar (see `env.jl`'s module docstring); kept so the set is
+populated correctly if a coarser-than-news cadence is ever added."""
 const NEWS_DECISION_SEVERITY_THRESHOLD = 0.5
 
 const GAMMA                 = 0.99
 const GAE_LAMBDA            = 0.95
+
+"""`GAMMA`/`GAE_LAMBDA` are defined per *hourly* step. On a cache with shorter
+bars the same wall-clock horizon spans more steps, so the per-step factor is
+rescaled, `x^(bar_minutes/60)` — a 15-minute run discounts and bootstraps over
+the same real time as an hourly one instead of 4× faster. Identity for hourly."""
+bar_scaled(x::Real, bar_minutes::Integer) = Float64(x)^(bar_minutes / 60)
+
+"""`(gamma, gae_lambda)` PPO should use for `rules` on `cache`: the hourly constants
+rescaled to the bar length (`bar_scaled`), except under a terminal reward
+(`GameRules.terminal_reward`). With a single reward at the episode's last bar
+(`reward_window_days == 0`) both are 1: any discount below 1 would shrink that reward to
+nothing over ~20,000 bars (0.9975^20000 ≈ 1e-22). With a reward every few days the
+discount keeps its bar-scaled value (a window's reward still counts ~0.65 at the window's
+start for a week) and λ is 1, so each step is credited with the discounted rewards that follow."""
+discount_factors(rules, cache) =
+    !rules.terminal_reward ? (bar_scaled(GAMMA, cache.bar_minutes), bar_scaled(GAE_LAMBDA, cache.bar_minutes)) :
+    rules.reward_window_days == 0 ? (1.0, 1.0) : (bar_scaled(GAMMA, cache.bar_minutes), 1.0)
 const CLIP_EPS              = 0.2
 const VALUE_LOSS_COEF       = 0.5
 const ENTROPY_COEF          = 0.01

@@ -7,6 +7,8 @@
   <link rel="stylesheet" href="assets/style.css">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <style>
+    .arch-wrap { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:14px; margin-bottom:28px; overflow-x:auto }
+    .arch-wrap svg { width:100%; min-width:760px; height:auto; display:block }
     .proposal-banner {
       display: flex;
       align-items: center;
@@ -37,6 +39,10 @@
     /* ── Diagram comparison ── */
     .diagram-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 8px; }
     @media (max-width: 820px) { .diagram-pair { grid-template-columns: 1fr; } }
+    .diagram-trio { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 8px; }
+    @media (max-width: 1100px) { .diagram-trio { grid-template-columns: 1fr; } }
+    .diagram-panel.relu { border-color: rgba(79,142,247,.35); }
+    .diagram-panel.relu .diagram-tag { color: var(--accent); background: rgba(79,142,247,.12); }
     .diagram-panel {
       background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
       padding: 14px 16px 6px;
@@ -145,7 +151,7 @@
     <div class="section-title">Why the current design won't reach 1,500</div>
     <div class="section-note">
       <code>ActorCriticPolicy</code>'s <code>MultiHeadAttention</code> runs full self-attention across
-      every candidate — all N stocks plus the portfolio token attend to each other, an N×N cost.
+      every candidate — all N stocks plus the portfolio token attend to each other, an N×N cost. (Game v2 adds a cash token, so N+2 tokens; the N² scaling is unchanged. The measurements below were taken on the earlier 3-channel, N+1-token policy and have not been re-run.)
       At N=60 (today) that's cheap. Measured directly on this machine (RTX 5060 Ti, 16.7 GB VRAM,
       15.57 GB usable) by running <code>ActorCriticPolicy</code>'s actual forward + backward +
       optimizer step at every combination below:
@@ -165,6 +171,164 @@
       term is the real driver, not measurement noise.
     </div>
 
+    <!-- ── Current architecture (game v3) ────────────────────────────────── -->
+    <div class="section-title">Current network architecture — game v3</div>
+    <div class="section-note">
+      What <code>ActorCriticPolicy</code> is today for <code>--game-version 3</code> (BSE, 15-minute bars):
+      <strong>28,485 parameters</strong>. The macro GRU and the news inputs are switched off in v3 (the code
+      stays; other versions still use them), and there are no separate cash or portfolio tokens: the six portfolio scalars (cash state
+      included) are repeated beside every stock and enter the same fusion layer. Every stock goes through the
+      same weights, so the model has no notion of which stock is which. Shapes below are per decision step;
+      <em>N</em> is the candidate count and attention runs over <em>N</em> tokens.
+    </div>
+    <div class="arch-wrap">
+    <svg id="arch-v3" viewBox="0 0 980 540" role="img" aria-label="Game v3 policy architecture">
+      <style>
+        .ab   { fill:#122455; stroke:#4f8ef7; stroke-width:1.4 }
+        .ai   { fill:#17192b; stroke:#2a314f; stroke-width:1.2 }
+        .ag   { fill:#0b2e20; stroke:#3dd68c; stroke-width:1.5 }
+        .ao   { fill:#2a2210; stroke:#f5c842; stroke-width:1.5 }
+        .ax   { fill:none; stroke:#3a4165; stroke-width:1.2; stroke-dasharray:5 4 }
+        .al   { stroke:#6b7599; stroke-width:1.3; fill:none; marker-end:url(#arr) }
+        .t    { fill:#e6e9f5; font:600 12px ui-monospace,Menlo,monospace }
+        .ts   { fill:#9aa3c7; font:11px system-ui,sans-serif }
+        .tp   { fill:#f5c842; font:600 10.5px ui-monospace,Menlo,monospace }
+        .th   { fill:#6b7599; font:600 10px system-ui,sans-serif; letter-spacing:.07em; text-transform:uppercase }
+        .tg   { fill:#3dd68c; font:600 10.5px ui-monospace,Menlo,monospace }
+        .tm   { fill:#555d80; font:11px system-ui,sans-serif }
+      </style>
+      <defs><marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+        <path d="M0,0 L8,4 L0,8 z" fill="#6b7599"/></marker></defs>
+
+      <text class="th" x="20" y="22">Inputs</text>
+      <text class="th" x="282" y="22">Fusion (ReLU)</text>
+      <text class="th" x="520" y="22">Tokens</text>
+      <text class="th" x="662" y="22">Joint step</text>
+      <text class="th" x="820" y="22">Heads</text>
+
+      <!-- inputs, per stock -->
+      <rect class="ai" x="20" y="40" width="210" height="62" rx="8"/>
+      <text class="t" x="34" y="62">price history</text>
+      <text class="ts" x="34" y="80">70 hourly log-returns, 14 days</text>
+      <text class="ts" x="34" y="94">completed bars only, in percent</text>
+      <text class="tm" x="22" y="118">× N stocks</text>
+
+      <rect class="ai" x="20" y="140" width="210" height="62" rx="8"/>
+      <text class="t" x="34" y="160">per-stock state</text>
+      <text class="ts" x="34" y="176">4: held · P&amp;L · hold left ·</text>
+      <text class="ts" x="34" y="190">current 15-min price (snapshot)</text>
+
+      <!-- inputs, global -->
+      <rect class="ai" x="20" y="250" width="210" height="104" rx="8"/>
+      <text class="t" x="34" y="272">portfolio scalars</text>
+      <text class="ts" x="34" y="290">6 numbers, one set per step</text>
+      <text class="ts" x="34" y="304">① cash/value  ② reserved/value</text>
+      <text class="ts" x="34" y="318">③ value/initial  ④ stocks/value</text>
+      <text class="ts" x="34" y="332">⑤ cash ÷ cap  ⑥ days over cap</text>
+      <text class="tm" x="22" y="370">repeated beside every stock</text>
+
+      <!-- fusion -->
+      <rect class="ab" x="282" y="120" width="210" height="116" rx="8"/>
+      <text class="t" x="296" y="146">fusion: Dense 80 → 64</text>
+      <text class="ts" x="296" y="166">70 returns + state (4)</text>
+      <text class="ts" x="296" y="180">+ portfolio scalars (6), ReLU</text>
+      <text class="ts" x="296" y="196">one set of weights for every stock</text>
+      <text class="tp" x="296" y="220">5,184 params</text>
+
+      <!-- tokens -->
+      <rect class="ag" x="532" y="130" width="124" height="62" rx="8" style="opacity:.55" transform="translate(6,6)"/>
+      <rect class="ag" x="532" y="130" width="124" height="62" rx="8"/>
+      <text class="tg" x="546" y="158">stock tokens × N</text>
+      <text class="ts" x="546" y="176">64 each</text>
+
+      <!-- attention -->
+      <rect class="ao" x="690" y="100" width="124" height="250" rx="10"/>
+      <text class="t" x="706" y="162">multi-head</text>
+      <text class="t" x="706" y="178">self-attention</text>
+      <text class="ts" x="706" y="202">4 heads, d = 64</text>
+      <text class="ts" x="706" y="218">over N tokens</text>
+      <text class="ts" x="706" y="234">every stock sees</text>
+      <text class="ts" x="706" y="248">every other stock</text>
+      <text class="tp" x="706" y="278">16,384 params</text>
+      <text class="tp" x="706" y="296">cost ∝ N²</text>
+
+      <!-- heads -->
+      <rect class="ab" x="840" y="110" width="120" height="62" rx="8"/>
+      <text class="t" x="852" y="132">actor head</text>
+      <text class="ts" x="852" y="148">Dense 64 → 4</text>
+      <text class="tp" x="852" y="162">260 params</text>
+
+      <rect class="ai" x="840" y="196" width="120" height="46" rx="8"/>
+      <text class="ts" x="850" y="214">3 logits (hold/sell/buy)</text>
+      <text class="ts" x="850" y="230">+ 1 buy-weight logit</text>
+
+      <rect class="ab" x="840" y="262" width="120" height="100" rx="8"/>
+      <text class="t" x="852" y="284">critic MLP</text>
+      <text class="ts" x="852" y="300">70 → 64 → 32 → 1</text>
+      <text class="ts" x="852" y="314">mean token (64) +</text>
+      <text class="ts" x="852" y="328">portfolio scalars (6)</text>
+      <text class="tp" x="852" y="348">6,657 params</text>
+
+      <rect class="ag" x="840" y="386" width="120" height="48" rx="8" style="fill:#102a22"/>
+      <text class="t" x="852" y="406">value V(s)</text>
+      <text class="ts" x="852" y="422">a scalar per step</text>
+
+      <!-- outside the network -->
+      <rect class="ag" x="500" y="448" width="400" height="76" rx="8" style="fill:#102a22"/>
+      <text class="tg" x="516" y="468">then, outside the network</text>
+      <text class="ts" x="516" y="486">① SELL masked where nothing is sellable → softmax → sample</text>
+      <text class="ts" x="516" y="502">② rules run: cash split by buy weights, caps, cooldown</text>
+      <text class="ts" x="516" y="518">③ each refused move costs a share of value, paid at episode end</text>
+
+      <!-- removed in v3 -->
+      <rect class="ax" x="20" y="400" width="440" height="102" rx="8"/>
+      <text class="th" x="34" y="420">Not in v3 (code kept)</text>
+      <text class="tm" x="34" y="440">GRU encoder 1 → 64 (12,672) · macro GRU · news inputs</text>
+      <text class="tm" x="34" y="456">portfolio token (448) and cash token (320): their scalars now go</text>
+      <text class="tm" x="34" y="472">into fusion instead, so attention has N tokens, not N + 2</text>
+      <text class="tm" x="34" y="490">v3 total 28,485 vs 43,301 for v2</text>
+
+      <!-- arrows -->
+      <path class="al" d="M230,71 H256 V150 H278"/>
+      <path class="al" d="M230,171 H278"/>
+      <path class="al" d="M230,302 H256 V206 H278"/>
+      <path class="al" d="M230,330 H258 V392 H826 V340 H836" style="stroke-dasharray:4 3"/>
+      <path class="al" d="M492,161 H528"/>
+      <path class="al" d="M662,161 H686"/>
+      <path class="al" d="M814,140 H836"/>
+      <path class="al" d="M814,312 H836"/>
+      <path class="al" d="M900,172 V192"/>
+      <path class="al" d="M900,362 V382"/>
+    </svg>
+    </div>
+
+    <!-- ── The ReLU layer ────────────────────────────────────────────────── -->
+    <div class="section-title">The ReLU layer</div>
+    <div class="section-note">
+      v3 has one ReLU layer, the fusion layer in front of attention (the separate portfolio and cash
+      encoders are gone). It is a fully connected layer: every input feeds every output through its own
+      weight (each line below is one weight), each output unit adds a bias, and a ReLU
+      <code>max(0, x)</code> keeps positive values and zeroes the rest. Each stock's 80 inputs are its own 70
+      returns and 4 state features plus the 6 portfolio scalars, which are the same for every stock at a
+      given bar. The same weights serve every stock. The sketch draws only a handful of nodes — the real
+      widths are in the caption — but the lines are the real connectivity.
+    </div>
+    <div class="diagram-trio" style="grid-template-columns: minmax(0, 560px)">
+      <div class="diagram-panel relu">
+        <div class="diagram-heading">
+          <span class="diagram-name">Fusion — one token per stock</span>
+          <span class="diagram-tag">80 → 64 · 5,184</span>
+        </div>
+        <div class="diagram-caption">70 returns + 4 state features (held · P&amp;L · hold left · snapshot) + 6 portfolio scalars; 80 × 64 = 5,120 weights + 64 biases</div>
+        <svg id="graph-relu-fusion" viewBox="0 0 340 250"></svg>
+      </div>
+    </div>
+    <div class="section-note" style="margin-bottom:28px">
+      Compared with the attention graph below, this layer never looks sideways: a unit in the output only
+      sees its own stock's inputs (and the shared portfolio numbers), so its cost grows with the number of
+      stocks rather than with its square.
+    </div>
+
     <!-- ── Diagrams ──────────────────────────────────────────────────────── -->
     <div class="section-title">Current vs. proposed attention pattern</div>
     <div class="diagram-pair">
@@ -173,15 +337,15 @@
           <span class="diagram-name">Current — full self-attention</span>
           <span class="diagram-tag">O(N²)</span>
         </div>
-        <div class="diagram-caption">Every candidate attends to every other candidate directly</div>
+        <div class="diagram-caption">Every candidate attends to every other candidate (and to the cash and portfolio tokens) directly</div>
         <svg id="graph-current" viewBox="0 0 340 250"></svg>
       </div>
       <div class="diagram-panel good">
         <div class="diagram-heading">
-          <span class="diagram-name">Proposed — anchors + macro + portfolio</span>
+          <span class="diagram-name">Proposed — anchors + cash + portfolio</span>
           <span class="diagram-tag">O(N·(K+2))</span>
         </div>
-        <div class="diagram-caption">Each candidate cross-attends to K fixed anchor stocks + a macro token + a portfolio token</div>
+        <div class="diagram-caption">Each candidate cross-attends to K fixed anchor stocks + a cash token + a portfolio token (v3 has no macro token)</div>
         <svg id="graph-proposed" viewBox="0 0 340 250"></svg>
       </div>
     </div>
@@ -196,7 +360,7 @@
       macro+portfolio token into <strong>two separate tokens</strong> so a candidate can learn to weight
       "broad market conditions" and "my own book state" independently rather than reading them
       pre-blended by a fixed linear combination. Still O(N·(K+2)) — K anchors plus the 2 fixed
-      macro/portfolio tokens, none of it scaling with N.
+      macro/portfolio tokens (3 under game v2, which adds a cash token), none of it scaling with N.
     </div>
 
     <!-- ── Proposed pipeline ─────────────────────────────────────────────── -->
@@ -216,14 +380,14 @@
       <div style="display:flex;align-items:center;justify-content:center;flex-shrink:0;width:30px;color:var(--border);font-size:18px">→</div>
       <div class="flow-step" style="background:rgba(61,214,140,.05);border:1px solid rgba(61,214,140,.35);border-radius:var(--radius);padding:12px 14px;min-width:190px;flex-shrink:0">
         <div style="font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:var(--green);margin-bottom:5px">Changed — O(1)</div>
-        <span style="font-family:var(--mono);font-size:12px;font-weight:700;color:var(--green);display:block;margin-bottom:4px">Macro + portfolio, separately</span>
-        <div style="font-size:11.5px;color:var(--text-dim);line-height:1.55">Two small encoders → two tokens, not one pre-fused Dense combination</div>
+        <span style="font-family:var(--mono);font-size:12px;font-weight:700;color:var(--green);display:block;margin-bottom:4px">Cash + portfolio, separately</span>
+        <div style="font-size:11.5px;color:var(--text-dim);line-height:1.55">Two small encoders → two tokens (v3 already builds them this way; macro is off)</div>
       </div>
       <div style="display:flex;align-items:center;justify-content:center;flex-shrink:0;width:30px;color:var(--border);font-size:18px">→</div>
       <div class="flow-step" style="background:rgba(61,214,140,.05);border:1px solid rgba(61,214,140,.35);border-radius:var(--radius);padding:12px 14px;min-width:190px;flex-shrink:0">
         <div style="font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:var(--green);margin-bottom:5px">Changed — O(N·(K+2))</div>
         <span style="font-family:var(--mono);font-size:12px;font-weight:700;color:var(--green);display:block;margin-bottom:4px">Cross-attention</span>
-        <div style="font-size:11.5px;color:var(--text-dim);line-height:1.55">N candidates (queries) × (K anchors + macro + portfolio) keys/values — not N×N, and not one blended token</div>
+        <div style="font-size:11.5px;color:var(--text-dim);line-height:1.55">N candidates (queries) × (K anchors + cash + portfolio) keys/values — not N×N, and not one blended token</div>
       </div>
       <div style="display:flex;align-items:center;justify-content:center;flex-shrink:0;width:30px;color:var(--border);font-size:18px">→</div>
       <div class="flow-step" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;min-width:168px;flex-shrink:0">
@@ -577,15 +741,74 @@ function drawGraph(svgId, { hubs = [] } = {}) {
   });
   cap.textContent = hubs.length === 0
     ? `${CAND.length} candidates, ${CAND.length * (CAND.length - 1) / 2} edges`
-    : `${CAND.length} candidates × ${hubs.length} tokens (K anchors + macro + portfolio) = ${CAND.length * hubs.length} edges`;
+    : `${CAND.length} candidates × ${hubs.length} tokens (K anchors + cash + portfolio) = ${CAND.length * hubs.length} edges`;
   svg.appendChild(cap);
 }
+
+
+// ── Dense + ReLU layer sketches ───────────────────────────────────────────────
+// Left column = inputs (groups differ in colour), right column = a few of the
+// output units, each a ReLU. Every input is joined to every output drawn.
+function drawReluLayer(svgId, { inputs, nOut, outLabel, inLabelTop }) {
+  const svg = document.getElementById(svgId);
+  svg.innerHTML = '';
+  const xIn = 70, xOut = 270, top = 34, bottom = 200;
+  const place = (n) => Array.from({ length: n }, (_, i) => top + (n === 1 ? (bottom - top) / 2 : i * (bottom - top) / (n - 1)));
+  const yIn = place(inputs.length), yOut = place(nOut);
+  const palette = {
+    a: { fill: '#122455', stroke: '#4f8ef7' },
+    b: { fill: '#2a2210', stroke: '#f5c842' },
+    c: { fill: '#1e1a3a', stroke: '#9085e9' },
+  };
+
+  for (const yi of yIn) for (const yo of yOut) {
+    svg.appendChild(svgEl('line', { x1: xIn, y1: yi, x2: xOut, y2: yo, stroke: '#2a314f', 'stroke-width': 0.9 }));
+  }
+
+  inputs.forEach((inp, i) => {
+    const c = palette[inp.group];
+    svg.appendChild(svgEl('circle', { cx: xIn, cy: yIn[i], r: 7, fill: c.fill, stroke: c.stroke, 'stroke-width': 1.4 }));
+    if (inp.label) {
+      const t = svgEl('text', { x: xIn - 13, y: yIn[i] + 3, fill: c.stroke, 'font-size': 9, 'text-anchor': 'end' });
+      t.textContent = inp.label; svg.appendChild(t);
+    }
+  });
+
+  yOut.forEach((yo) => {
+    svg.appendChild(svgEl('circle', { cx: xOut, cy: yo, r: 9, fill: '#0b2e20', stroke: '#3dd68c', 'stroke-width': 1.6 }));
+    // ReLU glyph: flat for x < 0, then the identity
+    svg.appendChild(svgEl('polyline', {
+      points: `${xOut - 5},${yo + 3} ${xOut - 0.5},${yo + 3} ${xOut + 5},${yo - 3}`,
+      fill: 'none', stroke: '#3dd68c', 'stroke-width': 1.3, 'stroke-linecap': 'round', 'stroke-linejoin': 'round',
+    }));
+  });
+
+  const dots = (x, y) => { const t = svgEl('text', { x, y, fill: '#6b7280', 'font-size': 13, 'text-anchor': 'middle' }); t.textContent = '⋮'; svg.appendChild(t); };
+  dots(xOut, bottom + 16);
+
+  const cap = (x, y, txt, color) => {
+    const t = svgEl('text', { x, y, fill: color, 'font-size': 9, 'text-anchor': 'middle' });
+    t.textContent = txt; svg.appendChild(t);
+  };
+  cap(xIn, 20, inLabelTop, '#9aa3c7');
+  cap(xOut, 20, outLabel, '#3dd68c');
+  cap(170, 240, 'out = max(0, W·in + b)', '#4a5278');
+}
+
+drawReluLayer('graph-relu-fusion', {
+  inputs: [
+    { group: 'a' }, { group: 'a' }, { group: 'a' },
+    { group: 'b', label: 'held' }, { group: 'b', label: 'P&L' }, { group: 'b', label: 'left' }, { group: 'b', label: 'now' },
+    { group: 'c', label: 'cash' }, { group: 'c', label: 'cap' },
+  ],
+  nOut: 6, outLabel: '64 ReLU units', inLabelTop: '70 returns · 4 state · 6 book',
+});
 
 drawGraph('graph-current', { hubs: [] });
 drawGraph('graph-proposed', { hubs: [
   { x: 128, y: 116, label: 'anchor', kind: 'anchor' },
   { x: 128, y: 150, label: 'anchor', kind: 'anchor' },
-  { x: 212, y: 116, label: 'macro',     kind: 'context' },
+  { x: 212, y: 116, label: 'cash',      kind: 'context' },
   { x: 212, y: 150, label: 'portfolio', kind: 'context' },
 ] });
 </script>

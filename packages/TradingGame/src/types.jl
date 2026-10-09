@@ -121,6 +121,21 @@ Base.@kwdef struct GameRules
     hold_penalty_coef   :: Float64 = 0.0
     cash_penalty_coef   :: Float64 = CASH_CEILING_PENALTY_COEF
     cash_token          :: Bool    = false
+    required_exchange   :: String  = ""   # "" = any; else `reset!` demands this cache.exchange
+    required_bar_minutes :: Int    = 0    # 0 = any; else `reset!` demands this cache.bar_minutes
+    use_macro           :: Bool    = true  # false: the macro context is not computed and the policy has no macro branch
+    use_news            :: Bool    = true  # false: news features are not computed and the policy has no news inputs
+    use_volatility      :: Bool    = true  # false: the price window has only the normalised-close channel (no previous-day range)
+    obs_window_days     :: Int     = 0     # 0 = the fixed N_HOURLY_BARS_SHORT bars; else this many trading days of bars
+    history_encoder     :: Symbol  = :gru  # how the price history enters the policy: :gru (recurrent encoder) or :direct (the window itself, straight into the fusion layer)
+    cap_features        :: Bool    = false # the portfolio vector carries the two cash-cap scalars (cap use, days over) even without a cash token
+    portfolio_to_critic :: Bool    = false # true: the critic also reads the portfolio scalars directly, not just the pooled attended tokens
+    portfolio_in_fusion :: Bool    = false # true: no portfolio/cash tokens; the portfolio scalars join every stock's fusion input
+    terminal_reward     :: Bool    = false # true: 0 every bar; at the end of each reward window, (V_end - V_start)/V_start minus the penalties accumulated in rupees during it, over V_start
+    reward_window_days  :: Int     = 0     # terminal reward only: trading days per reward window; 0 = a single window, the whole episode
+    use_history         :: Bool    = false # true: price window from the cache's hourly history axis + the live 15-minute close as a separate snapshot input
+    premask             :: Bool    = false # true: impossible moves (a sell with nothing sellable) are masked out of the policy's distribution before sampling
+    illegal_penalty_coef :: Float64 = 0.0  # reward charged, at once, per illegal move (a fraction of portfolio value); see `resolve_actions`
 end
 
 """The original game. `cash_penalty` overrides rule 14's coefficient
@@ -131,13 +146,87 @@ rules_v1(; cash_penalty::Union{Nothing, Real}=nothing) =
 """Game v2: same-bar execution, no forced exit (a soft `hold_penalty` on stocks
 held `MAX_HOLD_DAYS_V2`+ days instead), a cash token, and a soft `cash_penalty`.
 Both penalties default to `0.0` (off)."""
-rules_v2(; cash_penalty::Real=0.0, hold_penalty::Real=0.0) =
+rules_v2(; cash_penalty::Real=0.0, hold_penalty::Real=0.0, illegal_penalty::Real=0.0) =
     GameRules(version=2, same_bar_execution=true, forced_exit=false, max_hold_days=MAX_HOLD_DAYS_V2,
-              hold_penalty_coef=Float64(hold_penalty), cash_penalty_coef=Float64(cash_penalty), cash_token=true)
+              hold_penalty_coef=Float64(hold_penalty), cash_penalty_coef=Float64(cash_penalty), cash_token=true,
+              illegal_penalty_coef=Float64(illegal_penalty))
+
+"""Game v3: the v2 rules played on BSE at a 15-minute cadence. Identical to
+[`rules_v2`](@ref) in every rule, penalty and the cash token, except that the macro
+context and the news features are switched off (`use_macro = use_news = false`: not
+computed, and the policy has no layers for them — the code stays, it is just
+uncoupled for this version). It also adds that
+`reset!` refuses any cache that isn't a BSE 15-minute one (`build_cache.jl
+--exchange bse --granularity 15min`), so a v3 run can't silently train on the
+wrong data. It has no cash token and no portfolio token either: the six portfolio scalars (which
+include the cash state and the cash-cap scalars) are concatenated onto every
+stock's fusion input, attention runs over the N stock tokens alone, and the critic
+reads their mean together with the portfolio scalars themselves. A v3 checkpoint therefore cannot be loaded into a v2 policy or vice versa.
+
+v3 reads its price history from the cache's hourly history axis (10 trading
+days, 70 bars, completed bars only) and gets the stock's current 15-minute close
+as a separate per-stock input; it needs a cache built with `history=`. Both are
+log-returns (`LOG_RETURN_SCALE * ln(c_t / c_{t-1})`), and by default (`history_encoder
+= :direct`) the 70 returns go straight into the fusion layer with no GRU.
+
+v3's reward is paid at the end of each reward window, and is 0 on every other bar:
+`R = (V_end - V_start)/V_start - (penalties accumulated in the window, in rupees)/V_start`,
+with `V_start` the portfolio value when the window began. A window is `reward_window_days`
+trading days (a final shorter one is flushed at the episode's end), or the whole episode
+when that is 0. Each illegal move adds `illegal_penalty` times the portfolio value at the
+moment of the decision to the window's ledger (the cash/hold penalties, when set, their
+usual fraction of the value on each bar); the ledger and `V_start` reset at every payout.
+`discount_factors` chooses the PPO discount to match. `rules_v3(terminal_reward=false)`
+restores the weekly log-return reward.
+
+v3 also stops hiding illegal moves. A sell with nothing sellable is impossible and
+is masked out of the policy's distribution before it samples (so its
+probabilities are conditional on what can be done); every other move the rules
+refuse — a buy with no or too little cash, in rebuy cooldown, beyond the holdings
+cap, over the position cap — is attempted, refused, and charged at once
+`illegal_penalty` (default `ILLEGAL_PENALTY_COEF_V3`, 1%) of portfolio value."""
+rules_v3(; cash_penalty::Real=0.0, hold_penalty::Real=0.0,
+           illegal_penalty::Real=ILLEGAL_PENALTY_COEF_V3, history_encoder::Symbol=:direct,
+           terminal_reward::Bool=true, reward_window_days::Int=0) =
+    history_encoder in (:gru, :direct) ?
+    GameRules(version=3, same_bar_execution=true, forced_exit=false, max_hold_days=MAX_HOLD_DAYS_V2,
+              hold_penalty_coef=Float64(hold_penalty), cash_penalty_coef=Float64(cash_penalty), cash_token=false,
+              required_exchange="bse", required_bar_minutes=15,
+              use_macro=false, use_news=false, premask=true,
+              use_volatility=false, obs_window_days=OBS_WINDOW_DAYS_V3, use_history=true,
+              cap_features=true, portfolio_in_fusion=true, portfolio_to_critic=true,
+              illegal_penalty_coef=Float64(illegal_penalty), history_encoder=history_encoder,
+              terminal_reward=terminal_reward, reward_window_days=reward_window_days) :
+    error("rules_v3: history_encoder must be :gru or :direct, got :$history_encoder")
+
+"""Price channels per bar in the observation under `rules`: normalised close, plus
+the previous day's (H-L)/C range unless `use_volatility` is off (game v3)."""
+n_price_channels(rules::GameRules) = rules.use_volatility ? N_PRICE_CHANNELS : 1
+
+"""Bars per regular session for `cache`'s bar length: 25 at 15 minutes, 7 hourly."""
+bars_per_day(cache) = cache.bar_minutes == 15 ? 25 : cache.bar_minutes == 60 ? 7 :
+    error("bars_per_day: unsupported bar length $(cache.bar_minutes) min")
+
+"""Length of the per-stock price window, in bars, for `rules` on `cache`:
+`N_HOURLY_BARS_SHORT` unless the rules ask for a window in days. With
+`use_history` the window is counted in *hourly history* bars (v3: 10 trading days
+≈ two calendar weeks = 70 bars, whatever the decision clock); otherwise in the
+cache's own bars (250 at 15 minutes, 70 hourly)."""
+obs_window_bars(rules::GameRules, cache) =
+    rules.obs_window_days == 0 ? N_HOURLY_BARS_SHORT :
+    rules.use_history ? rules.obs_window_days * HISTORY_BARS_PER_DAY :
+    rules.obs_window_days * bars_per_day(cache)
+
+"""Per-stock state features in the observation's `holding` tensor under `rules`:
+held flag, quantity-weighted unrealised P&L, remaining hold budget, plus — with
+`use_history` — the stock's instantaneous price (the current 15-minute close,
+normalised by the history window's anchor). The tensor keeps its `holding` name."""
+n_stock_features(rules::GameRules) = N_HOLDING_FEATURES + (rules.use_history ? 1 : 0)
 
 """Width of the observation's portfolio vector under `rules` (see
 `N_PORTFOLIO_SCALARS`/`N_PORTFOLIO_SCALARS_V2`)."""
-n_portfolio_scalars(rules::GameRules) = rules.cash_token ? N_PORTFOLIO_SCALARS_V2 : N_PORTFOLIO_SCALARS
+n_portfolio_scalars(rules::GameRules) =
+    (rules.cash_token || rules.cap_features) ? N_PORTFOLIO_SCALARS_V2 : N_PORTFOLIO_SCALARS
 
 """
 Configuration for one simulated episode.
@@ -216,12 +305,13 @@ mutable struct TradingGameEnv
     daily_values                 :: Vector{Float64}
     price_overrides   :: Dict{Int, Dict{Int, Float32}}
     cash_over_since_date_idx :: Int
+    penalty_accum     :: Float64   # rupees of penalties accumulated this episode (only used when `rules.terminal_reward`)
 end
 
 function TradingGameEnv(cache::InferenceCache; news_hour_indices::Set{Int}=Set{Int}(),
                          price_overrides::Dict{Int, Dict{Int, Float32}}=Dict{Int, Dict{Int, Float32}}())
     TradingGameEnv(cache, Portfolio(cash=0.0), nothing, 0, Date(1900, 1, 1), 0,
-                    Set{Int}(), Int[], news_hour_indices, 0, 0.0, 0, Float64[], price_overrides, 0)
+                    Set{Int}(), Int[], news_hour_indices, 0, 0.0, 0, Float64[], price_overrides, 0, 0.0)
 end
 
 """One executed trade (forced exit, voluntary sell, or buy) — `StepResult.info["trades"]`

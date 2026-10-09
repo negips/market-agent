@@ -102,7 +102,7 @@ export
     fetch_kite_macro_15min, collect_macro_15min, load_macro_15min,
 
     # inference_cache
-    InferenceCache, build_inference_cache, load_inference_cache,
+    InferenceCache, build_inference_cache, load_inference_cache, has_history,
     find_hourly_end, find_date,
 
     # llm_extract

@@ -1,15 +1,15 @@
 """
 The rule-exact market simulator: `reset!`/`step!` over an `InferenceCache`.
 
-Trained at `TRAINING_DECISION_GRANULARITY = HOURLY` (see `constants.jl` for why)
-— every hourly bar is a decision bar, so rule 8's "or immediately after a news
-item" is currently a no-op (news can't fire *more* often than every bar). The
-`news_hour_indices` mechanism is kept as a forward-compatible hook for a future
-`MINUTE_15` cache.
+Every bar of the `InferenceCache` is a decision bar — hourly bars for an hourly
+cache, 15-minute bars (rule 8's minimum interval) for a 15-minute one — so
+rule 8's "or immediately after a news item" is a no-op (news can't fire *more*
+often than every bar). The `news_hour_indices` mechanism is kept as a hook.
+The cache's `bar_minutes` sets the cadence; see `decision_granularity`.
 """
 
 using Dates, Random
-using StockSwingPredictor: find_hourly_end, find_date
+using StockSwingPredictor: find_hourly_end, find_date, has_history
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────────────
 
@@ -19,6 +19,16 @@ first hourly bar at or before `config.start_date`'s market open, and restricts
 the tradeable universe to `config.candidate_universe`.
 """
 function reset!(env::TradingGameEnv, config::EpisodeConfig)
+    r = config.rules
+    wrong_exchange = !isempty(r.required_exchange) && env.cache.exchange != r.required_exchange
+    wrong_bars     = r.required_bar_minutes != 0 && env.cache.bar_minutes != r.required_bar_minutes
+    (wrong_exchange || wrong_bars) && error(
+        "TradingGameEnv.reset!: game v$(r.version) needs a $(uppercase(r.required_exchange)) " *
+        "$(r.required_bar_minutes)-minute cache, got $(uppercase(env.cache.exchange)) " *
+        "$(env.cache.bar_minutes)-minute (build_cache.jl --exchange bse --granularity 15min)")
+    r.use_history && !has_history(env.cache) && error(
+        "TradingGameEnv.reset!: game v$(r.version) reads its price window from an hourly history axis, but this cache " *
+        "has none (build_cache.jl --exchange bse --granularity 15min --history resample)")
     env.config = config
     env.portfolio.cash = config.initial_cash
     empty!(env.portfolio.reserved)
@@ -34,6 +44,7 @@ function reset!(env::TradingGameEnv, config::EpisodeConfig)
     env.reward_window_start_date_idx = env.cache.date_index[env.current_date]
     env.reward_window_start_value    = config.initial_cash
     env.cash_over_since_date_idx     = env.reward_window_start_date_idx   # episodes start at 100% cash, above any cap < 1
+    env.penalty_accum                = 0.0
 
     env.daily_value_base_date_idx = env.reward_window_start_date_idx
     empty!(env.daily_values)
@@ -144,8 +155,10 @@ function step!(env::TradingGameEnv, raw_actions::JointAction=RawAction[];
 
     n_executed    = 0
     voluntary_events = TradeEvent[]
+    illegal = Ref(0.0)
     if is_decision_bar(env)
-        resolved = resolve_actions(env, raw_actions, date_idx; rng=rng)
+        resolved = resolve_actions(env, raw_actions, date_idx; rng=rng,
+                                    penalty=illegal, illegal_cost=rules.illegal_penalty_coef)
         voluntary_events = _apply_actions!(env, resolved, date_idx)
         n_executed = length(resolved)
     end
@@ -165,6 +178,7 @@ function step!(env::TradingGameEnv, raw_actions::JointAction=RawAction[];
     cash_fraction = value > 0 ? env.portfolio.cash / value : 0.0
     cash_excess   = max(0.0, cash_fraction - MAX_CASH_FRACTION)
     reward -= rules.cash_penalty_coef * cash_excess
+    reward -= illegal[]
 
     info = Dict{String, Any}(
         "portfolio_value"       => value,
@@ -172,6 +186,7 @@ function step!(env::TradingGameEnv, raw_actions::JointAction=RawAction[];
         "cash_value"            => breakdown.cash_value,
         "cash_fraction"         => cash_fraction,
         "cash_ceiling_violated" => cash_excess > 0,
+        "illegal_penalty"       => illegal[],
         "forced_exits"          => length(forced),
         "reserved_settled"      => n_settled,
         "actions_executed"      => n_executed,
@@ -220,12 +235,22 @@ function _log_return_reward!(env::TradingGameEnv, date_idx::Int, value::Float64,
     end
 end
 
-"""Whether the current bar accepts a voluntary action. Always `true` under the
-`HOURLY` training proxy (see `constants.jl`); `MINUTE_15` is not yet
-implemented since it needs a rolling 15-minute `InferenceCache`."""
+"""The decision cadence implied by `cache.bar_minutes`: `MINUTE_15` for a
+15-minute cache, `HOURLY` for an hourly one. Errors for any other bar length."""
+function decision_granularity(cache)::DecisionGranularity
+    cache.bar_minutes == 15 && return MINUTE_15
+    cache.bar_minutes == 60 && return HOURLY
+    error("decision_granularity: unsupported bar length $(cache.bar_minutes) min (expected 15 or 60)")
+end
+
+"""Whether the current bar accepts a voluntary action. Always `true`: every bar
+of a 15-minute or hourly cache is a decision bar, and a 15-minute bar already
+meets rule 8's minimum interval (`DECISION_INTERVAL_MIN`). Errors if the cache's
+bars are shorter than that interval."""
 function is_decision_bar(env::TradingGameEnv)::Bool
-    TRAINING_DECISION_GRANULARITY == HOURLY && return true
-    error("is_decision_bar: MINUTE_15 decision granularity requires a 15-min InferenceCache, not yet implemented")
+    decision_granularity(env.cache)
+    env.cache.bar_minutes >= DECISION_INTERVAL_MIN && return true
+    error("is_decision_bar: cache bars ($(env.cache.bar_minutes) min) are shorter than rule 8's $(DECISION_INTERVAL_MIN)-minute interval")
 end
 
 # ── Internals ─────────────────────────────────────────────────────────────────────
@@ -276,8 +301,11 @@ function _step_same_bar!(env::TradingGameEnv, raw_actions::JointAction, rules::G
 
     n_executed = 0
     events = TradeEvent[]
+    illegal = Ref(0.0)
+    value_at_decision = rules.terminal_reward ? portfolio_value(env) : 0.0   # what "1% of portfolio value" is taken of
     if is_decision_bar(env)
-        resolved = resolve_actions(env, raw_actions, date_idx; rng=rng)
+        resolved = resolve_actions(env, raw_actions, date_idx; rng=rng,
+                                    penalty=illegal, illegal_cost=rules.illegal_penalty_coef)
         events = _apply_actions!(env, resolved, date_idx)
         n_executed = length(resolved)
     end
@@ -290,19 +318,39 @@ function _step_same_bar!(env::TradingGameEnv, raw_actions::JointAction, rules::G
     value = breakdown.value
     done  = env.current_hour_idx >= env.end_hour_idx
 
-    reward = _log_return_reward!(env, new_date_idx, value, done)
+    reward = rules.terminal_reward ? 0.0 : _log_return_reward!(env, new_date_idx, value, done)
 
     cash_fraction = value > 0 ? env.portfolio.cash / value : 0.0
     cash_excess   = max(0.0, cash_fraction - MAX_CASH_FRACTION)
-    reward -= rules.cash_penalty_coef * cash_excess
     if cash_excess > 0
         env.cash_over_since_date_idx == 0 && (env.cash_over_since_date_idx = new_date_idx)
     else
         env.cash_over_since_date_idx = 0
     end
-
     overdue_fraction = overdue_stock_fraction(env, new_date_idx, value, rules.max_hold_days)
-    reward -= rules.hold_penalty_coef * overdue_fraction
+
+    if rules.terminal_reward
+        # Penalties pile up in rupees (an illegal move: its share of the portfolio value when it was
+        # attempted; the cash/hold penalties: their share of the value on that bar) and are paid,
+        # together with the window's gain, when the reward window ends — every `reward_window_days`
+        # trading days, and at the episode's last bar. Both are measured against the portfolio value
+        # at the START of the window, which then becomes the base of the next one.
+        env.penalty_accum += value_at_decision * illegal[] +
+                             value * (rules.cash_penalty_coef * cash_excess + rules.hold_penalty_coef * overdue_fraction)
+        due = done || (rules.reward_window_days > 0 &&
+                       new_date_idx - env.reward_window_start_date_idx >= rules.reward_window_days)
+        if due
+            v0 = env.reward_window_start_value
+            reward = (value - v0) / v0 - env.penalty_accum / v0
+            env.reward_window_start_value    = value
+            env.reward_window_start_date_idx = new_date_idx
+            env.penalty_accum                = 0.0
+        end
+    else
+        reward -= rules.cash_penalty_coef * cash_excess
+        reward -= rules.hold_penalty_coef * overdue_fraction
+        reward -= illegal[]
+    end
 
     info = Dict{String, Any}(
         "portfolio_value"       => value,
@@ -311,6 +359,8 @@ function _step_same_bar!(env::TradingGameEnv, raw_actions::JointAction, rules::G
         "cash_fraction"         => cash_fraction,
         "cash_ceiling_violated" => cash_excess > 0,
         "overdue_fraction"      => overdue_fraction,
+        "illegal_penalty"       => illegal[],
+        "penalty_accum"         => env.penalty_accum,
         "forced_exits"          => 0,
         "reserved_settled"      => n_settled,
         "actions_executed"      => n_executed,

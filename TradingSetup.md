@@ -102,6 +102,20 @@ forward-fills gaps, and writes `website/data/inference_cache.bson`. The simulato
 only this file during training (no CSV reads in the rollout loop), so training sees
 nothing newer than the last rebuild.
 
+### BSE / 15-minute variant of step 5
+
+To train on BSE with decisions every 15 minutes instead of NSE hourly bars, build the cache from the
+BSE tree (needs `bse/15min` + `bse/daily` and `bse_companies_latest.json` with confidence scores,
+steps 1–3):
+
+```bash
+julia --project=packages/StockSwingPredictor scripts/build_cache.jl --exchange bse --granularity 15min --min-mcap 500
+```
+The cache gets two price axes: the 15-minute clock and an hourly history axis resampled from it (`--history`, default `resample`). Steps 7–9 then pick up the exchange and bar length from the cache. Train it with `--game-version 3` (the v2 rules without macro and news; errors out unless the cache is BSE 15-minute, so steps 4 and 6 are not needed for it). Use `--no-news` (the news pipeline is
+NSE-only) and expect ~3.6× more bars per episode, so roughly 4× the time per iteration. `--min-mcap` matters:
+thinly traded BSE small caps have mostly forward-filled 15-minute bars. This overwrites the NSE cache, and
+old checkpoints do not carry over.
+
 ## 6. News data (only if training with news; skip with `--no-news`)
 
 ```bash

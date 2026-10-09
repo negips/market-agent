@@ -85,7 +85,7 @@ using StockSwingPredictor, TradingGame, Dates
 
 const REPO_ROOT      = joinpath(@__DIR__, "..")
 const CACHE_FILE     = normpath(joinpath(REPO_ROOT, "website", "data", "inference_cache.bson"))
-const NSE_COMPANIES_FILE = normpath(joinpath(REPO_ROOT, "website", "data", "nse_companies_latest.json"))
+const DATA_DIR       = normpath(joinpath(REPO_ROOT, "website", "data"))
 const UNIVERSE_FILE  = normpath(joinpath(REPO_ROOT, "website", "data", "trading_game", "universe_latest.json"))
 const DATE_WINDOW_FILE = normpath(joinpath(REPO_ROOT, "website", "data", "trading_game", "date_window.json"))
 const SCRIPTS_DIR    = @__DIR__
@@ -163,11 +163,20 @@ function main()
 
     @info "Loading inference cache…"
     cache = load_inference_cache(CACHE_FILE)
-    # Hourly axis, not daily — TradingGameEnv's episodes are hourly-only
-    # (see env.jl's TRAINING_DECISION_GRANULARITY), and hourly's real Kite
-    # floor is shallower than daily's (daily can go back to 2010, hourly to
-    # ~2015 for virtually every NSE symbol). Resolving against cache.dates
-    # (daily) would default train_start to a date no hourly bar can satisfy.
+    @info "  $(uppercase(cache.exchange)) cache, $(cache.bar_minutes)-minute bars"
+    if cache.exchange != "nse"
+        # The news pipeline is NSE-only: announcements come from NSE and the
+        # 1-minute snapshots from ohlcv/nse/1min, keyed by NSE symbols.
+        (args["skip_news"] && args["skip_1min"]) ||
+            @warn "News backfill and 1-minute snapshots are NSE-only; skipping both for a $(uppercase(cache.exchange)) cache"
+        args["skip_news"] = true
+        args["skip_1min"] = true
+    end
+    # The intraday axis, not daily — episodes step through intraday bars, and
+    # their real Kite floor is shallower than daily's (daily can go back to
+    # 2010; hourly to ~2015, 15-minute to 2019 on BSE). Resolving against
+    # cache.dates (daily) would default train_start to a date no intraday bar
+    # can satisfy.
     cache_start = Date(first(cache.hourly_datetimes))
     cache_end   = Date(last(cache.hourly_datetimes))
 
@@ -221,7 +230,7 @@ function main()
               "(pass --rebuild-universe to regenerate): $UNIVERSE_FILE"
     else
         @info "Stage 1/3: building universe (SharedTopMarketCap, n=$(args["n"]))…"
-        pool = eligible_candidates(cache, NSE_COMPANIES_FILE)
+        pool = eligible_candidates(cache, joinpath(DATA_DIR, "$(cache.exchange)_companies_latest.json"))
         strategy = SharedTopMarketCap(n=args["n"])
         train, val = build_universes(strategy, pool)
         save_universe_snapshot(strategy, train, val, UNIVERSE_FILE)

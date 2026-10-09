@@ -14,9 +14,9 @@ candidate takes its most-likely action, nothing is learned). Its summed reward i
 1. [`train_policy!`](@ref) — when `iter % eval_every == 0`, tags the live tracker `val` and calls
    [`collect_rollout`](@ref)`(env, policy, val_config; greedy=true, live_cb=…)`.
 2. [`collect_rollout`](@ref) — takes a CPU copy of the policy, calls [`reset!`](@ref), preallocates one observation tensor per bar.
-3. [`reset!`](@ref) — cash ← initial; clears holdings, reserved cash and cooldowns; finds the first/last hourly bar; loads the candidate universe.
+3. [`reset!`](@ref) — cash ← initial; clears holdings, reserved cash and cooldowns; finds the first/last intraday bar; loads the candidate universe.
 
-## Every hourly bar
+## Every bar (hourly or 15-minute)
 
 | # | Call | What it does |
 |:---|:---|:---|

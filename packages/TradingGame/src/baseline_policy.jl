@@ -25,7 +25,7 @@ end
 
 """
 Simple momentum heuristic: buy candidates whose price rose over the last
-`lookback_bars` hourly bars and aren't already held; sell held lots whose price
+`lookback_bars` bars and aren't already held; sell held lots whose price
 has fallen over the same window (masking handles the 1-day lock-up — an
 attempted early sell just becomes a no-op HOLD). Buy weights are equal-split
 across all momentum-positive candidates.

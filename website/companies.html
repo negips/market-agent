@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>NSE Companies — market-agent</title>
+  <title>Companies — market-agent</title>
   <link rel="stylesheet" href="assets/style.css">
   <style>
     .company-name { font-weight: 500; }
@@ -16,6 +16,14 @@
     td.rank       { text-align: center; color: var(--muted); font-size: 12px; width: 48px; }
     .sort-label   { font-size: 12px; color: var(--muted); white-space: nowrap; }
     .sort-label strong { color: var(--text-dim); }
+    .ex-tabs { display:flex; gap:6px; margin-bottom:14px; }
+    .ex-tab { padding:6px 16px; border:1px solid var(--border); border-radius:6px; background:transparent;
+              color:var(--text-dim); cursor:pointer; font-size:13px; font-family:inherit; }
+    .ex-tab.active { background:var(--accent, #3b82f6); border-color:var(--accent, #3b82f6); color:#fff; }
+    .dual-chip { font-size:10.5px; color:var(--muted); border:1px solid var(--border); border-radius:4px; padding:0 5px; margin-left:6px; }
+    #main-table.bse .nse-only { display:none; }
+    .bse-only-opt { display:none; }
+    body.is-bse .bse-only-opt { display:inline-flex; }
   </style>
 </head>
 <body>
@@ -23,11 +31,16 @@
 
 <div class="main">
   <div class="page-header">
-    <div class="page-title">NSE Companies <span id="hdr-date" style="font-size:15px; font-weight:400; color:var(--muted)"></span></div>
-    <div class="page-subtitle">All NSE-listed EQ-series companies with closing prices and confidence scores</div>
+    <div class="page-title"><span id="ex-title">NSE</span> Companies <span id="hdr-date" style="font-size:15px; font-weight:400; color:var(--muted)"></span></div>
+    <div class="page-subtitle">Listed companies with market caps and confidence scores — NSE (EQ series) or BSE</div>
   </div>
 
   <div class="page-content">
+
+    <div class="ex-tabs" id="ex-tabs">
+      <button type="button" class="ex-tab active" data-ex="nse">NSE</button>
+      <button type="button" class="ex-tab" data-ex="bse">BSE</button>
+    </div>
 
     <div class="stat-row" id="stat-row" style="display:none">
       <div class="stat-card">
@@ -60,6 +73,9 @@
           </svg>
         </button>
       </div>
+      <label class="trade-toggle bse-only-opt" style="gap:6px; font-size:12.5px; color:var(--text-dim)">
+        <input type="checkbox" id="bse-only-toggle"> BSE-only (hide NSE dual-listed)
+      </label>
       <div class="sort-label" id="sort-label">Sorted by <strong>Company Name ↑</strong></div>
       <div class="controls-right">
         <div class="controls-meta" id="stats-meta">Loading…</div>
@@ -78,9 +94,9 @@
             <th data-col="name"          class="sorted" data-dir="asc">Company <span class="sort-icon">▲</span></th>
             <th data-col="symbol"                                      >Symbol <span class="sort-icon">⬍</span></th>
             <th data-col="sector"                                      >Sector <span class="sort-icon">⬍</span></th>
-            <th data-col="close_price"   style="text-align:right"     >Close ₹ <span class="sort-icon">⬍</span></th>
+            <th data-col="close_price"   class="nse-only" style="text-align:right"     >Close ₹ <span class="sort-icon">⬍</span></th>
             <th data-col="market_cap_cr" style="text-align:right"     >Mkt Cap <span class="sort-icon">⬍</span></th>
-            <th data-col="volume"        style="text-align:right"     >Volume <span class="sort-icon">⬍</span></th>
+            <th data-col="volume"        class="nse-only" style="text-align:right"     >Volume <span class="sort-icon">⬍</span></th>
             <th data-col="conf_score"    style="text-align:center"    >Confidence <span class="sort-icon">⬍</span></th>
           </tr>
         </thead>
@@ -97,23 +113,36 @@
 const PAGE_SIZE = 75;
 let allData = [], filtered = [], sortCol = 'name', sortDir = 'asc', currentPage = 1, searchTerm = '';
 
-(async () => {
-  let data = null;
-  for (const url of ['data/nse_companies_latest.json']) {
-    try { const r = await fetch(url); if (r.ok) { data = await r.json(); break; } } catch {}
+const EX_FILES = { nse: 'data/nse_companies_latest.json', bse: 'data/bse_companies_latest.json' };
+const exCache = {};
+let exchange = 'nse', bseOnly = false;
+try { const e = localStorage.getItem('companiesExchange'); if (e in EX_FILES) exchange = e; } catch {}
+
+async function loadExchange(ex) {
+  const stateArea = document.getElementById('state-area');
+  const table = document.getElementById('main-table');
+  exchange = ex;
+  try { localStorage.setItem('companiesExchange', ex); } catch {}
+  document.querySelectorAll('.ex-tab').forEach(b => b.classList.toggle('active', b.dataset.ex === ex));
+  document.getElementById('ex-title').textContent = ex.toUpperCase();
+  table.classList.toggle('bse', ex === 'bse');
+  document.body.classList.toggle('is-bse', ex === 'bse');
+  if (sortCol === 'close_price' || sortCol === 'volume') { sortCol = 'name'; sortDir = 'asc'; updateSortUI(); }
+
+  if (!exCache[ex]) {
+    stateArea.style.display = ''; table.style.display = 'none';
+    try { const r = await fetch(EX_FILES[ex]); if (r.ok) exCache[ex] = await r.json(); } catch {}
   }
+  const data = exCache[ex];
   if (!data) {
-    showError(
-      document.getElementById('state-area'),
-      'Could not load company data.',
-      'Run <code>./serve.sh</code> from the repo root, then open this page via localhost.'
-    );
+    stateArea.style.display = '';
+    showError(stateArea, `Could not load ${ex.toUpperCase()} company data.`,
+      'Run <code>./serve.sh</code> from the repo root, then open this page via localhost.');
     return;
   }
 
   const scored = data.companies.filter(c => c.confidence);
   const passed = scored.filter(c => c.confidence.pass);
-
   document.getElementById('hdr-date').textContent = `— ${data.date}`;
   document.getElementById('s-total').textContent  = data.total.toLocaleString('en-IN');
   document.getElementById('s-scored').textContent = scored.length.toLocaleString('en-IN');
@@ -122,10 +151,19 @@ let allData = [], filtered = [], sortCol = 'name', sortDir = 'asc', currentPage 
   document.getElementById('stat-row').style.display = '';
 
   allData = data.companies;
+  currentPage = 1;
   applyFilterAndSort();
-  document.getElementById('state-area').style.display = 'none';
-  document.getElementById('main-table').style.display = '';
-})();
+  stateArea.style.display = 'none';
+  table.style.display = '';
+}
+
+document.getElementById('ex-tabs').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-ex]');
+  if (b && b.dataset.ex !== exchange) loadExchange(b.dataset.ex);
+});
+document.getElementById('bse-only-toggle').addEventListener('change', (e) => {
+  bseOnly = e.target.checked; currentPage = 1; applyFilterAndSort();
+});
 
 const searchInput = document.getElementById('search');
 const clearBtn    = document.getElementById('clear-btn');
@@ -172,13 +210,15 @@ function updateSortUI() {
 }
 
 function applyFilterAndSort() {
+  const base = (exchange === 'bse' && bseOnly) ? allData.filter(c => !c.dual_listed) : allData;
   filtered = searchTerm
-    ? allData.filter(c =>
+    ? base.filter(c =>
         (c.name   || '').toLowerCase().includes(searchTerm) ||
+        String(c.scripcode ?? '').includes(searchTerm) ||
         (c.symbol || '').toLowerCase().includes(searchTerm) ||
         (c.isin   || '').toLowerCase().includes(searchTerm) ||
         (c.sector || '').toLowerCase().includes(searchTerm))
-    : allData;
+    : base;
 
   const numCols = new Set(['close_price','market_cap_cr','volume','conf_score']);
   filtered = [...filtered].sort((a, b) => {
@@ -217,19 +257,22 @@ function renderPage() {
       `<td class="rank">${start+i+1}</td>`,
       `<td>
          <div class="company-name">${esc(c.name)}</div>
-         <div class="company-meta">${esc(c.isin||'')}${c.listed_since ? ' · listed '+esc(c.listed_since) : ''}</div>
+         <div class="company-meta">${exchange === 'bse'
+           ? 'Scrip ' + esc(c.scripcode ?? '—') + (c.confidence?.source ? ' · score via ' + esc(c.confidence.source) : '')
+           : esc(c.isin||'') + (c.listed_since ? ' · listed '+esc(c.listed_since) : '')}</div>
        </td>`,
-      `<td><span class="symbol-chip">${esc(c.symbol)}</span></td>`,
+      `<td><span class="symbol-chip">${esc(c.symbol)}</span>${exchange === 'bse' && c.dual_listed ? `<span class="dual-chip" title="Also listed on NSE as ${esc(c.nse_symbol||'')}">NSE</span>` : ''}</td>`,
       `<td class="sector-text">${esc(c.sector||'—')}</td>`,
-      `<td class="num">${c.close_price != null ? `<span class="price-val">${fmtPrice(c.close_price)}</span>` : '<span class="na">—</span>'}</td>`,
+      `<td class="num nse-only">${c.close_price != null ? `<span class="price-val">${fmtPrice(c.close_price)}</span>` : '<span class="na">—</span>'}</td>`,
       `<td class="num"><span class="${mcapCls}">${fmtMcap(c.market_cap_cr)}</span></td>`,
-      `<td class="num vol-val">${fmtVol(c.volume)}</td>`,
+      `<td class="num vol-val nse-only">${fmtVol(c.volume)}</td>`,
       `<td class="center">${fmtConf(c.confidence)}</td>`,
     ].join('');
     frag.appendChild(tr);
   });
   tbody.replaceChildren(frag);
 }
+loadExchange(exchange);
 </script>
 </body>
 </html>

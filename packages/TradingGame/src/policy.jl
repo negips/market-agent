@@ -19,14 +19,16 @@ because `StockSwingPredictor` (a dependency) eagerly does `using CUDA, cuDNN`.
 using Flux, BSON, Dates, Random
 
 struct ActorCriticPolicy
-    hourly_encoder    :: Flux.GRU
+    hourly_encoder    :: Union{Nothing, Flux.GRU}   # nothing when `history_bars > 0` (game v3 direct): the window goes straight into `fusion`
     fusion            :: Dense
-    macro_encoder     :: Flux.GRU
-    portfolio_encoder :: Dense
+    macro_encoder     :: Union{Nothing, Flux.GRU}   # nothing when `use_macro=false` (game v3)
+    portfolio_encoder :: Union{Nothing, Dense}   # nothing when the portfolio scalars go into `fusion` instead (`global_in_fusion > 0`)
     attn              :: Flux.MultiHeadAttention
     actor_head        :: Dense
     critic_head       :: Chain
     cash_encoder      :: Union{Nothing, Dense}   # game v2 only — embeds the cash token (see `GameRules.cash_token`)
+    global_in_fusion  :: Int                     # > 0: width of the portfolio scalars concatenated onto every stock's fusion input (game v3); 0: separate portfolio token
+    history_bars      :: Int                     # > 0: length of the price window fed directly to `fusion` (no GRU); 0: GRU encoder
 end
 
 Flux.@layer ActorCriticPolicy
@@ -36,6 +38,26 @@ Build a fresh `ActorCriticPolicy`. `embed_dim` is the per-stock embedding
 width used throughout (hourly encoder output, fusion output, attention
 embedding); `macro_embed_dim` is the macro-GRU's output width before it's
 concatenated with the portfolio scalars.
+
+`portfolio_in_fusion=true` (game v3) removes the separate portfolio token and the
+cash token: the `portfolio_scalars` portfolio numbers are repeated for every
+stock and concatenated onto its fusion input, so the only tokens attention sees
+are the N stocks, and the critic reads the mean of the attended stock tokens.
+`portfolio_to_critic=true` (game v3) also appends the portfolio scalars to the
+critic's input (`embed_dim + portfolio width` instead of `embed_dim`), on top of
+whatever route they take to the actor; the critic then sees the book state
+directly rather than only through attention.
+`history_bars=70` (game v3, `history_encoder = :direct`) drops the GRU: the 70
+returns of the price window are concatenated with the other per-stock features
+and go straight into `fusion` (a single `Dense(70 + 4 → 64)`); it needs
+`price_channels=1`. `stock_features=4` (game v3) adds the stock's instantaneous 15-minute price to
+the three holding features that join each stock's embedding in `fusion`.
+`price_channels=1` (game v3) feeds the GRU the normalised close only, with no
+previous-day range channel; the window length needs no setting here (the GRU
+takes any number of bars). `use_macro=false` / `use_news=false` (game v3) build the policy without the macro
+GRU (the portfolio token is then encoded from the portfolio scalars alone) and
+without the news inputs to `fusion`; the corresponding observation tensors are
+simply ignored. Both are recorded in checkpoints.
 
 `cash_token=true` (game v2) adds `cash_encoder` and widens the portfolio input
 to `N_PORTFOLIO_SCALARS_V2`: cash becomes one more token in the attention set,
@@ -59,19 +81,29 @@ Omit `seed` for the previous non-deterministic behaviour.
 function ActorCriticPolicy(; embed_dim::Int=64, macro_embed_dim::Int=16,
                             attn_heads::Int=4, critic_hidden::Vector{Int}=[64, 32],
                             seed::Union{Nothing, Int}=nothing,
-                            cash_token::Bool=false)
+                            cash_token::Bool=false, use_macro::Bool=true, use_news::Bool=true,
+                            price_channels::Int=N_PRICE_CHANNELS,
+                            stock_features::Int=N_HOLDING_FEATURES,
+                            history_bars::Int=0,
+                            portfolio_in_fusion::Bool=false, portfolio_scalars::Int=N_PORTFOLIO_SCALARS_V2,
+                            portfolio_to_critic::Bool=false)
     seed !== nothing && Random.seed!(seed)
-    n_portfolio = cash_token ? N_PORTFOLIO_SCALARS_V2 : N_PORTFOLIO_SCALARS
+    n_portfolio = portfolio_in_fusion ? portfolio_scalars : (cash_token ? N_PORTFOLIO_SCALARS_V2 : N_PORTFOLIO_SCALARS)
+    portfolio_in_fusion && (cash_token || use_macro) &&
+        error("portfolio_in_fusion has no cash token and no macro branch (the portfolio scalars carry the cash state)")
 
-    hourly_encoder    = GRU(N_PRICE_CHANNELS => embed_dim)
-    fusion            = Dense(embed_dim + N_NEWS_FEATURES + N_HOLDING_FEATURES => embed_dim, relu)
-    macro_encoder     = GRU(N_MACRO_SERIES => macro_embed_dim)
-    portfolio_encoder = Dense(macro_embed_dim + n_portfolio => embed_dim, relu)
+    hourly_encoder    = history_bars > 0 ? nothing : GRU(price_channels => embed_dim)
+    history_width     = history_bars > 0 ? history_bars : embed_dim
+    global_width      = portfolio_in_fusion ? n_portfolio : 0
+    fusion            = Dense(history_width + (use_news ? N_NEWS_FEATURES : 0) + stock_features + global_width => embed_dim, relu)
+    macro_encoder     = use_macro ? GRU(N_MACRO_SERIES => macro_embed_dim) : nothing
+    portfolio_encoder = portfolio_in_fusion ? nothing :
+                        Dense((use_macro ? macro_embed_dim : 0) + n_portfolio => embed_dim, relu)
     attn              = MultiHeadAttention(embed_dim; nheads=attn_heads)
     actor_head        = Dense(embed_dim => 4)   # 3 action-type logits + 1 buy-weight logit
 
     critic_layers = Any[]
-    in_dim = embed_dim
+    in_dim = embed_dim + (portfolio_to_critic ? n_portfolio : 0)
     for h in critic_hidden
         push!(critic_layers, Dense(in_dim => h, relu))
         in_dim = h
@@ -82,7 +114,7 @@ function ActorCriticPolicy(; embed_dim::Int=64, macro_embed_dim::Int=16,
     cash_encoder = cash_token ? Dense(N_CASH_TOKEN_FEATURES => embed_dim, relu) : nothing
 
     return ActorCriticPolicy(hourly_encoder, fusion, macro_encoder, portfolio_encoder,
-                              attn, actor_head, critic_head, cash_encoder)
+                              attn, actor_head, critic_head, cash_encoder, global_width, history_bars)
 end
 
 """
@@ -106,34 +138,60 @@ function (m::ActorCriticPolicy)(hourly::AbstractArray{<:Real, 4}, news::Abstract
     embed_dim = size(m.actor_head.weight, 2)
 
     # ── Per-stock temporal encoder (weight-shared via the N*B batch fold) ────
-    x = permutedims(hourly, (2, 1, 3, 4))                 # (ch, bars, N, B)
-    x = reshape(x, ch, bars, N * B)
-    h = m.hourly_encoder(x)                                # (embed, bars, N*B)
-    stock_emb = reshape(h[:, end, :], embed_dim, N, B)      # last timestep only
+    if m.hourly_encoder === nothing
+        ch == 1 || error("direct history encoder needs a single price channel, got $ch")
+        bars == m.history_bars || error("direct history encoder expects $(m.history_bars) bars, got $bars")
+        stock_emb = reshape(hourly, bars, N, B)             # the window itself, no recurrence
+    else
+        x = permutedims(hourly, (2, 1, 3, 4))                 # (ch, bars, N, B)
+        x = reshape(x, ch, bars, N * B)
+        h = m.hourly_encoder(x)                                # (embed, bars, N*B)
+        stock_emb = reshape(h[:, end, :], embed_dim, N, B)      # last timestep only
+    end
 
     # ── News + holding-state fusion ──────────────────────────────────────────
-    fused = vcat(stock_emb, reshape(news, :, N, B), reshape(holding, :, N, B))
+    merged = m.global_in_fusion > 0
+    use_news = size(m.fusion.weight, 2) > size(stock_emb, 1) + size(holding, 1) + m.global_in_fusion
+    news_part   = use_news ? reshape(news, :, N, B) : similar(stock_emb, 0, N, B)
+    if merged
+        size(portfolio, 1) == m.global_in_fusion ||
+            error("policy expects $(m.global_in_fusion) portfolio scalars, got $(size(portfolio, 1))")
+    end
+    book_part   = merged ? repeat(reshape(portfolio, :, 1, B), 1, N, 1) :   # the same book state beside every stock
+                           similar(stock_emb, 0, N, B)
+    fused = vcat(stock_emb, news_part, reshape(holding, :, N, B), book_part)
     fused = m.fusion(reshape(fused, size(fused, 1), N * B))
     stock_emb = reshape(fused, embed_dim, N, B)
 
-    # ── Macro + portfolio conditioning → one extra "portfolio token" ────────
-    macro_x   = permutedims(macro_ctx, (2, 1, 3))           # (series, days, B)
-    macro_h   = m.macro_encoder(macro_x)                    # (macro_embed, days, B)
-    macro_emb = macro_h[:, end, :]                           # (macro_embed, B)
-    port_tok  = m.portfolio_encoder(vcat(macro_emb, portfolio))   # (embed, B)
-    port_tok  = reshape(port_tok, embed_dim, 1, B)
-
-    # ── Cross-candidate attention (the "joint" decision) ─────────────────────
-    if m.cash_encoder === nothing
-        seq = cat(stock_emb, port_tok; dims=2)                  # (embed, N+1, B)
+    if merged
+        # ── No extra tokens: attention is over the N stocks alone ───────────
+        attended, _ = m.attn(stock_emb)                          # (embed, N, B)
+        stock_out = attended
+        port_out  = dropdims(sum(attended; dims=2); dims=2) ./ N  # critic reads the mean stock token
     else
-        cash_in  = portfolio[[1, 2, 5, 6], :]                    # (N_CASH_TOKEN_FEATURES, B)
-        cash_tok = reshape(m.cash_encoder(cash_in), embed_dim, 1, B)
-        seq = cat(stock_emb, cash_tok, port_tok; dims=2)         # (embed, N+2, B)
+        # ── Macro + portfolio conditioning → one extra "portfolio token" ────
+        if m.macro_encoder === nothing
+            port_tok = m.portfolio_encoder(portfolio)                 # (embed, B)
+        else
+            macro_x   = permutedims(macro_ctx, (2, 1, 3))           # (series, days, B)
+            macro_h   = m.macro_encoder(macro_x)                    # (macro_embed, days, B)
+            macro_emb = macro_h[:, end, :]                           # (macro_embed, B)
+            port_tok  = m.portfolio_encoder(vcat(macro_emb, portfolio))   # (embed, B)
+        end
+        port_tok  = reshape(port_tok, embed_dim, 1, B)
+
+        # ── Cross-candidate attention (the "joint" decision) ─────────────────
+        if m.cash_encoder === nothing
+            seq = cat(stock_emb, port_tok; dims=2)                  # (embed, N+1, B)
+        else
+            cash_in  = portfolio[[1, 2, 5, 6], :]                    # (N_CASH_TOKEN_FEATURES, B)
+            cash_tok = reshape(m.cash_encoder(cash_in), embed_dim, 1, B)
+            seq = cat(stock_emb, cash_tok, port_tok; dims=2)         # (embed, N+2, B)
+        end
+        attended, _ = m.attn(seq)
+        stock_out = attended[:, 1:N, :]
+        port_out  = attended[:, end, :]
     end
-    attended, _ = m.attn(seq)
-    stock_out = attended[:, 1:N, :]
-    port_out  = attended[:, end, :]
 
     # ── Heads ─────────────────────────────────────────────────────────────────
     actor_out = m.actor_head(reshape(stock_out, embed_dim, N * B))   # (4, N*B)
@@ -141,9 +199,23 @@ function (m::ActorCriticPolicy)(hourly::AbstractArray{<:Real, 4}, news::Abstract
     action_logits    = actor_out[1:3, :, :]
     buy_weight_logit = actor_out[4, :, :]
 
-    value = vec(m.critic_head(port_out))
+    critic_in = size(m.critic_head.layers[1].weight, 2) > embed_dim ? vcat(port_out, portfolio) : port_out
+    value = vec(m.critic_head(critic_in))
 
     return action_logits, buy_weight_logit, value
+end
+
+"""`(use_news, stock_features)` of `policy`, read off `fusion`'s input width
+(embedding + optional news + 3 or 4 per-stock features — the four sums are
+distinct, so the width identifies the combination)."""
+function policy_stock_inputs(policy::ActorCriticPolicy)
+    extra = size(policy.fusion.weight, 2) - policy.global_in_fusion -
+            (policy.history_bars > 0 ? policy.history_bars : size(policy.actor_head.weight, 2))
+    for sf in (N_HOLDING_FEATURES, N_HOLDING_FEATURES + 1)
+        extra == sf && return (false, sf)
+        extra == sf + N_NEWS_FEATURES && return (true, sf)
+    end
+    error("policy_stock_inputs: unexpected fusion input width ($extra beyond the embedding)")
 end
 
 # ── Persistence ────────────────────────────────────────────────────────────────────
@@ -159,7 +231,13 @@ function save_policy(policy::ActorCriticPolicy, path::String;
                       critic_hidden::Vector{Int}, meta::Dict=Dict())
     state = Flux.state(cpu(policy))
     cash_token = policy.cash_encoder !== nothing
-    BSON.@save path state embed_dim macro_embed_dim attn_heads critic_hidden meta cash_token
+    use_macro  = policy.macro_encoder !== nothing
+    use_news, stock_features = policy_stock_inputs(policy)
+    price_channels = policy.hourly_encoder === nothing ? 1 : size(policy.hourly_encoder.cell.Wi, 2)
+    history_bars   = policy.history_bars
+    global_in_fusion = policy.global_in_fusion
+    critic_global    = size(policy.critic_head.layers[1].weight, 2) - embed_dim
+    BSON.@save path state embed_dim macro_embed_dim attn_heads critic_hidden meta cash_token use_macro use_news price_channels stock_features history_bars global_in_fusion critic_global
     @info "Policy saved → $path"
 end
 
@@ -173,11 +251,25 @@ function load_policy(path::String)
     BSON.@load path state embed_dim macro_embed_dim attn_heads critic_hidden meta
     d = BSON.load(path)
     cash_token = get(d, :cash_token, false)   # absent in checkpoints written before game v2
+    use_macro  = get(d, :use_macro, true)     # absent in checkpoints written before game v3
+    use_news   = get(d, :use_news, true)
+    critic_global    = get(d, :critic_global, 0)       # absent before the critic could see the portfolio directly
+    global_in_fusion = get(d, :global_in_fusion, 0)   # absent before the portfolio scalars could be merged into fusion
+    history_bars   = get(d, :history_bars, 0)      # absent in checkpoints written before the direct history encoder
+    stock_features = get(d, :stock_features, N_HOLDING_FEATURES)
+    price_channels = get(d, :price_channels, N_PRICE_CHANNELS)   # absent in checkpoints written before game v3's single-channel window
     policy = ActorCriticPolicy(embed_dim=embed_dim, macro_embed_dim=macro_embed_dim,
                                 attn_heads=attn_heads, critic_hidden=critic_hidden,
-                                cash_token=cash_token)
+                                cash_token=cash_token, use_macro=use_macro, use_news=use_news,
+                                price_channels=price_channels, stock_features=stock_features,
+                                history_bars=history_bars, portfolio_in_fusion=global_in_fusion > 0,
+                                portfolio_scalars=max(global_in_fusion, critic_global, 1),
+                                portfolio_to_critic=critic_global > 0)
     Flux.loadmodel!(policy, state)
     hyperparams = (embed_dim=embed_dim, macro_embed_dim=macro_embed_dim,
-                   attn_heads=attn_heads, critic_hidden=critic_hidden, cash_token=cash_token)
+                   attn_heads=attn_heads, critic_hidden=critic_hidden, cash_token=cash_token,
+                   use_macro=use_macro, use_news=use_news, price_channels=price_channels,
+                   stock_features=stock_features, history_bars=history_bars,
+                   global_in_fusion=global_in_fusion, critic_global=critic_global)
     return policy, hyperparams, meta
 end

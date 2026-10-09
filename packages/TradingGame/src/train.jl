@@ -47,6 +47,11 @@ on) using `train_config` as the (repeated, per iteration) training episode.
 - `live_path`: when non-empty, streams this run's current episode (portfolio
   value curve, holdings, recent trades) to that JSON path every `live_every_bars`
   bars — see `live.jl` / `website/tradinggamelive.html`. Omit to disable.
+- `val_steps_dir`/`val_steps_every`: when `val_steps_dir` is non-empty, every
+  `val_steps_every`-th held-out rollout also writes `iter_NNNNN.bson` there (plus a
+  small `iter_NNNNN.json` per-bar summary that `tradinggamelive.html` reads), with
+  the probabilities, chosen action, critic value, book state and price for EVERY
+  decision step, trades or not (see `StepLog`, `load_val_steps`). `0` disables.
 - `val_curve_path`: when non-empty, appends each completed held-out
   validation episode's full portfolio-value curve and trades to this path
   (one JSON line per episode, never overwritten — see `save_val_run!`).
@@ -91,6 +96,8 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
                  stop_file::String="",
                  live_path::String="",
                  val_curve_path::String="",
+                 val_steps_dir::String="",
+                 val_steps_every::Int=1,
                  live_every_bars::Int=5,
                  iteration_offset::Int=0,
                  device::Symbol=:cpu,
@@ -145,7 +152,8 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
         stats = ppo_update!(policy, opt_state, buffer;
                              k_epochs=k_epochs, minibatch_size=minibatch_size, device=device,
                              clip_eps=CLIP_EPS, value_loss_coef=VALUE_LOSS_COEF,
-                             entropy_coef=entropy_coef, gamma=GAMMA, gae_lambda=GAE_LAMBDA, rng=rng,
+                             entropy_coef=entropy_coef, gamma=discount_factors(train_config.rules, env.cache)[1],
+                             gae_lambda=discount_factors(train_config.rules, env.cache)[2], rng=rng,
                              verbose=true, progress_cb=make_update_callback(live_tracker, env))
         update_secs = time() - update_start
 
@@ -163,13 +171,23 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
         if do_eval
             start_episode!(live_tracker; iteration=abs_iter, phase="val")
             val_rollout_start = time()
+            log_steps = !isempty(val_steps_dir) && val_steps_every > 0 && (iter - 1) % val_steps_every == 0
+            steps_ref = log_steps ? Ref{Any}(nothing) : nothing
             eval_buffer = collect_rollout(env, policy, val_config;
                                            macro_cache=macro_cache, news_fn=news_fn,
-                                           greedy=true, rng=rng,
+                                           greedy=true, rng=rng, step_log=steps_ref,
                                            live_cb=make_live_callback(live_tracker))
             val_rollout_secs = time() - val_rollout_start
             val_return = sum(s.reward for s in eval_buffer)
             val_value  = portfolio_value(env)
+            if steps_ref !== nothing && steps_ref[] !== nothing
+                save_step_summary(joinpath(val_steps_dir, "iter_" * lpad(string(abs_iter), 5, '0') * ".json"), steps_ref[];
+                                  meta=Dict("iteration" => abs_iter, "val_return" => val_return, "val_final_value" => val_value))
+                save_step_log(joinpath(val_steps_dir, "iter_" * lpad(string(abs_iter), 5, '0') * ".bson"), steps_ref[];
+                              meta=Dict("iteration" => abs_iter, "val_return" => val_return, "val_final_value" => val_value,
+                                        "game_version" => val_config.rules.version, "n_candidates" => length(val_config.candidate_universe),
+                                        "note" => "probs = HOLD/SELL/BUY after the sell mask; p_sell_raw is before it; greedy (argmax) validation rollout"))
+            end
             push!(log["val_return"], val_return)
             push!(log["val_final_value"], val_value)
             save_val_run!(live_tracker, val_curve_path, env; iteration=abs_iter, val_return=val_return, val_value=val_value)
