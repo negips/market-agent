@@ -20,6 +20,7 @@ Prerequisites:
   - website/data/llm_features/{SYM}.json (from extract_llm_features.jl, optional)
 
 Usage:
+  julia --project=packages/StockSwingPredictor scripts/build_dataset.jl --config configs/bse_v3.toml
   julia --project=packages/StockSwingPredictor scripts/build_dataset.jl
   julia --project=packages/StockSwingPredictor scripts/build_dataset.jl --pred-hours 35
   julia --project=packages/StockSwingPredictor scripts/build_dataset.jl --pred-hours 70
@@ -29,13 +30,19 @@ Output: website/data/training/dataset_{pred_hours}.bson
 
 using StockSwingPredictor, JSON3, Dates, Printf
 
+include(joinpath(@__DIR__, "run_config.jl"))
+using .RunConfigs
+
 const REPO_ROOT  = joinpath(@__DIR__, "..")
 const CACHE_FILE = joinpath(REPO_ROOT, "website", "data", "inference_cache.bson")
 const LLM_DIR    = joinpath(REPO_ROOT, "website", "data", "llm_features")
 const OUT_DIR    = joinpath(REPO_ROOT, "website", "data", "training")
 
 function parse_args()
-    pred_hours = N_PRED_HOURS
+    config_path = RunConfigs.take_config_arg!(ARGS)
+    print_config = RunConfigs.take_flag!(ARGS, "--print-config")
+    cfg = config_path === nothing ? nothing : RunConfigs.load_or_exit(config_path)
+    pred_hours = get(RunConfigs.section_opts(cfg, "dataset"), "pred_hours", N_PRED_HOURS)
     i = 1
     while i <= length(ARGS)
         a = ARGS[i]
@@ -48,6 +55,9 @@ Options:
   --pred-hours N   Label length in hourly bars (default: $N_PRED_HOURS).
                    Must be a multiple of $N_HOURS_PER_DAY (bars/day).
                    Use 35 for v1/v2 (5-day), 70 for v3 (10-day).
+  --config PATH    TOML run file; this script reads its [dataset] section (configs/*.toml).
+                   --pred-hours overrides it.
+  --print-config   Show the resolved settings and exit
 
 Input:   website/data/inference_cache.bson
 Output:  website/data/training/dataset_{N}.bson
@@ -61,6 +71,10 @@ Output:  website/data/training/dataset_{N}.bson
     end
     pred_hours % N_HOURS_PER_DAY == 0 ||
         error("--pred-hours must be a multiple of N_HOURS_PER_DAY ($N_HOURS_PER_DAY), got $pred_hours")
+    if print_config
+        RunConfigs.print_resolved(stdout, "build_dataset.jl", config_path, Dict("pred_hours" => pred_hours))
+        exit(0)
+    end
     return pred_hours
 end
 

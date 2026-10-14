@@ -12,6 +12,7 @@ using Test, StockSwingPredictor, Flux, DataFrames, Dates, Statistics
 include("test_features.jl")
 include("test_model.jl")
 include("test_dataset.jl")
+include("test_token_map.jl")
 
 # ── Integration tests (skipped when SSP_DATA_DIR is unset) ───────────────────
 

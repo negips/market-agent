@@ -26,6 +26,7 @@ makedocs(;
             "Observation & policy" => "observation_policy.md",
             "Training"            => "training.md",
             "Universe & windows"  => "universe.md",
+            "Minute forecaster (v4)" => "forecaster.md",
         ],
         "Related packages"        => "related.md",
     ],

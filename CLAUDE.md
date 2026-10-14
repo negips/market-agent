@@ -66,33 +66,47 @@ market-agent/
 │           ├── TradingGame.jl      # module entry + exports
 │           ├── constants.jl        # FEE_RATE, SETTLEMENT_DAYS, MIN_HOLD_DAYS, MAX_HOLD_DAYS, …
 │           ├── types.jl            # Portfolio, Holding, ReservedCashLot, TradingGameEnv, …
-│           ├── action.jl           # joint action space + cash-constraint/lock-up masking
-│           ├── env.jl              # reset!/step! — exact TradingGameRules.txt enforcement
+│           ├── action.jl           # joint action space: resolve_actions (refuse + charge), sellable_mask/mask_action_logits (pre-sampling)
+│           ├── env.jl              # reset!/step! — exact TradingGameRules.txt enforcement, same-bar fills (v2/v3), reward ledger + windows (v3)
 │           ├── baseline_policy.jl  # random + momentum-heuristic policies (rule-compliance validation)
-│           ├── observation.jl      # obs tensor assembly: InferenceCache + MacroCache + news + portfolio
-│           ├── policy.jl           # recurrent/transformer actor-critic (ActorCriticPolicy, Flux)
+│           ├── timing.jl           # PhaseTimer (tic/toc!): per-phase wall-clock; writes timing.json + val_summary.json rows
+│           ├── run_summary.jl      # per-episode result stats (value, drawdown, penalties, trades, fees) for val_summary.json
+│           ├── step_log.jl         # per-decision-step validation diagnostics: StepLog, save_step_log/load_val_steps, step_summary
+│           ├── observation.jl      # obs tensor assembly: price history/snapshot (v3) or clock window (v1/v2) + holding + portfolio (+ macro, news for v1/v2)
+│           ├── policy.jl           # actor-critic (ActorCriticPolicy, Flux): dense fusion + attention (v3); GRU, cash/portfolio tokens for v1/v2
 │           ├── ppo.jl              # hand-rolled PPO + GAE (collect_rollout, ppo_update!)
 │           ├── live.jl             # streams the current episode to live_status.json (website/tradinggamelive.html)
 │           ├── train.jl            # training loop: train_policy! — checkpoint, episode_log.jsonl, STOP
 │           ├── universe.jl         # candidate universe: confidence-filtered pool + pluggable train/val split strategies
 │           ├── date_windows.jl     # resolve_date_windows: shared by train_trading_policy.jl + prepare_training_data.jl
+│           ├── minute_cache.jl     # v4: MinuteCache (log-returns + traded flag per bar on one trading-day × bars-per-day axis, any bar size: 1min/5min/15min/hourly/daily), build_forecaster_cache, make_batch
+│           ├── forecaster.jl       # v4: Forecaster (stock-shared embedding, stock mixing, causal time blocks, return + timestamp heads)
+│           ├── forecast_train.jl   # v4: train_forecaster!, evaluate_forecaster (skill vs predict-zero / repeat-last baselines)
 │           ├── news_features.jl    # NewsFeatureCache: decayed news_fn + 1-minute instant-price snapshots at news bars
 │           └── display.jl          # Base.show overrides
 │       └── docs/                   # LaTeX architecture write-ups (.tex + .bib + built .pdf, all tracked)
 │           └── tradinggame_scaling.tex  # anchor-token cross-attention scaling proposal — equations,
 │                                         # TikZ schematics, measured-GPU-memory regression, references
+│           └── forecaster_v4.tex        # v4 minute forecaster — data, layer-by-layer equations, loss, evaluation,
+│                                         # linear AR baseline, results of one run (build: latexmk -pdf; .pdf tracked)
+│
+├── configs/                        # one TOML file per run (read by --config, see "Run configuration")
+│   └── bse_v3.toml                 # BSE 15-minute game v3 run
 │
 ├── scripts/                        # standalone Julia scripts (not packages)
+│   ├── run_config.jl                     # shared TOML loader (module RunConfigs) included by the five run scripts
 │   ├── generate_nse_list.jl              # builds data/nse_companies_latest.json
 │   ├── run_confidence_checks.jl          # runs CompanyConfidence on top-N by market cap
 │   ├── enrich_earnings_dates.jl          # projects next earnings date via Tijori history (run every 2 weeks)
 │   ├── generate_earnings_watchlist.jl    # merges NSE calendar + projections → watchlist JSON
 │   ├── kite_relogin.jl                   # force a fresh Kite login from Julia (shells out to kite_login.js)
-│   ├── collect_nse_ohlcv.jl              # download all NSE OHLCV: daily/hourly/5min/15min/1min (Kite)
-│   ├── collect_bse_ohlcv.jl              # download all BSE OHLCV: daily/hourly/5min/15min/1min (Kite)
+│   ├── collect_nse_ohlcv.jl              # download all NSE OHLCV: daily/hourly/15min/5min/1min (Kite)
+│   ├── collect_bse_ohlcv.jl              # download all BSE OHLCV: daily/hourly/15min/5min/1min (Kite)
 │   ├── collect_macro_ohlcv.jl            # download macro instrument OHLCV (Yahoo + Kite CDS/NSE)
 │   ├── update_ohlcv.jl                   # incremental update: append only missing bars since last run
 │   ├── backfill_ohlcv.jl                 # extend existing OHLCV CSVs backward to an earlier --from date
+│   ├── quarantine_filtered_ohlcv.jl      # move OHLCV CSVs the current instrument filters exclude (ETF/INAV/debt…) to ohlcv/_filtered_out/
+│   ├── trim_corrupt_ohlcv.jl             # cut the NUL-byte tail an interrupted write leaves on OHLCV CSVs (dry run unless --apply)
 │   ├── extract_llm_features.jl           # Claude API → 14 scalar signals per company (resumable)
 │   ├── monitor_news.jl                   # real-time BSE + RSS news monitor daemon
 │   ├── backfill_news_signals.jl          # classify historical NSE announcements via local Ollama (resumable)
@@ -102,7 +116,12 @@ market-agent/
 │   ├── train_model.jl                    # train SwingPredictor (v1/v2/v3); auto-selects dataset
 │   ├── build_market_universe_snapshot.jl # TradingGame candidate universe: confidence-filtered, pluggable train/val split
 │   ├── prepare_training_data.jl          # orchestrates universe + news backfill + 1-min snapshots, one date resolution
-│   ├── train_trading_policy.jl           # drives TradingGame.train_policy! — see website/tradinggamelive.html
+│   ├── train_trading_policy.jl           # drives TradingGame.train_policy! (game v1/v2/v3) — see website/tradinggamelive.html
+│   ├── build_forecaster_cache.jl         # v4: return cache (--granularity 1min|5min|15min|hourly|daily) for the universe's train + val companies
+│   ├── train_minute_forecaster.jl        # v4: trains TradingGame.Forecaster (supervised next-minute forecaster)
+│   ├── ar_baseline.jl                    # v4: linear AR(k) baseline scored on the forecaster's own evaluation sets
+│   ├── predict_minute_forecaster.jl      # v4: forecast one section of the minute cache -> website/data/forecast_prediction.json (predict.html, Forecaster v4 tab)
+│   ├── val_steps_summary.jl              # summarise a validation run's per-step log (probabilities by held/slot/stock, critic)
 │   └── training_status.jl                # one-shot read-only snapshot of a running train_trading_policy.jl
 │
 │   ├── data/                           # generated artifacts (gitignored)
@@ -169,6 +188,104 @@ TradingGame             — depends on StockSwingPredictor (InferenceCache, macr
                           order placement (see StockSwingPredictor/broker.jl for
                           the future live-execution follow-up)
 ```
+
+## Run configuration (`configs/*.toml`)
+
+`build_cache.jl`, `build_market_universe_snapshot.jl`, `build_dataset.jl`,
+`prepare_training_data.jl` and `train_trading_policy.jl` take `--config PATH`, a
+TOML file describing one whole run. Each script reads only its own sections:
+
+| Section | Read by |
+|---|---|
+| `[cache]` exchange, granularity, history, min_mcap, top_n, out | `build_cache.jl` |
+| `[universe]` strategy, n, n_train, n_val, disjoint, min_mcap, seed, bands | `build_market_universe_snapshot.jl`, `prepare_training_data.jl` |
+| `[dataset]` pred_hours | `build_dataset.jl` |
+| `[dates]` val_window, val_days, train_start/end, val_start/end (unquoted TOML dates) | `prepare_training_data.jl`, `train_trading_policy.jl` |
+| `[prepare]` skip_universe, skip_news, skip_1min, rebuild_universe | `prepare_training_data.jl` |
+| `[forecaster_cache]` granularity, exchange, out, from, to, min_day_fraction | `build_forecaster_cache.jl`, `train_minute_forecaster.jl`, `ar_baseline.jl`, `predict_minute_forecaster.jl` (which cache to read) |
+| `[forecaster]` window, d, heads, blocks, dropout, epochs, steps_per_epoch, batch, lr, weight_decay, warmup_steps, val_windows, device, dtype, loss, nu, nll_beta, seed, init_from, resume | `train_minute_forecaster.jl` |
+| `[game]` version, initial_cash, use_macro, use_news, cash/hold/illegal_penalty, history_encoder, reward_mode, reward_window_days | `train_trading_policy.jl` |
+| `[train]` iterations, eval_every, lr, entropy, device, minibatch, seed, val_steps_every, live, init_from, resume, news_db | `train_trading_policy.jl` |
+
+```bash
+julia --project=packages/StockSwingPredictor scripts/build_cache.jl --config configs/bse_v3.toml
+julia --project=packages/TradingGame scripts/build_market_universe_snapshot.jl --config configs/bse_v3.toml
+julia --project=packages/TradingGame scripts/prepare_training_data.jl --config configs/bse_v3.toml
+julia --project=packages/TradingGame scripts/train_trading_policy.jl --config configs/bse_v3.toml
+julia --project=packages/TradingGame scripts/train_trading_policy.jl --config configs/bse_v3.toml --print-config
+```
+
+Precedence is built-in default < config file < command-line flag, so `--iterations 5` overrides
+the file for one invocation. `--print-config` prints the resolved settings and exits. `resume` and `init_from` are config keys too (`[train]` and `[forecaster]`);
+`--no-resume` overrides a file's `resume = true`, they are mutually exclusive, and a relative `init_from` in the file is taken from the repo root. An unknown
+section or key, or a value of the wrong type, is an error with a did-you-mean hint, so a typo
+cannot be silently ignored. `train_trading_policy.jl` copies the file to
+`website/data/trading_game/config.toml`; on `--resume`, the saved `run_config.json` still beats the
+file (the same guarantee as before), and `[dates]` in the file beats `date_window.json`. Without
+`--config` every script behaves as before. The loader is `scripts/run_config.jl` (stdlib `TOML` only);
+a new option means one line in its `SCHEMA` plus the script's own handling.
+
+## Game v4: the minute forecaster
+
+v4 is not a game and not RL: a supervised transformer, `TradingGame.Forecaster`, that reads the last
+`window` (96) one-minute states of N stocks and predicts, at every minute, each stock's next-minute
+log-return and the next timestamp. Stock prices only (no news, macro or portfolio). Every stock goes
+through the same weights, so the train and val companies may differ and so may N. The layers and their
+matrix-form equations are on `website/architecture.html` (Forecaster_v4 tab) and `website/mathematics.html`.
+
+```bash
+julia -t auto --project=packages/TradingGame scripts/build_forecaster_cache.jl --config configs/bse_v3.toml
+julia --project=packages/TradingGame scripts/train_minute_forecaster.jl --config configs/bse_v3.toml --device gpu
+```
+
+- **Bar size:** `granularity` (`[forecaster_cache]` key or `--granularity`) is `1min` (default), `5min`, `15min`, `hourly` or `daily`, giving
+  375 / 75 / 25 / 7 / 1 bars per day (bars stamped by their start, 09:15 first). The cache is `forecaster_cache_{granularity}.bson`; the
+  train, baseline and predict scripts take the same key/flag and read the model's bar size from the cache; a run for any size but 1min writes
+  to `website/data/forecaster_{granularity}/`. Returns are clipped at 10/12/15/20/30 % per bar size, the context is `max(bars per day, 60)`
+  bars, per-slot reports use ~15-minute buckets (one bucket per bar from 15min up). A symbol with no CSV of that size is an error naming it
+  (BSE hourly files cover only ~50 of the 160 universe symbols today). Checkpoints remember `bars_per_day`; one trained at another size cannot be
+  resumed on this cache. Everything below is stated for 1min.
+- **Data:** `build_forecaster_cache.jl` reads `website/data/ohlcv/{exchange}/1min/{SYMBOL}.csv` for the universe's train
+  and val companies (`universe_latest.json`) and writes `website/data/forecaster_cache_1min.bson` (about 15 s for 80 symbols
+  over four years). The axis is trading days × 375 session minutes (09:15–15:29); a day joins it when 20% of the symbols
+  have 10+ session bars. Missing minutes are forward-filled and flagged untraded (a row with volume > 0 is "traded").
+  Returns are `100·ln(c_t/c_{t-1})`, clipped at ±10, divided by their RMS (`cache.scale`) before the model sees them.
+- **Output:** for every stock and minute a *distribution* of the next return, not a point: a location μ and a log-scale
+  (bounded: σ between about 0.05 and 7 return units). `loss = "student_t"` (default, ν = `nu` = 4), `"gaussian"`, or
+  `"huber"` (location only, the scale head untrained). The NLL terms are weighted by σ^(2β) held constant
+  (`nll_beta` = 0.5, β-NLL), so the model cannot lower the loss by inflating σ where its mean is wrong.
+- **Targets and loss:** the next-minute return, counted only where the stock traded and the target is not the first bar
+  of a day (the overnight gap is not a 1-minute move), plus 0.1 × MSE on the timestamp description
+  (minute fraction in minutes, log(1 + day gap), weekday/4). The timestamp is a calendar rule plus a learned correction. Per-stock context features (mean |r|, traded fraction) use only the
+  375 bars *before* a window, so no token sees a later bar.
+- **Evaluation sets** (`val_report.json`): `val` (val companies, val dates — decides the checkpoint),
+  `val_train_companies` (train companies, val dates) and `train`. Each reports, for the location, `skill = 1 − MSE/MSE(predict zero)`,
+  the repeat-last-return baseline and the sign hit rate; for the scale, the NLL and its gain (nats per target) over a constant σ per
+  stock and over an EWMA-of-recent-returns σ, the coverage of the model's own 68% / 95% intervals (should be near 0.68 / 0.95) and the
+  predicted against realised standard deviation per 15-minute slot; plus timestamp accuracy and skill per stock and per slot.
+  One-minute returns are close to unpredictable in the mean (skill of at most a few percent; negative means worse than predicting no
+  move), so the scale head is where most of the learnable signal is. `--eval-only` re-scores a saved checkpoint without training.
+- **Run:** `epoch_log.jsonl` (one row per epoch), `timing.json`, `run_config.json`, `live_status.json` (rewritten every 10 steps),
+  `forecaster.bson` (best), `val_report.json` (at the end), `STOP` / `STOP_NOW` and `--resume` as in `train_trading_policy.jl`, all under
+  `website/data/forecaster/` (`--out-dir` changes it). Watch it at `website/tradinggamelive.html` → the **Forecaster v4** tab: run status
+  with ETA, the latest evaluation, charts of NLL, skill, scale gain, interval calibration, hit rate and timing per epoch, and, once the run
+  ends, the report (per-slot volatility, per-slot and per-stock skill). The tab's run-directory box (or `?mode=fc&run=data/forecaster_sweep/d_32`)
+  picks any run directory. An "epoch" is `steps_per_epoch`
+  random batches. On an RTX 5060 Ti a step at batch 32 takes about 0.4 s (the M×M attention scores dominate the
+  memory: batch 128 does not fit in 16 GB).
+- **Number type:** `dtype = "float32"` (default), `"float16"` or `"float64"` (`--dtype`) sets the type of the forward and backward
+  pass. Float16 keeps Float32 master weights, scales the loss dynamically (skipping a step on overflow, logged as
+  `skipped_steps`), computes the loss and the timestamp prior in Float32, and the checkpoint is always Float32.
+  Float8 is not supported (no Julia type or Flux path).
+- **Width:** `d` is a hyperparameter; sweep it (32 / 64 / 128, same seed) and keep the smallest whose val skill matches the best.
+- **Baseline:** `julia --project=packages/TradingGame scripts/ar_baseline.jl --config configs/bse_v3.toml` fits a linear AR(k) location and a scaled
+  time-of-day/recent-|r| scale model on the train companies and scores it on the same three evaluation sets (`ar_baseline.json` beside `val_report.json`),
+  to show how much of the network's skill and likelihood gain lagged returns alone give.
+- **Predict page:** `julia --project=packages/TradingGame scripts/predict_minute_forecaster.jl --date 2025-06-12 --time 12:00 [--symbols A,B,...]` runs the checkpoint on the 96 bars ending there and writes
+  `website/data/forecast_prediction.json`; the **Forecaster v4** tab of `website/predict.html` shows the next-minute vector (mean and 68% and 95% intervals per stock, each switchable, against the close that followed) and the model's prediction at every earlier minute of the section.
+  `--horizon Y` (the page's "Next Y minutes") also generates the next Y minutes iteratively: `--paths` (200) sample paths, each minute drawn from the predicted distribution, appended to the window and the model rerun; the mean and bands are path quantiles, and a slider shows the vector at any minute +k. It cannot reach past the day's close. From the REPL: `include("scripts/predict_minute_forecaster.jl"); s = load_session(); r = predict_section(s; date=Date(2025,6,12), horizon=30); show_next(r)`.
+- **Tests:** `packages/TradingGame/test/test_forecaster.jl` (causality, stock symmetry, masking, no look-ahead in the
+  context features, cache build, checkpoint, a learning check on a synthetic series).
 
 ## Using CompanyConfidence
 
@@ -494,9 +611,9 @@ to one exchange (mutually exclusive). Macro instrument CSVs update once regardle
 of exchange selection.
 
 OHLCV data lives one subfolder per granularity under each exchange:
-`website/data/ohlcv/{nse,bse}/{daily,hourly,5min,15min,1min}/{SYMBOL}.csv`
+`website/data/ohlcv/{nse,bse}/{daily,hourly,15min,5min,1min}/{SYMBOL}.csv`
 (`collect_nse_ohlcv.jl`/`collect_bse_ohlcv.jl` write this layout; `--daily-only`,
-`--hourly-only`, `--5min-only`, `--15min-only`, and `--1min-only` on either script
+`--hourly-only`, `--15min-only`, `--5min-only`, and `--1min-only` on either script
 restrict to one granularity). Macro instrument CSVs are the one exception — too
 few files to need subfolders, so they stay flat and suffixed at
 `website/data/ohlcv/macro/{NAME}_{5min,15min,daily}.csv`.
@@ -526,9 +643,9 @@ julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --daily-onl
 ```
 
 Both `collect_nse_ohlcv.jl`/`collect_bse_ohlcv.jl` and `update_ohlcv.jl` also take
-`--skip-daily`/`--skip-hourly`/`--skip-5min`/`--skip-15min`/`--skip-1min` (the
+`--skip-daily`/`--skip-hourly`/`--skip-15min`/`--skip-5min`/`--skip-1min` (the
 collect scripts added `--skip-daily`/`--skip-hourly` later than the others, for
-symmetry — `update_ohlcv.jl` only ever needed `--skip-5min`/`--skip-15min`/
+symmetry — `update_ohlcv.jl` only ever needed `--skip-15min`/`--skip-5min`/
 `--skip-1min` since its daily/hourly passes were never worth skipping on their own).
 
 ### backfill_ohlcv.jl
@@ -562,8 +679,8 @@ julia --project=packages/StockSwingPredictor scripts/backfill_ohlcv.jl --skip-1m
 julia --project=packages/StockSwingPredictor scripts/backfill_ohlcv.jl --from 2015-01-01 --log-file /tmp/custom.log
 ```
 
-Same `--nse-only`/`--bse-only`, `--daily-only`/`--hourly-only`/`--5min-only`/
-`--15min-only`/`--1min-only`, matching `--skip-*` flags, and `--symbol` as its
+Same `--nse-only`/`--bse-only`, `--daily-only`/`--hourly-only`/`--15min-only`/
+`--5min-only`/`--1min-only`, matching `--skip-*` flags, and `--symbol` as its
 siblings. Macro is out of scope here too (same reasoning as `update_ohlcv.jl`).
 Going back to 2010 for the finer granularities across the full symbol universe
 is a genuinely large job (many chunked API calls per symbol) — `--dry-run` first
@@ -588,7 +705,7 @@ cheap:
   instead of `--from` alone — daily's 2000-day span cap makes it by far
   the cheapest granularity to have already settled "nothing before an
   IPO date" for a symbol.
-- **`{nse,bse}/{hourly,5min,15min,1min}/confirmed_floor.json`** (one per
+- **`{nse,bse}/{hourly,15min,5min,1min}/confirmed_floor.json`** (one per
   granularity, inside that granularity's own subfolder): `{symbol =>
   earliest date THAT granularity has confirmed has no older bars}`,
   written the first time a symbol hits "no older bars" at that specific
@@ -952,7 +1069,21 @@ train and val different companies, not just different dates), resolves the
 train/val date windows, and trains a fresh `ActorCriticPolicy`. Streams
 `live_status.json` by default — watch the run at `website/tradinggamelive.html`.
 
-Builds a real `MacroCache` (`website/data/ohlcv/macro`) and `NewsFeatureCache`
+**Game versions at a glance** (`--game-version`, carried by `GameRules`; details in the paragraphs below and on
+`website/tradinggame.html`): **v1** the original game (NSE, hourly, next-bar fills, forced exit at 14 days, GRU
+encoder, macro + news); **v2** same-bar fills, no forced exit (soft `--hold-penalty`), cash as a pseudo-stock token,
+`--cash-penalty`; **v3** v2's rules on **BSE at a 15-minute cadence**, simplified — hourly-history returns +
+15-minute snapshot, no macro/news, dense fusion (no GRU), no cash/portfolio tokens, impossible sells masked before
+sampling, illegal moves charged (`--illegal-penalty`), reward paid per window (`--reward-window-days`). A v3 run:
+
+```bash
+julia --project=packages/StockSwingPredictor scripts/build_cache.jl --exchange bse --granularity 15min --min-mcap 500
+julia --project=packages/TradingGame scripts/build_market_universe_snapshot.jl --strategy random --n 40 --disjoint
+julia --project=packages/TradingGame scripts/prepare_training_data.jl --skip-news --skip-1min --train-start 2022-01-03 --train-end 2024-12-30 --val-start 2025-01-01 --val-end 2025-12-30
+julia --project=packages/TradingGame scripts/train_trading_policy.jl --game-version v3 --iterations 500 --entropy 0.01 --illegal-penalty 0.002 --reward-window-days 30
+```
+
+(Games v1/v2 only — v3 loads neither macro nor news.) Builds a real `MacroCache` (`website/data/ohlcv/macro`) and `NewsFeatureCache`
 (`website/data/news_signals.db`, via `news_features.jl`) by default and passes
 both through to `train_policy!` — before this, `macro_cache`/`news_fn` were
 plumbed all the way through `train_policy!`/`collect_rollout` but this script
@@ -995,7 +1126,7 @@ julia --project=packages/TradingGame scripts/train_trading_policy.jl --game-vers
 
 `--game-version {1,2,3}` (default `1`) selects the rule set. **v3** is the v2 rules (same flags) restricted to a BSE 15-minute cache, with the **macro context and news features switched
 off** (`GameRules.use_macro = use_news = false`): they are not loaded or computed and the policy has no
-macro GRU or news inputs. Its price input is **two distinct sets**: (1) a **14-day hourly history** — the newest 70 *completed* hourly bars (`obs_window_days = 10` trading days × 7), as **log-returns** `x_i = 100·ln(c_i/c_{i-1})` over 71 completed closes (`use_volatility = false`, one channel); and (2) an **instantaneous snapshot** per stock — the same return one step on, `s = 100·ln(p_now/c_last)` from the last completed hourly close to the current 15-minute close, joined to the holding features (4 per-stock features, `n_stock_features`; the tensor keeps its `holding` name). The decision clock steps in 15-minute bars and decisions fill at that bar's close; the history axis only advances when an hourly bar completes (`history_end_idx`), so nothing runs ahead. v1/v2 keep the fixed 120-bar, 2-channel window. 28,485 parameters vs 43,301 for v2 (no cash token and no portfolio token either: the six portfolio scalars are repeated beside every stock and concatenated onto its fusion input, `Dense(70+4+6 → 64)`, attention runs over the N stock tokens alone, and the critic reads their mean **plus the six portfolio scalars directly** (`GameRules.portfolio_in_fusion`, `portfolio_to_critic`; the critic MLP is 70 → 64 → 32 → 1). With `--history-encoder direct` (the v3 default; `rules_v3(history_encoder=:direct)`) the 70 returns go **straight into the fusion layer** (no GRU); `--history-encoder gru` keeps the recurrent encoder for comparison (40,389 parameters). The code for both stays; other versions still
+macro GRU or news inputs. Its price input is **two distinct sets**: (1) a **14-day hourly history** — the newest 70 *completed* hourly bars (`obs_window_days = 10` trading days × 7), as **log-returns** `x_i = 100·ln(c_i/c_{i-1})` over 71 completed closes (`use_volatility = false`, one channel); and (2) an **instantaneous snapshot** per stock — the same return one step on, `s = 100·ln(p_now/c_last)` from the last completed hourly close to the current 15-minute close, joined to the holding features and **four legality inputs** (`GameRules.legality_inputs`, `legality_state` in `action.jl`: rebuy-cooldown days left ÷ 7, `ln(cash / (price·(1+fee)))` clipped and ÷ 5 — negative means not even one share, headroom under the 30% position cap as a fraction of the cap, sellable flag), so 8 per-stock features (`n_stock_features`; the tensor keeps its `holding` name); the portfolio vector gains a seventh scalar, free holding slots ÷ rule 13's cap. The decision clock steps in 15-minute bars and decisions fill at that bar's close; the history axis only advances when an hourly bar completes (`history_end_idx`), so nothing runs ahead. v1/v2 keep the fixed 120-bar, 2-channel window. 29,129 parameters vs 43,301 for v2 (no cash token and no portfolio token either: the seven portfolio scalars are repeated beside every stock and concatenated onto its fusion input, `Dense(70+8+7 → 64)`, attention runs over the N stock tokens alone, and the critic reads their mean **plus the seven portfolio scalars directly** (`GameRules.portfolio_in_fusion`, `portfolio_to_critic`; the critic MLP is 71 → 64 → 32 → 1). An **auxiliary legality head** (`Dense(64 → 4)` on the attended stock tokens, `ActorCriticPolicy.legality_head`) predicts per stock which of four reasons would refuse a BUY (rebuy cooldown, cash for one share, free holding slot, position cap — `buy_blockers`, stored per step in `RolloutStep.blockers`); `ppo_update!` adds its binary cross-entropy at weight `LEGALITY_LOSS_COEF` (0.5, `legality_loss` in `episode_log.jsonl`). It feeds neither the action nor V(s). v3 checkpoints from before the legality inputs (28,485 parameters) cannot be loaded into the new network). With `--history-encoder direct` (the v3 default; `rules_v3(history_encoder=:direct)`) the 70 returns go **straight into the fusion layer** (no GRU); `--history-encoder gru` keeps the recurrent encoder for comparison (40,389 parameters). The code for both stays; other versions still
 use them. v3 checkpoints are not interchangeable with v2's (different network). v3 also splits rule
 enforcement in two. (1) **Impossible moves are masked before the policy samples**: a SELL on a stock with nothing
 sellable (not held, or inside the 1-day lock-up) is removed from that stock's distribution (`GameRules.premask`,
@@ -1052,9 +1183,12 @@ all, trains on that same `2021-09-09` start with nothing to repeat.
 Prerequisites: `inference_cache.bson` (`build_cache.jl`) and
 `universe_latest.json` (`build_market_universe_snapshot.jl`).
 Outputs (under `website/data/trading_game/`): `policy.bson`, `episode_log.jsonl`,
-`live_status.json`, `val_runs.jsonl` (every held-out episode's full portfolio value/
-stock value/cash value curves, trades, and final holdings snapshot, appended —
-never overwritten — once per evaluation; `tradinggamelive.html` plots each run as
+`live_status.json`, `val_runs/` (`iter_NNNNN.json` per held-out episode: full portfolio value/
+stock value/cash value curves, trades, and final holdings snapshot, written —
+never overwritten — once per evaluation, plus `index.json`, a small per-run summary with a
+downsampled curve; the page loads only the index and fetches a run's file on demand — the
+old append-only `val_runs.jsonl` reached 1.5 GB; `scripts/split_val_runs.jl` converts one;
+`tradinggamelive.html` plots each run as
 its own color with a show/hide toggle, portfolio value as a thick line and
 stock/cash as a separate linked sub-chart below it, plus a table of the latest
 run's final positions), `run_config.json`. Stop cleanly with
@@ -1114,6 +1248,18 @@ this network (host round-trip + 120 individual GRU-step kernel launches per
 call dominate the tiny per-call compute). `--device gpu` therefore only
 accelerates `ppo_update!`'s minibatched passes, where batching actually
 helps.
+
+### Timing (`timing.json`) and the validation run summary (`val_summary.json`)
+
+Every iteration also writes `website/data/trading_game/timing.json` (`{"runs": [...]}`, one row per iteration, atomic): the seconds and
+call count of each phase of the **validation rollout** (`val`), the **training rollout** (`train_rollout`), the **PPO update** (`update`) and
+the loop itself (`iteration_phases`: rollout, update, val, saving the step log / run files, checkpoint). Phase names are dotted — `observe.history`
+is a child of `observe` and already counted in it (`PhaseTimer`, `timing.jl`; instrumented in `collect_rollout`, `assemble_observation!`,
+`_step_same_bar!` and `ppo_update!`, each taking `timer=nothing` by default so it costs nothing when off). Timing in `ppo_update!` is wall-clock
+and not GPU-synchronised, so with `--device gpu` queued kernels can be billed to the next phase. `val_summary.json` has one row per held-out run
+(`run_summary.jl`): initial/final/peak/lowest value, max drawdown, illegal-move penalty (rupees and bars charged), buys/sells/forced exits, fees, realised
+P&L, win rate, average hold, average cash fraction and lots held, share of HOLD/SELL/BUY actions, the final cash/reserved/stocks split, and the rollout
+seconds and ms per bar. Both are cleared by a fresh run and shown on `tradinggamelive.html` as "Validation run summary" and "Where the time goes".
 
 ### Per-step validation logs (`val_steps/`) and `val_steps_summary.jl`
 

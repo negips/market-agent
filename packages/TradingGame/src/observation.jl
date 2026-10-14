@@ -115,7 +115,7 @@ struct Observation{H<:AbstractArray{Float32,3}, M<:AbstractMatrix{Float32},
     hourly     :: H    # (window bars, price channels, N) — see `obs_window_bars`/`n_price_channels`
     macro_ctx  :: M    # (N_MACRO_DAYS, N_MACRO_SERIES)
     news       :: NW   # (N_NEWS_FEATURES, N)
-    holding    :: HO   # (n_stock_features, N): held, P&L, hold left [, instantaneous price under use_history]
+    holding    :: HO   # (n_stock_features, N): held, P&L, hold left [, instantaneous price under use_history] [, cooldown left, affordability, cap headroom, sellable under legality_inputs]
     portfolio  :: P    # (N_PORTFOLIO_SCALARS,)
     candidates :: Vector{Int}   # sym_idx per column, == env.candidate_order
 end
@@ -139,8 +139,10 @@ function assemble_observation!(hourly::AbstractArray{Float32,3}, macro_ctx::Abst
                                 news::AbstractMatrix{Float32}, holding::AbstractMatrix{Float32},
                                 portfolio::AbstractVector{Float32}, env::TradingGameEnv;
                                 macro_cache::Union{Nothing, MacroCache}=nothing,
-                                news_fn::Function=_zero_news)::Nothing
+                                news_fn::Function=_zero_news,
+                                timer::Union{Nothing, PhaseTimer}=nothing)::Nothing
     env.config === nothing && error("assemble_observation!: call reset! before observing")
+    t0 = tic(timer)
 
     N = length(env.candidate_order)
     t = env.current_hour_idx
@@ -205,6 +207,8 @@ function assemble_observation!(hourly::AbstractArray{Float32,3}, macro_ctx::Abst
         end
     end
 
+    t0 = toc!(timer, "observe.history", t0)
+
     # ── News (neutral zero by default) ───────────────────────────────────────
     if rules.use_news
         for (col, sym_idx) in enumerate(env.candidate_order)
@@ -217,6 +221,7 @@ function assemble_observation!(hourly::AbstractArray{Float32,3}, macro_ctx::Abst
     # ── Per-holding state — aggregated across concurrent lots of the same stock:
     #    held flag, quantity-weighted unrealised P&L, and the MOST URGENT lot's
     #    remaining-hold-budget fraction (the one that force-exits soonest). ────
+    t0 = toc!(timer, "observe.news", t0)
     sym_col = Dict(sym_idx => col for (col, sym_idx) in enumerate(env.candidate_order))
     qty_sum  = zeros(Float64, N)
     val_sum  = zeros(Float64, N)
@@ -246,6 +251,18 @@ function assemble_observation!(hourly::AbstractArray{Float32,3}, macro_ctx::Abst
                            Float32((val_sum[col] - cost_sum[col]) / cost_sum[col]) : 0f0
         holding[3, col] = held[col] ? min_remaining[col] : 1f0
     end
+    t0 = toc!(timer, "observe.holding", t0)
+    legal = rules.legality_inputs ? legality_state(env, date_idx) : nothing
+    t0 = toc!(timer, "observe.legality", t0)
+    if legal !== nothing
+        base = N_HOLDING_FEATURES + (rules.use_history ? 1 : 0)
+        for col in 1:N
+            holding[base + 1, col] = legal.cooldown_left[col] / REBUY_COOLDOWN_DAYS
+            holding[base + 2, col] = legal.afford[col] / AFFORD_LOG_CLIP
+            holding[base + 3, col] = legal.headroom[col]
+            holding[base + 4, col] = legal.sellable[col]
+        end
+    end
 
     # ── Macro context ─────────────────────────────────────────────────────────
     if rules.use_macro
@@ -273,6 +290,8 @@ function assemble_observation!(hourly::AbstractArray{Float32,3}, macro_ctx::Abst
         portfolio[5] = Float32(clamp(cash_frac / MAX_CASH_FRACTION, 0, 3))
         portfolio[6] = Float32(clamp(days_over / max_hold, 0, 1))
     end
+    legal !== nothing && (portfolio[end] = Float32(legal.free_slots / legal.n_max))
+    toc!(timer, "observe.portfolio", t0)
 
     return nothing
 end

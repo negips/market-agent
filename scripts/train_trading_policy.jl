@@ -8,6 +8,8 @@ different dates), resolves the train/val date windows, builds a fresh
 `ActorCriticPolicy`, and trains.
 
 Usage:
+  julia --project=packages/TradingGame scripts/train_trading_policy.jl --config configs/bse_v3.toml
+  julia --project=packages/TradingGame scripts/train_trading_policy.jl --config configs/bse_v3.toml --iterations 5
   julia --project=packages/TradingGame scripts/train_trading_policy.jl
   julia --project=packages/TradingGame scripts/train_trading_policy.jl --iterations 500
   julia --project=packages/TradingGame scripts/train_trading_policy.jl --val-days 40 --live
@@ -51,8 +53,12 @@ Outputs (under website/data/trading_game/):
   policy.bson          — best checkpoint (by held-out return)
   episode_log.jsonl     — per-iteration train/val return, streamed
   live_status.json      — current episode's live trajectory, with --live (default on)
-  val_runs.jsonl         — every held-out episode's full value curve + trades,
-                           one appended line per eval — with --live (default on)
+  val_runs/              — every held-out episode's full value curve + trades,
+                           + index.json, one file per eval — with --live (default on)
+  timing.json            — per-iteration phase timings (validation rollout, training rollout,
+                           PPO update, loop-level), with --live (default on)
+  val_summary.json       — one result row per held-out episode: final value, drawdown,
+                           penalties, trades, fees, timings, with --live (default on)
   run_config.json        — effective training-config flags, for --resume (see below)
 
 To stop cleanly:   touch website/data/trading_game/STOP        (checkpoint saved)
@@ -68,7 +74,7 @@ one just continues from that same last-good checkpoint (no data lost, some
 unsaved training since then is simply redone).
 
 --init-from PATH is different from --resume: it starts a genuinely FRESH run
-(iteration numbering restarts at 1, episode_log.jsonl/val_runs.jsonl are
+(iteration numbering restarts at 1, episode_log.jsonl/val_runs/ are
 cleared, best_return tracking restarts at -Inf — so the first checkpoint
 write is unconditional, same as any fresh run's first improvement) but
 initialises the policy's
@@ -111,6 +117,9 @@ config on resume.
 """
 
 using TradingGame, StockSwingPredictor, Dates, Printf, JSON3, Random, CUDA
+
+include(joinpath(@__DIR__, "run_config.jl"))
+using .RunConfigs
 
 const REPO_ROOT   = joinpath(@__DIR__, "..")
 const DATA_DIR    = joinpath(REPO_ROOT, "website", "data", "trading_game")
@@ -162,6 +171,9 @@ function build_rules(opts::Dict)::GameRules
 end
 
 function parse_args()
+    config_path = RunConfigs.take_config_arg!(ARGS)
+    print_config = RunConfigs.take_flag!(ARGS, "--print-config")
+    cfg = config_path === nothing ? nothing : RunConfigs.load_or_exit(config_path)
     opts = Dict{String, Any}(
         "iterations"  => 300,
         "initial_cash" => 1_000_000.0,
@@ -192,6 +204,13 @@ function parse_args()
         "reward_mode" => nothing,
         "reward_window_days" => 0,
     )
+    from_config = Dict{String, Any}()
+    for sec in ("dates", "game", "train")
+        merge!(from_config, RunConfigs.section_opts(cfg, sec))
+    end
+    haskey(from_config, "lr") && (from_config["lr"] = Float32(from_config["lr"]))
+    isempty(get(from_config, "init_from", "")) || (from_config["init_from"] = abspath(joinpath(REPO_ROOT, from_config["init_from"])))
+    merge!(opts, from_config)
     explicit = Set{String}()
     i = 1
     while i <= length(ARGS)
@@ -213,9 +232,12 @@ Options:
   --no-live            Disable live_status.json streaming
   --resume             Load policy.bson and continue iteration numbering from
                         episode_log.jsonl instead of starting a fresh policy
+                        (also the [train] key `resume`; --no-resume overrides a
+                        file's resume = true)
   --init-from PATH     Fresh run (iteration 1, cleared log) but weights loaded
                         from PATH instead of random init. Mutually exclusive
-                        with --resume.
+                        with --resume. Also the [train] key `init_from` (a
+                        relative path there is taken from the repo root).
   --seed N             Reproducible initial weights (fresh/--init-from) and
                         PPO rollout sampling
   --device NAME        cpu or gpu (default: cpu). gpu requires
@@ -275,6 +297,11 @@ Options:
                         it samples.
   --hold-penalty X      v2 only: per bar, X * (share of portfolio value in
                         stocks held MAX_HOLD_DAYS_V2+ days). Default 0.0 (off).
+  --config PATH         TOML run file (configs/*.toml): reads [dates], [game] and [train].
+                        Command-line flags override it; a --resume'd run's saved
+                        run_config.json still beats the file (see below). The file is
+                        copied to website/data/trading_game/config.toml for the record.
+  --print-config        Show the resolved settings and exit
 """)
             exit(0)
         elseif a == "--iterations";   opts["iterations"]   = parse(Int, ARGS[i+1]); push!(explicit, "iterations"); i += 2
@@ -285,6 +312,7 @@ Options:
         elseif a == "--entropy";      opts["entropy_coef"] = parse(Float64, ARGS[i+1]); push!(explicit, "entropy_coef"); i += 2
         elseif a == "--no-live";      opts["live"]         = false; i += 1
         elseif a == "--resume";       opts["resume"]       = true; i += 1
+        elseif a == "--no-resume";    opts["resume"]       = false; i += 1
         elseif a == "--init-from";    opts["init_from"]    = ARGS[i+1]; i += 2
         elseif a == "--seed";         opts["seed"]         = parse(Int, ARGS[i+1]); push!(explicit, "seed"); i += 2
         elseif a == "--device";       opts["device"]       = ARGS[i+1]; push!(explicit, "device"); i += 2
@@ -314,7 +342,11 @@ Options:
         error("Unknown --device '$(opts["device"])'. Expected: cpu, gpu")
     opts["val_window"] in ("trailing", "same") ||
         error("Unknown --val-window '$(opts["val_window"])'. Expected: trailing, same")
-    return opts, explicit
+    if print_config
+        RunConfigs.print_resolved(stdout, "train_trading_policy.jl (dates unresolved until the cache loads)", config_path, opts)
+        exit(0)
+    end
+    return opts, explicit, config_path, Set(keys(from_config))
 end
 
 """Resolve `--device` to a `:cpu`/`:gpu` symbol, falling back to `:cpu` if gpu
@@ -413,19 +445,20 @@ function _check_policy_matches_rules(policy::ActorCriticPolicy, rules::GameRules
     has_ch    = policy.hourly_encoder === nothing ? 1 : size(policy.hourly_encoder.cell.Wi, 2)
     has_merged = policy.global_in_fusion > 0
     has_critic = size(policy.critic_head.layers[1].weight, 2) > size(policy.actor_head.weight, 2)
-    (has_token, has_macro, has_news, has_ch, has_sf, policy.history_bars, has_merged, has_critic) ==
+    has_leg = policy.legality_head !== nothing
+    (has_token, has_macro, has_news, has_ch, has_sf, policy.history_bars, has_merged, has_critic, has_leg) ==
         (rules.cash_token, rules.use_macro, rules.use_news, n_price_channels(rules), n_stock_features(rules),
-         _history_bars(rules, cache), rules.portfolio_in_fusion, rules.portfolio_to_critic) && return nothing
+         _history_bars(rules, cache), rules.portfolio_in_fusion, rules.portfolio_to_critic, rules.legality_inputs) && return nothing
     error("$path has cash token=$has_token, macro branch=$has_macro, news inputs=$has_news, $has_ch price channel(s), " *
           "$has_sf per-stock features, but game v$(rules.version) needs $(rules.cash_token), $(rules.use_macro), " *
           "$(rules.use_news), $(n_price_channels(rules)), $(n_stock_features(rules)), history window $(_history_bars(rules, cache)) " *
           "(this one: $(policy.history_bars); 0 = GRU), portfolio scalars in fusion $(rules.portfolio_in_fusion) " *
-          "(this one: $has_merged), portfolio to critic $(rules.portfolio_to_critic) (this one: $has_critic) — v1, v2 and v3 policies are not " *
+          "(this one: $has_merged), portfolio to critic $(rules.portfolio_to_critic) (this one: $has_critic), legality head $(rules.legality_inputs) (this one: $has_leg) — v1, v2 and v3 policies are not " *
           "interchangeable; start a fresh policy (drop --resume/--init-from) or pass the matching --game-version")
 end
 
 """Remove the per-step validation logs of an earlier run (a fresh run starts the
-history over, like `episode_log.jsonl`/`val_runs.jsonl`)."""
+history over, like `episode_log.jsonl`/`val_runs/`)."""
 function _clear_val_steps(dir::String)
     isdir(dir) || return nothing
     for f in readdir(dir; join=true)
@@ -584,12 +617,13 @@ function load_date_window!(opts::Dict, explicit::Set{String}, path::String)
 end
 
 function main()
-    opts, explicit = parse_args()
+    opts, explicit, config_path, config_keys = parse_args()
     mkpath(DATA_DIR)
+    config_path === nothing || cp(config_path, joinpath(DATA_DIR, "config.toml"); force=true)
     config_path = joinpath(DATA_DIR, "run_config.json")
     opts["resume"] && load_run_config!(opts, explicit, config_path)
     date_window_path = joinpath(DATA_DIR, "date_window.json")
-    load_date_window!(opts, explicit, date_window_path)
+    load_date_window!(opts, union(explicit, config_keys), date_window_path)
 
     isfile(CACHE_FILE) || error(
         "Not found: $CACHE_FILE\nRun: julia --project=packages/StockSwingPredictor scripts/build_cache.jl")
@@ -678,8 +712,10 @@ function main()
 
     checkpoint_path  = joinpath(DATA_DIR, "policy.bson")
     episode_log_path = joinpath(DATA_DIR, "episode_log.jsonl")
-    val_curve_path   = joinpath(DATA_DIR, "val_runs.jsonl")
+    val_curve_path   = joinpath(DATA_DIR, "val_runs")
     val_steps_dir    = joinpath(DATA_DIR, "val_steps")
+    timing_path      = joinpath(DATA_DIR, "timing.json")
+    val_summary_path = joinpath(DATA_DIR, "val_summary.json")
 
     iteration_offset = 0
     if opts["resume"]
@@ -696,11 +732,13 @@ function main()
         _check_policy_matches_rules(policy, rules, opts["init_from"], cache)
         @info "Fresh run, weights warm-started from $(opts["init_from"])"
         # Fresh iteration numbering and log, unlike --resume — see the module
-        # docstring's --init-from vs --resume note. val_runs.jsonl follows the
+        # docstring's --init-from vs --resume note. val_runs/ follows the
         # same lifecycle as episode_log.jsonl — a fresh iteration-1 run means a
         # fresh held-out-curve history too.
         isfile(episode_log_path) && rm(episode_log_path)
-        isfile(val_curve_path) && rm(val_curve_path)
+        isdir(val_curve_path) && rm(val_curve_path; recursive=true)
+        isfile(timing_path) && rm(timing_path)
+        isfile(val_summary_path) && rm(val_summary_path)
         _clear_val_steps(val_steps_dir)
     else
         policy = ActorCriticPolicy(seed=opts["seed"], cash_token=rules.cash_token,
@@ -710,14 +748,17 @@ function main()
                                     use_macro=rules.use_macro, use_news=rules.use_news,
                                     price_channels=n_price_channels(rules),
                                     stock_features=n_stock_features(rules),
-                                    history_bars=_history_bars(rules, cache))
+                                    history_bars=_history_bars(rules, cache),
+                                    legality_head=rules.legality_inputs)
         hp = (embed_dim=64, macro_embed_dim=16, attn_heads=4, critic_hidden=[64, 32])
         @info "Fresh policy" * (opts["seed"] === nothing ? "" : " (seed=$(opts["seed"]))")
-        # episode_log.jsonl/val_runs.jsonl are both opened in append mode
+        # episode_log.jsonl and val_runs/ both accumulate
         # inside train_policy! (so --resume can keep history) — a fresh run
         # must clear any stale ones.
         isfile(episode_log_path) && rm(episode_log_path)
-        isfile(val_curve_path) && rm(val_curve_path)
+        isdir(val_curve_path) && rm(val_curve_path; recursive=true)
+        isfile(timing_path) && rm(timing_path)
+        isfile(val_summary_path) && rm(val_summary_path)
         _clear_val_steps(val_steps_dir)
     end
 
@@ -740,6 +781,7 @@ function main()
         live_path=opts["live"] ? joinpath(DATA_DIR, "live_status.json") : "",
         val_curve_path=opts["live"] ? val_curve_path : "",
         val_steps_dir=val_steps_dir, val_steps_every=opts["val_steps_every"],
+        timing_path=opts["live"] ? timing_path : "", val_summary_path=opts["live"] ? val_summary_path : "",
         iteration_offset=iteration_offset,
         macro_cache=macro_cache, news_fn=news_fn,
         embed_dim=hp.embed_dim, macro_embed_dim=hp.macro_embed_dim,

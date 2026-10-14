@@ -8,6 +8,35 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <style>
+  .mode-tabs { display:flex; gap:6px; margin-bottom:18px }
+  .mode-tab { background:var(--surface); border:1px solid var(--border); color:var(--text-dim); border-radius:8px; padding:7px 16px; font-size:13px; cursor:pointer; font-family:inherit }
+  .mode-tab:hover { color:var(--text) }
+  .mode-tab.active { color:var(--text); border-color:#4f8ef7; background:rgba(79,142,247,.12) }
+  .fcl-tiles { display:grid; grid-template-columns:repeat(auto-fill, minmax(170px, 1fr)); gap:10px; margin-bottom:16px }
+  .fcl-tile { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:10px 12px }
+  .fcl-tile.good { border-color:rgba(61,214,140,.55) } .fcl-tile.warn { border-color:rgba(245,200,66,.55) }
+  .fcl-tl { font-size:11px; color:var(--text-dim); margin-bottom:3px }
+  .fcl-tv { font-size:19px; font-weight:600; color:var(--text); font-family:var(--mono) }
+  .fcl-ts { font-size:11px; color:var(--text-dim); margin-top:2px }
+  .fcl-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-bottom:14px }
+  @media (max-width:1000px) { .fcl-grid { grid-template-columns:1fr } }
+  .fcl-grid .canvas-wrap { height:240px }
+  .fcl-items { display:grid; grid-template-columns:repeat(auto-fill, minmax(190px, 1fr)); gap:6px 18px; margin-top:8px }
+  .fcl-item { display:flex; justify-content:space-between; gap:10px; font-size:12px; color:var(--text-dim); border-bottom:1px solid var(--border); padding:3px 0 }
+  .fcl-item b { color:var(--text); font-family:var(--mono); font-weight:500 }
+    .met-tbl { width:100%; table-layout:fixed; border-collapse:collapse; margin:6px 0 14px; font-size:12.5px }
+    .met-tbl th { text-align:left; font-size:11px; color:var(--text-dim); font-weight:600; padding:4px 10px; border-bottom:1px solid var(--border) }
+    .met-tbl td { padding:6px 10px; border-bottom:1px solid var(--border); vertical-align:top; color:var(--text-dim); line-height:1.5 }
+    .met-tbl th:first-child, .met-tbl td:first-child { width:260px; color:var(--text); font-weight:600; padding-right:18px }
+  .met-tbl th:first-child { color:var(--text-dim) }
+    .met-tbl code { font-size:11.5px }
+    .met-h { font-size:12px; font-weight:700; color:var(--text); margin:14px 0 2px }
+  .fcl-gloss { margin:18px 0 6px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:10px 14px }
+  .fcl-gloss > summary { cursor:pointer; font-weight:600; font-size:13px; color:var(--text) }
+  .fcl-gloss .section-note { margin:10px 0; font-size:12.5px; color:var(--text-dim); line-height:1.5 }
+  .fcl-table { width:100%; border-collapse:collapse; font-size:12px; font-family:var(--mono) }
+  .fcl-table th, .fcl-table td { text-align:right; padding:5px 10px; border-bottom:1px solid var(--border); color:var(--text-dim); white-space:nowrap }
+  .fcl-table th:first-child, .fcl-table td:first-child { text-align:left; color:var(--text) }
   .section-title {
     font-size: 12px; font-weight: 600; color: var(--muted);
     text-transform: uppercase; letter-spacing: .07em;
@@ -177,6 +206,25 @@
   .vt-scroll table.data-table tbody td { padding: 6px 12px; font-size: 12px; text-align: center; font-family: var(--mono); white-space: nowrap; }
   .vt-scroll table.data-table tbody td:first-child { text-align: left; }
   .vt-derived { color: var(--muted); font-style: italic; }
+  .vs-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; margin: 12px 0 4px; }
+  .vs-tile { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; min-width: 0; }
+  .vs-l { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .vs-v { font-family: var(--mono); font-size: 17px; font-weight: 600; color: var(--text); margin-top: 3px; overflow-wrap: anywhere; }
+  .vs-v.pos { color: var(--green); } .vs-v.neg { color: var(--red); }
+  .vs-s { font-size: 11px; color: var(--text-dim); margin-top: 3px; line-height: 1.45; }
+  .vs-h { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 16px 0 0; }
+  .tm-row { display: grid; grid-template-columns: minmax(130px, 210px) 1fr 250px; align-items: center; gap: 10px; padding: 3px 0; font-size: 12px; }
+  .tm-row.child { font-size: 11.5px; color: var(--text-dim); }
+  .tm-row.child .tm-name { padding-left: 18px; }
+  .tm-name { font-family: var(--mono); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: help; }
+  .tm-row.child .tm-name { color: var(--text-dim); }
+  .tm-track { height: 12px; background: var(--surface2); border-radius: 3px; overflow: hidden; }
+  .tm-fill { height: 100%; background: var(--accent); border-radius: 3px; min-width: 1px; }
+  .tm-row.child .tm-fill { background: rgba(79,142,247,.45); }
+  .tm-row.top1 .tm-fill { background: var(--green); }
+  .tm-num { font-family: var(--mono); font-size: 11.5px; color: var(--text-dim); text-align: right; white-space: nowrap; }
+  .tm-num b { color: var(--text); font-weight: 600; }
+  @media (max-width: 700px) { .tm-row { grid-template-columns: 100px 1fr 190px; } }
 </style>
 </head>
 <body>
@@ -190,6 +238,11 @@
   </div>
 
   <div class="page-content">
+    <div class="mode-tabs" id="mode-tabs">
+      <button class="mode-tab active" data-mode="game">Game v1–v3 · PPO</button>
+      <button class="mode-tab" data-mode="fc">Forecaster v4 · next-minute</button>
+    </div>
+    <div id="fc-root" style="display:none"></div>
     <div id="content">
       <div class="placeholder" id="placeholder">
         Waiting for a training run…
@@ -206,7 +259,7 @@ Chart.defaults.backgroundColor = 'transparent';
 
 const LIVE_URL       = 'data/trading_game/live_status.json';
 const LOG_URL        = 'data/trading_game/episode_log.jsonl';
-const VAL_RUNS_URL   = 'data/trading_game/val_runs.jsonl';
+const VAL_RUNS_DIR   = 'data/trading_game/val_runs';   // index.json + one iter_NNNNN.json per run
 const RUN_CONFIG_URL = 'data/trading_game/run_config.json';
 
 let shown = false;
@@ -287,7 +340,7 @@ function fmtTradeStamp(t) {
 // Shared row template for both holdings tables — same shape otherwise, but
 // the two JSON sources use different keys for the "paid" price column:
 // live_status.json's per-lot "holdings" is entry_price (_holdings_snapshot
-// in live.jl, one row per lot), val_runs.jsonl's "final_holdings" is
+// in live.jl, one row per lot), val_runs/iter_*.json's "final_holdings" is
 // effective_price (_holdings_snapshot_unified, one row per symbol, weighted
 // average across that symbol's lots) — priceKey picks which.
 function holdingsRowsHtml(holdings, priceKey) {
@@ -373,22 +426,25 @@ function revealLayout() {
           <tr>
             <td class="hp-name">Discount γ<small>GAMMA</small></td>
             <td class="hp-val" id="hp-gamma">—</td>
-            <td>Per-<i>bar</i> discount on future reward (bars are hourly, ~7 per trading day). Effective horizon
-                <code>1/(1−γ)</code> bars; at 0.99 a reward one week ahead (~49 bars) still counts ~60%, and one at the
-                max-hold limit (~98 bars) ~37%.</td>
+            <td>Per-<i>bar</i> discount on future reward. The constant, 0.99, is defined per <i>hourly</i> step and is
+                rescaled to the bar length (<code>0.99^(bar/60)</code>: a 15-minute run uses ≈0.9975, so a week ahead —
+                175 bars — still counts ~65%). Under the v3 terminal reward with a single window (<code>--reward-window-days 0</code>)
+                it is <b>1</b>, since any discount would shrink an end-of-period reward to nothing; with reward windows it
+                keeps the rescaled value. The value shown is the one actually used.</td>
             <td>Lower makes the agent short-sighted; it would undervalue holding for the full hold period.
-                Higher values the long run but raise variance. Keep the horizon at least as long as the max hold.</td>
+                Higher values the long run but raises variance. Keep the horizon at least as long as a reward window.</td>
           </tr>
           <tr>
             <td class="hp-name">GAE λ<small>GAE_LAMBDA</small></td>
             <td class="hp-val" id="hp-lambda">—</td>
             <td>Bias/variance dial for the advantage estimate. λ=0 trusts the critic one step ahead (low variance, biased
-                by critic errors); λ=1 uses the actual rewards to the episode end (unbiased, very noisy). Credit from a
+                by critic errors); λ=1 uses the actual rewards to the end (unbiased, very noisy). Credit from a
                 reward fades by <code>(γλ)</code> per bar, an effective horizon of <code>1/(1−γλ)</code> ≈
-                <span id="hp-gl-horizon">—</span> bars.</td>
-            <td>The reward is paid at the end of each reward window, much further out than that horizon, so early bars of a
-                window are credited mostly through the critic. Raising λ passes more of the real window return back
-                to those bars at the cost of noise.</td>
+                <span id="hp-gl-horizon">—</span> bars. The v3 terminal reward uses λ=1: each step is credited with the
+                discounted window rewards that follow it, not just a few bars of critic bootstrapping.</td>
+            <td>With the stepwise reward the horizon is far shorter than a weekly window, so early bars of a window are
+                credited mostly through the critic; raising λ passes more of the real window return back at the cost of
+                noise. Under the terminal reward λ is fixed at 1.</td>
           </tr>
           <tr>
             <td class="hp-name">Value loss coef<small>VALUE_LOSS_COEF</small></td>
@@ -418,8 +474,11 @@ function revealLayout() {
 
       <div class="hp-note">
         Fixed rather than tunable: advantage normalisation (always on), the optimiser (Adam), and
-        no gradient clipping. The reward itself (weekly windowed log-return minus the cash-ceiling penalty) is
-        set by constants in <code>constants.jl</code>, listed under <i>Rule-derived constants</i> above.
+        no gradient clipping. The reward: under game v3 it is 0 on every bar and, at the end of each reward window
+        (<code>--reward-window-days</code>, 0 = the whole train/val period), <code>(V<sub>end</sub> − V<sub>start</sub>)/V<sub>start</sub></code>
+        minus the penalties accumulated in that window (in rupees, each illegal move costing <code>--illegal-penalty ×</code> the
+        portfolio value at the decision) over <code>V<sub>start</sub></code>; under v1/v2 it is the weekly log-return window minus
+        per-bar penalties. The other constants are listed under <i>Rule-derived constants</i> above.
       </div>
     </details>
 
@@ -448,7 +507,7 @@ function revealLayout() {
     <div class="chart-card">
       <div class="chart-header">
         <div class="chart-title">Episode return per iteration — training</div>
-        <div class="chart-sub" id="iter-chart-sub">Σ log-return · training rollout</div>
+        <div class="chart-sub" id="iter-chart-sub">Σ window rewards (gain − penalties) · training rollout</div>
       </div>
       <div class="canvas-wrap"><canvas id="iter-chart"></canvas></div>
     </div>
@@ -456,7 +515,7 @@ function revealLayout() {
     <div class="chart-card">
       <div class="chart-header">
         <div class="chart-title">Episode return per iteration — validation</div>
-        <div class="chart-sub" id="iter-val-chart-sub">Σ log-return · held-out eval</div>
+        <div class="chart-sub" id="iter-val-chart-sub">Σ window rewards (gain − penalties) · held-out eval</div>
       </div>
       <div class="canvas-wrap"><canvas id="iter-val-chart"></canvas></div>
     </div>
@@ -524,6 +583,33 @@ function revealLayout() {
       </div>
     </div>
 
+    <div class="chart-card" id="val-summary-card">
+      <div class="chart-header">
+        <div class="chart-title">Validation run summary</div>
+        <div class="chart-sub" id="val-summary-sub"></div>
+      </div>
+      <div class="vt-controls">
+        <label>Run <select id="val-summary-run"></select></label>
+      </div>
+      <div class="vs-grid" id="val-summary-grid"></div>
+    </div>
+
+    <div class="chart-card" id="val-timing-card">
+      <div class="chart-header">
+        <div class="chart-title">Where the time goes — per iteration</div>
+        <div class="chart-sub" id="val-timing-sub"></div>
+      </div>
+      <div class="vt-controls">
+        <label>Run <select id="val-timing-run"></select></label>
+        <label>Phase group <select id="val-timing-group">
+          <option value="val">Validation rollout</option>
+          <option value="train_rollout">Training rollout</option>
+          <option value="update">PPO update</option>
+          <option value="iteration_phases">Iteration (loop level)</option></select></label>
+      </div>
+      <div id="val-timing-bars"></div>
+    </div>
+
     <div class="chart-card" id="val-trades-card">
       <div class="chart-header">
         <div class="chart-title">Held-out validation — trades</div>
@@ -563,6 +649,7 @@ function revealLayout() {
     </div>
   `;
   wireValTrades();
+  wireValSummary();
 
   const toggle = document.getElementById('show-trades-toggle');
   toggle.checked = loadShowTrades();
@@ -664,6 +751,30 @@ function revealLayout() {
 // still-open buy of the same symbol (the simulator closes a lot whole, and a
 // symbol's lots exit oldest-first by hold clock), shown italic. Probabilities
 // are simply absent (—) for such runs — they can't be reconstructed.
+// val_runs/index.json carries one light row per run (scalars + a downsampled curve,
+// rehydrated into `value_curve` below); the full run — every bar, trades, final
+// holdings — is fetched from val_runs/iter_NNNNN.json only when needed (the latest
+// run, the run picked in the trades table, and runs left visible once few are).
+// undefined = requested, not back yet; missing = not requested.
+const valDetail = new Map();
+const VAL_DETAIL_MAX_VISIBLE = 5;   // trade markers are fetched for the visible runs only when this few are shown
+function valRunFile(iteration) { return `${VAL_RUNS_DIR}/iter_${String(iteration).padStart(5, '0')}.json`; }
+function ensureValDetail(iteration) {
+  if (valDetail.has(iteration)) return;
+  valDetail.set(iteration, undefined);
+  fetch(valRunFile(iteration), { cache: 'no-cache' })
+    .then(r => { if (!r.ok) throw new Error('fetch failed'); return r.json(); })
+    .then(j => { valDetail.set(iteration, j); renderValRunsChart(lastValRuns); })
+    .catch(() => valDetail.delete(iteration));   // retried on the next render
+}
+function hydrateValIndex(index) {
+  return (index.runs || []).map(r => ({
+    ...r,
+    value_curve: r.curve.t.map((t, i) => ({ t, value: r.curve.v[i], stocks_value: r.curve.s[i], cash_value: r.curve.c[i] })),
+    trades: [],
+  }));
+}
+
 let valTradesIter = null;   // selected run's iteration; null = follow the latest
 let valTradesSig  = '';     // what the table was last rendered for, to skip no-op re-renders
 
@@ -769,14 +880,21 @@ function renderValTrades(force = false) {
   const incNo = document.getElementById('val-trades-noaction').checked || kind === 'hold';
   ensureValSteps(valTradesIter);
   const stepsData = valStepsCache.get(valTradesIter);
-  const sig = `${runs.length}|${valTradesIter}|${kind}|${symq}|${incNo}|${stepsData === undefined ? 'loading' : stepsData ? 'steps' : 'nosteps'}`;
+  const sig = `${runs.length}|${valTradesIter}|${valDetail.get(valTradesIter) ? 'full' : 'light'}|${kind}|${symq}|${incNo}|${stepsData === undefined ? 'loading' : stepsData ? 'steps' : 'nosteps'}`;
   if (!force && sig === valTradesSig) return;
   valTradesSig = sig;
 
   sel.innerHTML = runs.slice().reverse().map(r =>
     `<option value="${r.iteration}" ${r.iteration === valTradesIter ? 'selected' : ''}>Iter ${r.iteration} · ${r.val_return >= 0 ? '+' : ''}${(r.val_return * 100).toFixed(2)}%</option>`).join('');
 
-  const run  = runs.find(r => r.iteration === valTradesIter);
+  const run  = valDetail.get(valTradesIter);
+  if (!run) {
+    ensureValDetail(valTradesIter);
+    document.getElementById('val-trades-sub').textContent = `Iter ${valTradesIter} · loading trades…`;
+    document.getElementById('val-trades-summary').innerHTML = '';
+    document.getElementById('val-trades-body').innerHTML = '';
+    return;
+  }
   const timeline = valTradesTimeline(run, incNo, stepsData);
   const all  = timeline.filter(t => t.kind !== 'hold');
   const nHold = timeline.length - all.length;
@@ -1027,7 +1145,7 @@ function makeIterChart(canvasId, label, data, labels, color, width, pointRadius)
       interaction: { mode: 'index', intersect: false },
       scales: {
         x: { title: { display: true, text: 'Iteration', color: '#6b7280' }, grid: { color: '#1e2338' } },
-        y: { title: { display: true, text: 'Σ log-return', color: '#6b7280' }, grid: { color: '#2e3350' } },
+        y: { title: { display: true, text: 'Σ reward', color: '#6b7280' }, grid: { color: '#2e3350' } },
       },
       plugins: {
         legend: { display: true, position: 'top', align: 'end', labels: { boxWidth: 18, boxHeight: 2, color: '#94a3b8', font: { size: 11 } } },
@@ -1042,7 +1160,7 @@ function renderIterChart(rows) {
   const val    = rows.map(r => r.val_return);
   const bests = rows.map(r => r.best_return).filter(v => v != null);
   const n = `${rows.length} iteration${rows.length === 1 ? '' : 's'} logged`;
-  document.getElementById('iter-chart-sub').textContent = `${n} · Σ log-return, training rollout`;
+  document.getElementById('iter-chart-sub').textContent = `${n} · Σ window rewards, training rollout`;
   document.getElementById('iter-val-chart-sub').textContent =
     `${n} · best return ${bests.length ? Math.max(...bests).toFixed(4) : '—'}`;
   if (!iterChart) {
@@ -1113,11 +1231,15 @@ function renderValRunsChart(runs) {
   // toggled on/off in the chart above — the chip toggles control chart
   // visibility only, not which run this table describes.
   const latestRun = runs[runs.length - 1];
+  ensureValDetail(latestRun.iteration);
+  const latestFull = valDetail.get(latestRun.iteration);
   document.getElementById('val-holdings-sub').textContent =
     `Iter ${latestRun.iteration} · final value ${fmtRupee(latestRun.final_value)} · ` +
     `return ${latestRun.val_return >= 0 ? '+' : ''}${(latestRun.val_return * 100).toFixed(2)}%`;
-  document.getElementById('val-holdings-body').innerHTML = latestRun.final_holdings
-    ? holdingsRowsHtml(latestRun.final_holdings, 'effective_price')
+  document.getElementById('val-holdings-body').innerHTML = !latestFull
+    ? `<tr><td colspan="6" class="na" style="padding:14px">Loading…</td></tr>`
+    : latestFull.final_holdings
+    ? holdingsRowsHtml(latestFull.final_holdings, 'effective_price')
     : `<tr><td colspan="6" class="na" style="padding:14px">Not recorded for this run (written before this table was added)</td></tr>`;
   document.getElementById('val-chart-sub').textContent =
     `${runs.length} run${runs.length === 1 ? '' : 's'} · each run its own color ` +
@@ -1126,7 +1248,7 @@ function renderValRunsChart(runs) {
 
   // One chip per run — unchecking it hides that run's 3 lines (and its trade
   // markers, below) without affecting any other run. Stale hidden iterations
-  // (a run that's aged out of val_runs.jsonl — doesn't happen today since
+  // (a run that's aged out of the val_runs index — doesn't happen today since
   // that file is append-only forever, but defensively) are dropped here so
   // the saved set never grows unboundedly.
   hiddenValRuns = new Set([...hiddenValRuns].filter(it => runs.some(r => r.iteration === it)));
@@ -1155,23 +1277,26 @@ function renderValRunsChart(runs) {
   // bookkeeping stays consistent run to run.
   const portfolioDatasets = [];
   const splitDatasets = [];
+  if (visibleN <= VAL_DETAIL_MAX_VISIBLE) runs.forEach(r => { if (!hiddenValRuns.has(r.iteration)) ensureValDetail(r.iteration); });
+  const curveOf = (run) => (valDetail.get(run.iteration) || run).value_curve;
   runs.forEach((run, i) => {
     const color  = valRunColor(i, runs.length);
     const isLast = i === runs.length - 1;
     const hidden = hiddenValRuns.has(run.iteration);
+    const curve  = curveOf(run);
     portfolioDatasets.push({
       label: `Iter ${run.iteration} — portfolio value`,
-      data: run.value_curve.map(p => ({ x: p.t, y: p.value })),
+      data: curve.map(p => ({ x: p.t, y: p.value })),
       borderColor: color, borderWidth: isLast ? 3 : 1.6, pointRadius: 0, tension: .15, hidden,
     });
     splitDatasets.push({
       label: `Iter ${run.iteration} — stock value`,
-      data: run.value_curve.map(p => ({ x: p.t, y: p.stocks_value })),
+      data: curve.map(p => ({ x: p.t, y: p.stocks_value })),
       borderColor: color, borderWidth: isLast ? 1.9 : 1, pointRadius: 0, tension: .15, hidden,
     });
     splitDatasets.push({
       label: `Iter ${run.iteration} — cash (incl. reserved)`,
-      data: run.value_curve.map(p => ({ x: p.t, y: p.cash_value })),
+      data: curve.map(p => ({ x: p.t, y: p.cash_value })),
       borderColor: color, borderDash: [6, 3], borderWidth: isLast ? 1.6 : .9, pointRadius: 0, tension: .15, hidden,
     });
   });
@@ -1185,10 +1310,11 @@ function renderValRunsChart(runs) {
   const showVal = loadShowValTrades();
   const buyPoints = [], sellPoints = [], forcedPoints = [];
   runs.forEach((run, i) => {
-    if (hiddenValRuns.has(run.iteration)) return;
-    const valueByT = new Map(run.value_curve.map(p => [p.t, p.value]));
+    const full = valDetail.get(run.iteration);
+    if (hiddenValRuns.has(run.iteration) || !full) return;
+    const valueByT = new Map(full.value_curve.map(p => [p.t, p.value]));
     const color = valRunColor(i, runs.length);
-    for (const t of run.trades) {
+    for (const t of full.trades) {
       const y = valueByT.get(t.t);
       if (y === undefined) continue;
       const pt = { x: t.t, y, trade: t, iteration: run.iteration, color };
@@ -1335,7 +1461,7 @@ const valDistMeanPlugin = {
 };
 
 // Distribution of (final value - initial value) / initial value across every
-// held-out validation run in val_runs.jsonl — one sample per run. Bin width is
+// held-out validation run in val_runs/index.json — one sample per run. Bin width is
 // VAL_DIST_BIN_PCT, with bin edges anchored at 0 so a bar never straddles
 // break-even.
 function renderValDistChart(allRuns) {
@@ -1453,6 +1579,9 @@ function renderRunConfig(cfg) {
     <div class="param-section-label">Run config</div>
     <div class="param-grid">
       ${paramItem('Game version', 'v' + (rc.game_version ?? cfg.game_version ?? 1))}
+      ${paramItem('Market · bars', cfg.exchange ? `${String(cfg.exchange).toUpperCase()} · ${cfg.bar_minutes ?? '—'} min` : '—')}
+      ${paramItem('Reward', rewardLabel(rc))}
+      ${paramItem('History encoder', (rc.game_version ?? cfg.game_version) >= 3 ? (cfg.history_encoder ?? 'direct') : 'gru')}
       ${paramItem('Device', cfg.resolved_device ?? cfg.device ?? '—')}
       ${paramItem('Minibatch', cfg.resolved_minibatch ?? cfg.minibatch ?? '—')}
       ${paramItem('Learning rate', cfg.lr ?? '—')}
@@ -1480,12 +1609,33 @@ function renderRunConfig(cfg) {
       ${paramItem('Illegal-action penalty', rc.game_version >= 2 ? (rc.illegal_penalty_coef ?? '—') : 'n/a')}
       ${paramItem('Hold penalty (v2+)', rc.game_version >= 2 ? (rc.hold_penalty_coef ?? '—') : 'n/a')}
       ${paramItem('Rebuy cooldown', rc.rebuy_cooldown_days != null ? rc.rebuy_cooldown_days + ' days' : '—')}
-      ${paramItem('Gamma / GAE λ', (rc.gamma ?? '—') + ' / ' + (rc.gae_lambda ?? '—'))}
+      ${paramItem('Gamma / GAE λ (used)', fmtDiscount(effectiveDiscount(cfg).gamma) + ' / ' + fmtDiscount(effectiveDiscount(cfg).lambda))}
       ${paramItem('Clip epsilon', rc.clip_eps ?? '—')}
       ${paramItem('Value loss coef', rc.value_loss_coef ?? '—')}
     </div>
   `;
   renderHyperparamValues(cfg);
+}
+
+// What PPO actually uses: the hourly constants rescaled to the bar length, except under the
+// v3 terminal reward (one window → γ=λ=1; reward windows → rescaled γ, λ=1).
+function effectiveDiscount(cfg) {
+  const rc = cfg.rule_constants || {};
+  const bar = (cfg.bar_minutes ?? 60) / 60;
+  const terminal = rc.terminal_reward === true;
+  const win = rc.reward_window_days ?? 0;
+  const g = rc.gamma, l = rc.gae_lambda;
+  if (g == null || l == null) return { gamma: null, lambda: null };
+  return {
+    gamma:  terminal && win === 0 ? 1 : Math.pow(g, bar),
+    lambda: terminal ? 1 : Math.pow(l, bar),
+  };
+}
+const fmtDiscount = (v) => v == null ? '—' : (Math.abs(v - 1) < 1e-12 ? '1' : v.toFixed(4));
+function rewardLabel(rc) {
+  if ((rc.game_version ?? 1) < 3 || rc.terminal_reward === false) return 'weekly log-return + per-bar penalties';
+  const w = rc.reward_window_days ?? 0;
+  return w === 0 ? 'terminal: one window (whole period)' : `terminal: every ${w} trading days`;
 }
 
 function renderHyperparamValues(cfg) {
@@ -1494,13 +1644,199 @@ function renderHyperparamValues(cfg) {
   set('hp-lr', cfg.lr);
   set('hp-minibatch', cfg.resolved_minibatch ?? cfg.minibatch);
   set('hp-clip', rc.clip_eps);
-  set('hp-gamma', rc.gamma);
-  set('hp-lambda', rc.gae_lambda);
+  const eff = effectiveDiscount(cfg);
+  set('hp-gamma', eff.gamma == null ? rc.gamma : fmtDiscount(eff.gamma));
+  set('hp-lambda', eff.lambda == null ? rc.gae_lambda : fmtDiscount(eff.lambda));
   set('hp-vf', rc.value_loss_coef);
   set('hp-entropy', cfg.entropy_coef);
   set('hp-eval', cfg.eval_every != null ? cfg.eval_every + ' iters' : null);
-  const gl = (rc.gamma ?? NaN) * (rc.gae_lambda ?? NaN);
-  set('hp-gl-horizon', isFinite(gl) && gl < 1 ? (1 / (1 - gl)).toFixed(1) : null);
+  const gl = (eff.gamma ?? NaN) * (eff.lambda ?? NaN);
+  set('hp-gl-horizon', isFinite(gl) && gl < 1 ? (1 / (1 - gl)).toFixed(1) : (isFinite(gl) ? '∞ (undiscounted)' : null));
+}
+
+// ── Validation run summary + timing breakdown ─────────────────────────────────
+// val_summary.json: one result row per held-out run; timing.json: one row per
+// iteration with every phase's seconds and call count (names are dotted — a
+// child like observe.history is already included in its parent observe).
+const VAL_SUMMARY_URL = 'data/trading_game/val_summary.json';
+const TIMING_URL      = 'data/trading_game/timing.json';
+let valSummaryRows = [], timingRows = [];
+let valSumIter = null;   // selected iteration, shared by the summary and timing cards; null = follow the latest
+
+const PHASE_DESC = {
+  setup: 'Once per episode: CPU copy of the policy, reset!, preallocating the observation buffers',
+  'setup.policy_copy': 'cpu(policy) — a copy of the weights for the rollout',
+  'setup.reset': 'reset!(env, config): clock, portfolio and reward ledger back to the episode start',
+  'setup.buffers': 'Preallocating the whole episode\'s observation / action buffers',
+  observe: 'assemble_observation!: everything the policy sees on this bar',
+  'observe.history': 'Per-stock price window: 70 hourly log-returns + the 15-minute snapshot',
+  'observe.news': 'News features (off in v3: zero fill)',
+  'observe.holding': 'Per-stock holding state (held, P&L, days left) from the open lots',
+  'observe.legality': 'legality_state: cooldown, affordability, position-cap headroom, sellable flag',
+  'observe.portfolio': 'The portfolio scalars (cash, reserved, value ratio, free slots)',
+  stack: 'stack_observations: wrap the single observation into a batch of 1',
+  forward: 'Policy forward pass (dense fusion + attention + heads), batch of 1 on CPU',
+  sell_mask: 'sellable_mask: which SELLs are impossible this bar',
+  blockers: 'buy_blockers: the legality head\'s targets',
+  softmax_sample: 'Mask the logits, softmax, sample (or argmax) an action per stock',
+  build_actions: 'Build the RawAction list handed to the simulator',
+  env_step: 'env.step!: the simulator, one bar',
+  'env_step.settle': 'Settle reserved cash that has matured',
+  'env_step.value_at_decision': 'Portfolio value before the decision (what illegal-move penalties are taken of)',
+  'env_step.resolve_actions': 'resolve_actions: apply the rules, refuse and charge illegal moves',
+  'env_step.apply_actions': 'Execute the surviving buys and sells',
+  'env_step.advance_clock': 'Move to the next bar and settle cash for the new date',
+  'env_step.mark_value': 'portfolio_breakdown: mark every holding to market',
+  'env_step.reward_info': 'Reward / window payout / penalty ledger and the info dict',
+  annotate: 'Stamp the actor\'s probabilities onto the bar\'s trade events',
+  store: 'Write the RolloutStep (and the validation summary accumulator)',
+  step_log: 'Per-step validation diagnostics (probabilities, V(s)); only when logging steps',
+  live_cb: 'Streaming this bar to live_status.json (every few bars)',
+  gae: 'Advantages and returns (GAE) + normalisation',
+  minibatch_stack: 'stack_observations over a minibatch',
+  to_device: 'Moving the minibatch to the training device',
+  targets: 'Action mask, sell mask, legality targets, advantage/return slices',
+  forward_backward: 'Forward pass, loss and gradient (Flux.withgradient)',
+  optimizer: 'Adam update of the weights',
+  progress: 'Progress print and live_status.json write',
+  train_rollout: 'The training episode (rollout, with sampling)',
+  ppo_update: 'The PPO update over the rollout',
+  val_rollout: 'The held-out greedy rollout',
+  val_save_steps: 'Writing the per-step validation log (val_steps/)',
+  val_save_run: 'Writing val_runs/iter_NNNNN.json and index.json',
+  checkpoint: 'Saving policy.bson when the run improved',
+};
+
+const vsMoney = (v, d = 0) => v == null ? '—' : (v < 0 ? '−₹' : '₹') + vtNum(Math.abs(v), d);
+const vsPct = (v, d = 2) => v == null ? '—' : (v * 100).toFixed(d) + '%';
+const vsSigned = (v, f) => v == null ? '—' : (v > 0 ? '+' : '') + f(v);
+function fmtSecs(s) {
+  if (s == null) return '—';
+  if (s < 0.001) return (s * 1e6).toFixed(0) + ' µs';
+  if (s < 1) return (s * 1000).toFixed(1) + ' ms';
+  if (s < 60) return s.toFixed(2) + ' s';
+  if (s < 3600) return Math.floor(s / 60) + 'm ' + Math.round(s % 60) + 's';
+  return Math.floor(s / 3600) + 'h ' + Math.round((s % 3600) / 60) + 'm';
+}
+
+function vsTile(label, value, sub, cls) {
+  return `<div class="vs-tile"><div class="vs-l">${label}</div><div class="vs-v ${cls || ''}">${value}</div>` +
+         (sub ? `<div class="vs-s">${sub}</div>` : '') + '</div>';
+}
+
+function fillRunSelects(ids, iterations) {
+  for (const id of ids) {
+    const sel = document.getElementById(id);
+    if (!sel) continue;
+    const want = String(valSumIter);
+    const html = iterations.slice().reverse().map(i => `<option value="${i}">Iteration ${i}</option>`).join('');
+    if (sel.dataset.sig !== html) { sel.innerHTML = html; sel.dataset.sig = html; }
+    sel.value = want;
+  }
+}
+
+function renderValSummary() {
+  const grid = document.getElementById('val-summary-grid');
+  if (!grid) return;
+  const rows = valSummaryRows;
+  if (!rows.length) {
+    document.getElementById('val-summary-sub').textContent = 'No held-out evaluation with a summary yet';
+    grid.innerHTML = ''; return;
+  }
+  if (valSumIter == null || !rows.some(r => r.iteration === valSumIter)) valSumIter = rows[rows.length - 1].iteration;
+  fillRunSelects(['val-summary-run', 'val-timing-run'], rows.map(r => r.iteration));
+  const r = rows.find(x => x.iteration === valSumIter);
+  const n = r.n_buys + r.n_sells + r.n_forced_exits;
+  const acts = r.actions.hold + r.actions.sell + r.actions.buy;
+  const share = x => acts ? (100 * x / acts).toFixed(1) + '%' : '—';
+  const sign = v => v > 0 ? 'pos' : v < 0 ? 'neg' : '';
+  document.getElementById('val-summary-sub').textContent =
+    `iteration ${r.iteration} · ${r.start.slice(0, 10)} → ${r.finish.slice(0, 10)} · ${r.n_bars.toLocaleString()} bars · ${r.n_candidates} candidates`;
+  grid.innerHTML = [
+    vsTile('Final portfolio value', vsMoney(r.final_value), `from ${vsMoney(r.initial_value)} · ${vsSigned(r.total_return, v => vsPct(v))}`, sign(r.total_return)),
+    vsTile('Validation return', vsSigned(r.val_return, v => v.toFixed(4)), 'sum of the window rewards (what checkpointing uses)', sign(r.val_return)),
+    vsTile('Peak / lowest value', `${vsMoney(r.peak_value)}`, `lowest ${vsMoney(r.min_value)}`),
+    vsTile('Max drawdown', vsPct(r.max_drawdown), 'largest fall from a running peak', r.max_drawdown > 0.2 ? 'neg' : ''),
+    vsTile('Illegal-move penalties', vsMoney(r.penalty_rupees), `${r.n_penalty_bars.toLocaleString()} of ${r.n_bars.toLocaleString()} bars had an illegal move`, r.penalty_rupees > 0 ? 'neg' : ''),
+    vsTile('Fees paid', vsMoney(r.fees_paid), 'brokerage on every buy and sell'),
+    vsTile('Trades', n.toLocaleString(), `${r.n_buys} buys · ${r.n_sells} sells · ${r.n_forced_exits} forced exits`),
+    vsTile('Realised P&L', vsSigned(r.realised_pnl, v => vsMoney(v)), `win rate ${r.win_rate == null ? '—' : vsPct(r.win_rate, 1)} · avg hold ${r.avg_days_held == null ? '—' : r.avg_days_held.toFixed(1) + ' d'}`, sign(r.realised_pnl)),
+    vsTile('Average book', vsPct(r.avg_cash_fraction, 1) + ' cash', `${r.avg_lots_held.toFixed(1)} lots held on average`),
+    vsTile('Final book', vsMoney(r.final_stocks), `cash ${vsMoney(r.final_cash)} · reserved ${vsMoney(r.final_reserved)}`),
+    vsTile('Actions chosen', `${share(r.actions.buy)} buy`, `${share(r.actions.sell)} sell · ${share(r.actions.hold)} hold (per stock per bar)`),
+    vsTile('Validation rollout', fmtSecs(r.rollout_secs), `${r.ms_per_bar.toFixed(2)} ms per bar`),
+    vsTile('Iteration', fmtSecs(r.iter_secs), `train rollout ${fmtSecs(r.train_rollout_secs)} · update ${fmtSecs(r.update_secs)}`),
+  ].join('');
+}
+
+function timingTree(rows) {
+  const top = [], kids = new Map();
+  for (const p of rows) {
+    const dot = p.name.indexOf('.');
+    if (dot < 0) top.push({ ...p, children: [] });
+    else { const parent = p.name.slice(0, dot); (kids.has(parent) ? kids.get(parent) : kids.set(parent, []).get(parent)).push(p); }
+  }
+  const byName = new Map(top.map(t => [t.name, t]));
+  for (const [parent, list] of kids) {
+    let t = byName.get(parent);
+    if (!t) {   // a group with no row of its own (setup.*): its children's sum stands in
+      t = { name: parent, secs: list.reduce((a, c) => a + c.secs, 0), n: Math.max(...list.map(c => c.n)), children: [] };
+      top.push(t); byName.set(parent, t);
+    }
+    t.children = list;
+  }
+  const firstSeen = t => rows.findIndex(p => p.name === t.name || p.name.startsWith(t.name + '.'));
+  return top.sort((a, b) => firstSeen(a) - firstSeen(b));
+}
+
+function renderValTiming() {
+  const box = document.getElementById('val-timing-bars');
+  if (!box) return;
+  const sub = document.getElementById('val-timing-sub');
+  const row = timingRows.find(r => r.iteration === valSumIter);
+  if (!row) { sub.textContent = timingRows.length ? 'No timing for this iteration' : 'No timing.json yet'; box.innerHTML = ''; return; }
+  const group = document.getElementById('val-timing-group').value;
+  const phases = row[group] || [];
+  if (!phases.length) { sub.textContent = group === 'val' ? 'No validation ran on this iteration' : 'No phases recorded'; box.innerHTML = ''; return; }
+  const tree = timingTree(phases);
+  const total = tree.reduce((a, t) => a + t.secs, 0);
+  const wall = { val: 'val_rollout', train_rollout: 'train_rollout', update: 'ppo_update' }[group];
+  const wallSecs = wall ? (row.iteration_phases.find(p => p.name === wall) || {}).secs : row.iter_secs;
+  const bars = { val: row.bars_val, train_rollout: row.bars_train }[group];
+  sub.textContent = `iteration ${row.iteration} · Σ phases ${fmtSecs(total)}` +
+    (wallSecs != null ? ` of ${fmtSecs(wallSecs)} wall` : '') + (bars ? ` · ${bars.toLocaleString()} bars · ${(1000 * total / bars).toFixed(2)} ms per bar` : '');
+  const top1 = tree.reduce((a, t) => (t.secs > a.secs ? t : a), tree[0]).name;
+  const one = (p, child) => {
+    const pct = total > 0 ? 100 * p.secs / total : 0;
+    const perCall = p.n > 0 ? p.secs / p.n : 0;
+    const tip = (PHASE_DESC[p.name] || '') + ` — ${p.n.toLocaleString()} calls`;
+    const label = child ? p.name.slice(p.name.indexOf('.') + 1) : p.name;
+    return `<div class="tm-row ${child ? 'child' : ''} ${!child && p.name === top1 ? 'top1' : ''}">` +
+      `<div class="tm-name" title="${tip.replace(/"/g, '&quot;')}">${label}</div>` +
+      `<div class="tm-track"><div class="tm-fill" style="width:${Math.max(pct, 0).toFixed(2)}%"></div></div>` +
+      `<div class="tm-num"><b>${fmtSecs(p.secs)}</b> · ${pct.toFixed(1)}% · ${fmtSecs(perCall)}/call</div></div>`;
+  };
+  box.innerHTML = tree.map(t => one(t, false) + t.children.map(c => one(c, true)).join('')).join('');
+}
+
+function wireValSummary() {
+  const pick = e => { valSumIter = Number(e.target.value); renderValSummary(); renderValTiming(); };
+  document.getElementById('val-summary-run').addEventListener('change', pick);
+  document.getElementById('val-timing-run').addEventListener('change', pick);
+  document.getElementById('val-timing-group').addEventListener('change', renderValTiming);
+  renderValSummary(); renderValTiming();
+}
+
+async function pollValSummary() {
+  try {
+    const r = await fetch(VAL_SUMMARY_URL, { cache: 'no-cache' });
+    if (r.ok) valSummaryRows = (await r.json()).runs || [];
+  } catch { /* no val_summary.json yet */ }
+  try {
+    const r = await fetch(TIMING_URL, { cache: 'no-cache' });
+    if (r.ok) timingRows = (await r.json()).runs || [];
+  } catch { /* no timing.json yet */ }
+  renderValSummary(); renderValTiming();
 }
 
 async function pollLive() {
@@ -1524,10 +1860,12 @@ async function pollLog() {
 
 async function pollValRuns() {
   try {
-    const runs = await fetchJSONL(VAL_RUNS_URL);
+    const r = await fetch(`${VAL_RUNS_DIR}/index.json`, { cache: 'no-cache' });
+    if (!r.ok) throw new Error('no val_runs index');
+    const runs = hydrateValIndex(await r.json());
     revealLayout();
     renderValRunsChart(runs);
-  } catch { /* no val_runs.jsonl yet */ }
+  } catch { /* no val_runs/index.json yet */ }
 }
 
 async function pollRunConfig() {
@@ -1538,18 +1876,20 @@ async function pollRunConfig() {
   } catch { /* no run_config.json yet */ }
 }
 
-pollLive(); pollLog(); pollValRuns(); pollRunConfig();
+pollLive(); pollLog(); pollValRuns(); pollRunConfig(); pollValSummary();
 setInterval(pollLive, 3000);
 setInterval(pollLog, 8000);
 // Held-out runs only land once every eval_every iterations (tens of minutes
 // apart in practice), and the file only grows (every run ever completed is
 // kept — see save_val_run!'s docstring), so there's no reason to poll it as
 // often as the live, per-bar status.
-setInterval(pollValRuns, 20000);
+setInterval(pollValRuns, 60000);
+setInterval(pollValSummary, 60000);   // both files grow once per iteration at most
 // run_config.json is written once per run start/resume and otherwise static
 // — polled only so a --resume with changed flags (while this page stays
 // open) picks up the new values without a manual refresh.
 setInterval(pollRunConfig, 20000);
 </script>
+<script src="assets/forecasterlive.js"></script>
 </body>
 </html>

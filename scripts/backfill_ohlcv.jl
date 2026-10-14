@@ -2,7 +2,7 @@
 backfill_ohlcv.jl
 
 Extends existing OHLCV CSVs in website/data/ohlcv/{nse,bse}/{daily,hourly,
-5min,15min,1min}/ *backward* to an earlier `--from` date (both exchanges by
+15min,5min,1min}/ *backward* to an earlier `--from` date (both exchanges by
 default — pass --nse-only or --bse-only to restrict to one). The mirror
 image of update_ohlcv.jl, which only ever extends forward to yesterday.
 
@@ -26,7 +26,7 @@ later than Kite can actually provide.
 After every daily pass, `{nse,bse}/earliest_trading_day.json` is rebuilt
 from the current daily CSVs (`build_earliest_trading_day`) — one JSON file
 per exchange mapping symbol → earliest date daily has ever found for it.
-Every finer granularity (hourly/5min/15min/1min) then fetches from
+Every finer granularity (hourly/15min/5min/1min) then fetches from
 `max(--from, earliest_trading_day[symbol])`, never `--from` alone. Without
 this, a symbol daily already proved has nothing before, say, a 2021 IPO
 still gets re-probed from `--from` at every finer granularity on every
@@ -43,7 +43,7 @@ majority of NSE symbols, regardless of how far back daily goes for the same
 symbol. Without tracking this separately, every symbol whose daily history
 predates that floor gets its full multi-chunk gap re-probed and
 re-reconfirmed empty on EVERY run, forever, even though the previous run
-already learned the answer. Each of hourly/5min/15min/1min therefore keeps
+already learned the answer. Each of hourly/15min/5min/1min therefore keeps
 its own `{granularity}/confirmed_floor.json` (inside that granularity's own
 subfolder, not the exchange root, since it doesn't apply to the others) —
 `{symbol => earliest date confirmed to have no older bars}` — written the
@@ -52,9 +52,9 @@ as a second floor term alongside `earliest_trading_day.json` from then on.
 
 Prerequisites:
   - sidecar/kite_session.json present         (node sidecar/kite_login.js)
-  - website/data/ohlcv/nse/{daily,hourly,5min,15min,1min}/ populated
+  - website/data/ohlcv/nse/{daily,hourly,15min,5min,1min}/ populated
     (run collect_nse_ohlcv.jl first, unless --bse-only)
-  - website/data/ohlcv/bse/{daily,hourly,5min,15min,1min}/ populated
+  - website/data/ohlcv/bse/{daily,hourly,15min,5min,1min}/ populated
     (run collect_bse_ohlcv.jl first, unless --nse-only)
 
 Usage:
@@ -645,13 +645,13 @@ Flags:
   --bse-only      Backfill BSE only (default: both NSE and BSE). Mutually exclusive with --nse-only.
   --daily-only    Backfill only daily bars.
   --hourly-only   Backfill only hourly (60-min) bars.
-  --5min-only     Backfill only 5-minute bars.
   --15min-only    Backfill only 15-minute bars.
+  --5min-only     Backfill only 5-minute bars.
   --1min-only     Backfill only 1-minute bars.
   --skip-daily    Skip the daily pass (overrides --daily-only if both given).
   --skip-hourly   Skip the hourly pass (overrides --hourly-only if both given).
-  --skip-5min     Skip the 5-minute pass (overrides --5min-only if both given).
   --skip-15min    Skip the 15-minute pass (overrides --15min-only if both given).
+  --skip-5min     Skip the 5-minute pass (overrides --5min-only if both given).
   --skip-1min     Skip the 1-minute pass (overrides --1min-only if both given).
   --dry-run       Report what would be fetched without making any API calls.
   --log-file PATH Full per-symbol detail (default: $DEFAULT_LOG_FILE;
@@ -663,7 +663,7 @@ Flags:
                   tail -f the log file for live per-symbol status instead.
 
 For each existing {SYMBOL}.csv in website/data/ohlcv/{nse,bse}/{daily,
-hourly,5min,15min,1min}/, reads the earliest date/datetime already on disk
+hourly,15min,5min,1min}/, reads the earliest date/datetime already on disk
 and fetches only the older gap down to --from, merging it into the file. A
 symbol with no existing CSV is skipped — this tool only EXTENDS, it doesn't
 do the initial collection (see collect_nse_ohlcv.jl/collect_bse_ohlcv.jl for
@@ -671,13 +671,13 @@ that, including brand-new granularities like NSE 15-min that have zero
 files today).
 
 After each daily pass, {nse,bse}/earliest_trading_day.json is rebuilt from
-the current daily CSVs. Hourly/5min/15min/1min then use
+the current daily CSVs. Hourly/15min/5min/1min then use
 max(--from, earliest_trading_day[symbol]) as their actual floor, so a
 symbol daily already proved has no data before some date (e.g. a 2021 IPO)
 is never re-probed from --from at the finer granularities — see the module
 docstring above for why this matters.
 
-Each of hourly/5min/15min/1min ALSO keeps its own
+Each of hourly/15min/5min/1min ALSO keeps its own
 {granularity}/confirmed_floor.json (inside that granularity's own
 subfolder), recording the first time a "no older bars" result is seen for
 a symbol at that specific granularity. This is a separate floor from
@@ -766,6 +766,19 @@ estimate before committing to a full run.
         t
     end
 
+    # CSVs left on disk from before a filter existed (ETF/INAV tickers, bonds, delisted names) are not
+    # in the token map and cannot be fetched; skip them once, loudly, instead of one warning per symbol per granularity.
+    active_syms(syms, token_map, label) = begin
+        dry_run && return syms
+        keep = filter(s -> haskey(token_map, s), syms)
+        gone = length(syms) - length(keep)
+        if gone > 0
+            example = join(first(sort(setdiff(syms, keep)), 5), ", ")
+            logboth(slog, "  $label: skipping $gone CSV(s) outside the current instrument filters (e.g. $example)")
+        end
+        keep
+    end
+
     # ── NSE backfill ──────────────────────────────────────────────────────────
     if run_nse
         isdir(NSE_OHLCV_DIR) || error("NSE OHLCV directory not found: $NSE_OHLCV_DIR\n" *
@@ -789,7 +802,13 @@ estimate before committing to a full run.
             @info "Filtering to symbol: $sym_filter"
         end
 
-        logboth(slog, "Found $(length(daily_syms)) NSE daily, $(length(hourly_syms)) hourly, $(length(fivemin_syms)) 5-min, $(length(fifteenmin_syms)) 15-min, $(length(onemin_syms)) 1-min CSVs")
+        daily_syms      = active_syms(daily_syms, nse_token_map, "NSE daily")
+        hourly_syms     = active_syms(hourly_syms, nse_token_map, "NSE hourly")
+        fivemin_syms    = active_syms(fivemin_syms, nse_token_map, "NSE 5-min")
+        fifteenmin_syms = active_syms(fifteenmin_syms, nse_token_map, "NSE 15-min")
+        onemin_syms     = active_syms(onemin_syms, nse_token_map, "NSE 1-min")
+
+        logboth(slog, "Found $(length(daily_syms)) NSE daily, $(length(hourly_syms)) hourly, $(length(fifteenmin_syms)) 15-min, $(length(fivemin_syms)) 5-min, $(length(onemin_syms)) 1-min CSVs")
         logboth(slog, "═══ NSE ═══")
 
         nse_earliest = load_earliest_trading_day(nse_earliest_file())
@@ -811,16 +830,16 @@ estimate before committing to a full run.
                              dry_run, out_dir=nse_gran_dir("hourly"))
         end
 
-        if run_5min
-            logboth(slog, "── 5-min bars ──")
-            backfill_5min!(fivemin_syms, nse_token_map, session, from_target, nse_earliest, slog;
-                           dry_run, out_dir=nse_gran_dir("5min"))
-        end
-
         if run_15min
             logboth(slog, "── 15-min bars ──")
             backfill_15min!(fifteenmin_syms, nse_token_map, session, from_target, nse_earliest, slog;
                             dry_run, out_dir=nse_gran_dir("15min"))
+        end
+
+        if run_5min
+            logboth(slog, "── 5-min bars ──")
+            backfill_5min!(fivemin_syms, nse_token_map, session, from_target, nse_earliest, slog;
+                           dry_run, out_dir=nse_gran_dir("5min"))
         end
 
         if run_1min
@@ -847,7 +866,13 @@ estimate before committing to a full run.
                 bse_1min_syms   = filter(==(sym_filter), bse_1min_syms)
             end
 
-            logboth(slog, "Found $(length(bse_daily_syms)) BSE daily, $(length(bse_hourly_syms)) hourly, $(length(bse_5min_syms)) 5-min, $(length(bse_15min_syms)) 15-min, $(length(bse_1min_syms)) 1-min CSVs")
+            bse_daily_syms  = active_syms(bse_daily_syms, bse_token_map, "BSE daily")
+            bse_hourly_syms = active_syms(bse_hourly_syms, bse_token_map, "BSE hourly")
+            bse_5min_syms   = active_syms(bse_5min_syms, bse_token_map, "BSE 5-min")
+            bse_15min_syms  = active_syms(bse_15min_syms, bse_token_map, "BSE 15-min")
+            bse_1min_syms   = active_syms(bse_1min_syms, bse_token_map, "BSE 1-min")
+
+            logboth(slog, "Found $(length(bse_daily_syms)) BSE daily, $(length(bse_hourly_syms)) hourly, $(length(bse_15min_syms)) 15-min, $(length(bse_5min_syms)) 5-min, $(length(bse_1min_syms)) 1-min CSVs")
             logboth(slog, "═══ BSE ═══")
 
             bse_earliest = load_earliest_trading_day(bse_earliest_file())
@@ -869,16 +894,16 @@ estimate before committing to a full run.
                                  dry_run, out_dir=bse_gran_dir("hourly"))
             end
 
-            if run_5min
-                logboth(slog, "── 5-min bars ──")
-                backfill_5min!(bse_5min_syms, bse_token_map, session, from_target, bse_earliest, slog;
-                               dry_run, out_dir=bse_gran_dir("5min"))
-            end
-
             if run_15min
                 logboth(slog, "── 15-min bars ──")
                 backfill_15min!(bse_15min_syms, bse_token_map, session, from_target, bse_earliest, slog;
                                 dry_run, out_dir=bse_gran_dir("15min"))
+            end
+
+            if run_5min
+                logboth(slog, "── 5-min bars ──")
+                backfill_5min!(bse_5min_syms, bse_token_map, session, from_target, bse_earliest, slog;
+                               dry_run, out_dir=bse_gran_dir("5min"))
             end
 
             if run_1min

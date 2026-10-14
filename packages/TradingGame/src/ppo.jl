@@ -29,9 +29,10 @@ recompute the policy's log-probability under updated weights later.
 Parametric for the same reason `Observation` is (see its docstring):
 `collect_rollout` stores views into a preallocated per-episode tensor here,
 not freshly heap-allocated arrays per step."""
-struct RolloutStep{O<:Observation, AI<:AbstractVector{Int}, BW<:AbstractVector{Float32}, SO<:AbstractVector{Bool}}
+struct RolloutStep{O<:Observation, AI<:AbstractVector{Int}, BW<:AbstractVector{Float32}, SO<:AbstractVector{Bool}, BL<:AbstractMatrix{Bool}}
     obs        :: O
     sell_ok    :: SO   # per candidate: false = a SELL was impossible and masked out of the distribution this step
+    blockers   :: BL   # (N_BUY_BLOCKERS, N): why a BUY would be refused this step (`buy_blockers`) — the auxiliary legality head's targets; all false without `legality_inputs`
     action_idx :: AI   # 1=HOLD, 2=SELL, 3=BUY per candidate (ActionType order)
     buy_weight :: BW   # sigmoid(buy_weight_logit) per candidate
     logprob    :: Float32          # Σ categorical log-prob across candidates, under the OLD policy
@@ -127,9 +128,14 @@ function collect_rollout(env::TradingGameEnv, policy::ActorCriticPolicy, config:
                           greedy::Bool=false,
                           step_log::Union{Nothing, Base.RefValue{Any}}=nothing,
                           live_cb::Union{Nothing, Function}=nothing,
+                          timer::Union{Nothing, PhaseTimer}=nothing,
+                          summary::Union{Nothing, Base.RefValue{Any}}=nothing,
                           rng::AbstractRNG=Random.default_rng())
+    t0 = tic(timer)
     policy_cpu = cpu(policy)
+    t0 = toc!(timer, "setup.policy_copy", t0)
     reset!(env, config)
+    t0 = toc!(timer, "setup.reset", t0)
 
     T = env.end_hour_idx - env.current_hour_idx
     T <= 0 && error("collect_rollout: episode has no decision bars — check start_date/end_date")
@@ -144,6 +150,7 @@ function collect_rollout(env::TradingGameEnv, policy::ActorCriticPolicy, config:
     portfolio_buf = Array{Float32}(undef, n_portfolio_scalars(config.rules), T)
     action_idx_buf = Array{Int}(undef, N, T)
     sell_ok_buf    = Array{Bool}(undef, N, T)
+    blockers_buf   = Array{Bool}(undef, N_BUY_BLOCKERS, N, T)
     buy_weight_buf = Array{Float32}(undef, N, T)
 
     # `RolloutStep`/`Observation` are parametric (see their docstrings) — a
@@ -157,27 +164,33 @@ function collect_rollout(env::TradingGameEnv, policy::ActorCriticPolicy, config:
                             typeof(@view news_buf[:, :, 1]), typeof(@view holding_buf[:, :, 1]),
                             typeof(@view portfolio_buf[:, 1])}
     StepType = RolloutStep{ObsType, typeof(@view action_idx_buf[:, 1]), typeof(@view buy_weight_buf[:, 1]),
-                            typeof(@view sell_ok_buf[:, 1])}
+                            typeof(@view sell_ok_buf[:, 1]), typeof(@view blockers_buf[:, :, 1])}
     buffer = Vector{StepType}(undef, T)
     slog = step_log === nothing ? nothing :
            StepLog(String[env.cache.companies[s] for s in candidates], T)
+    acc = summary === nothing ? nothing : _SummaryAccumulator(portfolio_value(env), env.cache.hourly_datetimes[env.current_hour_idx])
+    t0 = toc!(timer, "setup.buffers", t0)
 
     t = 0
     done = false
     while !done
         t += 1
+        t0 = tic(timer)
         hourly_view    = @view hourly_buf[:, :, :, t]
         macro_view     = @view macro_buf[:, :, t]
         news_view      = @view news_buf[:, :, t]
         holding_view   = @view holding_buf[:, :, t]
         portfolio_view = @view portfolio_buf[:, t]
         assemble_observation!(hourly_view, macro_view, news_view, holding_view, portfolio_view,
-                               env; macro_cache=macro_cache, news_fn=news_fn)
+                               env; macro_cache=macro_cache, news_fn=news_fn, timer=timer)
         obs = Observation(hourly_view, macro_view, news_view, holding_view, portfolio_view, candidates)
+        t0 = toc!(timer, "observe", t0)
 
         batch = stack_observations([obs])
+        t0 = toc!(timer, "stack", t0)
         action_logits, buy_weight_logit, value =
             policy_cpu(batch.hourly, batch.news, batch.holding, batch.macro_ctx, batch.portfolio)
+        t0 = toc!(timer, "forward", t0)
 
         # Impossible moves are removed before sampling (game v3 `premask`), so
         # `probs` is the distribution conditional on what can be done, and the
@@ -188,6 +201,14 @@ function collect_rollout(env::TradingGameEnv, policy::ActorCriticPolicy, config:
         else
             sell_ok_view .= true
         end
+        t0 = toc!(timer, "sell_mask", t0)
+        blockers_view = @view blockers_buf[:, :, t]
+        if env.config.rules.legality_inputs
+            blockers_view .= buy_blockers(env, env.cache.date_index[env.current_date])
+        else
+            blockers_view .= false
+        end
+        t0 = toc!(timer, "blockers", t0)
         masked = mask_action_logits(action_logits, reshape(sell_ok_view, N, 1))
         probs = Flux.softmax(masked[:, :, 1]; dims=1)   # (3, N)
         slog === nothing || (probs_raw = Flux.softmax(action_logits[:, :, 1]; dims=1))
@@ -202,15 +223,21 @@ function collect_rollout(env::TradingGameEnv, policy::ActorCriticPolicy, config:
         end
         buy_weight_view = @view buy_weight_buf[:, t]
         buy_weight_view .= Flux.sigmoid.(buy_weight_logit[:, 1])
+        t0 = toc!(timer, "softmax_sample", t0)
 
         raw = RawAction[RawAction(sym_idx, _ACTION_TYPES[action_idx_view[i]], buy_weight_view[i])
                          for (i, sym_idx) in enumerate(obs.candidates)]
-        result = step!(env, raw; rng=rng)
+        t0 = toc!(timer, "build_actions", t0)
+        result = step!(env, raw; rng=rng, timer=timer)
+        t0 = toc!(timer, "env_step", t0)
         _annotate_trade_probs!(result, probs, cand_pos)
+        t0 = toc!(timer, "annotate", t0)
 
-        buffer[t] = RolloutStep(obs, sell_ok_view, action_idx_view, buy_weight_view, logprob, Float32(value[1]),
+        buffer[t] = RolloutStep(obs, sell_ok_view, blockers_view, action_idx_view, buy_weight_view, logprob, Float32(value[1]),
                                  Float32(result.reward), result.done)
         done = result.done
+        acc === nothing || _accumulate!(acc, env, result, action_idx_view)
+        t0 = toc!(timer, "store", t0)
         if slog !== nothing
             info = result.info
             record_step!(slog, t; datetime=decision_dt, probs=probs, p_sell_raw=probs_raw[2, :],
@@ -221,9 +248,12 @@ function collect_rollout(env::TradingGameEnv, policy::ActorCriticPolicy, config:
                          n_holdings=length(unique(h.sym_idx for h in env.portfolio.holdings)),
                          n_trades=length(info["trades"]))
         end
+        t0 = toc!(timer, "step_log", t0)
         live_cb !== nothing && live_cb(env, result)
+        t0 = toc!(timer, "live_cb", t0)
     end
     step_log === nothing || (step_log[] = slog)
+    summary === nothing || (summary[] = _finish_summary(acc, env, t))
     t == T || error("collect_rollout: episode ran $t bars, expected exactly $T — " *
                      "preallocated buffer size assumption violated")
     return buffer
@@ -289,17 +319,20 @@ reason to want either) see no behaviour change.
 
 # Returns
 `Dict{String,Float32}` with `"loss"` (mean combined loss across all
-minibatch updates this call) for episode-log diagnostics.
+minibatch updates this call) and `"legality_loss"` (the mean auxiliary legality cross-entropy, 0 for a policy without the head) for episode-log diagnostics.
+`legality_coef` weights that auxiliary term in the loss.
 """
 function ppo_update!(policy::ActorCriticPolicy, opt_state, buffer::Vector{<:RolloutStep};
                       k_epochs::Int=4, minibatch_size::Int=32,
                       clip_eps::Float64=CLIP_EPS, value_loss_coef::Float64=VALUE_LOSS_COEF,
-                      entropy_coef::Float64=ENTROPY_COEF,
+                      entropy_coef::Float64=ENTROPY_COEF, legality_coef::Float64=LEGALITY_LOSS_COEF,
                       gamma::Float64=GAMMA, gae_lambda::Float64=GAE_LAMBDA,
                       device::Symbol=:cpu,
                       verbose::Bool=false,
                       progress_cb::Union{Nothing, Function}=nothing,
+                      timer::Union{Nothing, PhaseTimer}=nothing,
                       rng::AbstractRNG=Random.default_rng())::Dict{String, Float32}
+    t0 = tic(timer)
     to_dev = _to_device(device)
     T = length(buffer)
     N = length(buffer[1].obs.candidates)
@@ -314,11 +347,15 @@ function ppo_update!(policy::ActorCriticPolicy, opt_state, buffer::Vector{<:Roll
     action_idx  = [s.action_idx for s in buffer]
     obs_all     = [s.obs        for s in buffer]
     sell_ok_all = [s.sell_ok    for s in buffer]
+    blockers_all = [s.blockers  for s in buffer]
+    use_legality = policy.legality_head !== nothing
 
     advantages, returns = compute_gae(rewards, values, dones; gamma=gamma, gae_lambda=gae_lambda)
     advantages = (advantages .- mean(advantages)) ./ (std(advantages) + 1f-8)
+    t0 = toc!(timer, "gae", t0)
 
     total_loss = 0f0
+    total_legality = 0f0
     n_updates  = 0
 
     for epoch in 1:k_epochs
@@ -326,9 +363,12 @@ function ppo_update!(policy::ActorCriticPolicy, opt_state, buffer::Vector{<:Roll
         for start in 1:minibatch_size:T
             idxs = order[start:min(start + minibatch_size - 1, T)]
             B = length(idxs)
+            t0 = tic(timer)
             batch = stack_observations(obs_all[idxs])
+            t0 = toc!(timer, "minibatch_stack", t0)
             hourly, news, holding, macro_ctx, portfolio =
                 to_dev.((batch.hourly, batch.news, batch.holding, batch.macro_ctx, batch.portfolio))
+            t0 = toc!(timer, "to_device", t0)
 
             action_mask = zeros(Float32, 3, N, B)
             for (b, i) in enumerate(idxs), c in 1:N
@@ -336,12 +376,15 @@ function ppo_update!(policy::ActorCriticPolicy, opt_state, buffer::Vector{<:Roll
             end
             action_mask = to_dev(action_mask)
             sell_ok_b   = to_dev(reduce(hcat, (sell_ok_all[i] for i in idxs)))   # (N, B)
+            blockers_b  = use_legality ? to_dev(Float32.(cat((blockers_all[i] for i in idxs)...; dims=3))) : nothing   # (N_BUY_BLOCKERS, N, B)
             adv_b   = to_dev(advantages[idxs])
             ret_b   = to_dev(returns[idxs])
             oldlp_b = to_dev(old_logprob[idxs])
+            t0 = toc!(timer, "targets", t0)
 
+            leg_loss = Ref(0f0)
             loss, grads = Flux.withgradient(policy) do m
-                action_logits, _, value = m(hourly, news, holding, macro_ctx, portfolio)
+                action_logits, _, value, leg = legality_logits(m, hourly, news, holding, macro_ctx, portfolio)
 
                 action_logits = mask_action_logits(action_logits, sell_ok_b)
                 logp_all = Flux.logsoftmax(action_logits; dims=1)
@@ -355,11 +398,22 @@ function ppo_update!(policy::ActorCriticPolicy, opt_state, buffer::Vector{<:Roll
                 policy_loss = -mean(min.(surr1, surr2))
                 value_loss  = mean(abs2.(value .- ret_b))
 
-                policy_loss + Float32(value_loss_coef) * value_loss - Float32(entropy_coef) * mean(entropy)
+                total = policy_loss + Float32(value_loss_coef) * value_loss - Float32(entropy_coef) * mean(entropy)
+                if leg !== nothing
+                    aux = Flux.Losses.logitbinarycrossentropy(leg, blockers_b)
+                    Flux.Zygote.ignore_derivatives() do
+                        leg_loss[] = Float32(aux)
+                    end
+                    total = total + Float32(legality_coef) * aux
+                end
+                total
             end
 
+            t0 = toc!(timer, "forward_backward", t0)
             Flux.update!(opt_state, policy, grads[1])
+            t0 = toc!(timer, "optimizer", t0)
             total_loss += loss
+            total_legality += leg_loss[]
             n_updates  += 1
 
             due = n_updates % progress_every == 0 || n_updates == total_minibatches
@@ -369,9 +423,10 @@ function ppo_update!(policy::ActorCriticPolicy, opt_state, buffer::Vector{<:Roll
                 flush(stdout)
             end
             due && progress_cb !== nothing && progress_cb(epoch, n_updates, total_minibatches, Float64(loss))
+            t0 = toc!(timer, "progress", t0)
         end
     end
     verbose && print("\r" * " "^88 * "\r")   # clear the progress line
 
-    return Dict("loss" => total_loss / n_updates)
+    return Dict("loss" => total_loss / n_updates, "legality_loss" => total_legality / n_updates)
 end

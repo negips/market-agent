@@ -135,7 +135,7 @@ Cap on the joint-action candidate universe size. Smaller than
 *action* space of the joint policy, not passive market context — see
 `universe.jl` (Stage 0/2).
 """
-const N_CANDIDATE_STOCKS = 60
+const N_CANDIDATE_STOCKS = 150
 
 """
 Minimum `confidence.score` (0–100) a company must have, read from
@@ -231,3 +231,24 @@ const CLIP_EPS              = 0.2
 const VALUE_LOSS_COEF       = 0.5
 const ENTROPY_COEF          = 0.01
 const DECAY_HALFLIFE_HOURS  = 24.0    # news-feature recency decay (observation.jl, Stage 2)
+
+
+"""Per-stock legality inputs added to the observation by `GameRules.legality_inputs`
+(game v3): rebuy cooldown left, affordability of one share, position-cap headroom,
+sellable flag (`legality_state` in `action.jl`)."""
+const N_LEGALITY_FEATURES = 4
+
+"""Portfolio scalar added with the legality inputs: free holding slots / rule 13's cap."""
+const N_LEGALITY_PORTFOLIO = 1
+
+"""Reasons a BUY on a stock would be refused, in the order of the auxiliary legality
+head's outputs and of `buy_blockers`' rows: rebuy cooldown, cash cannot fund one
+share, no free holding slot, position cap reached."""
+const N_BUY_BLOCKERS = 4
+
+"""Weight of the auxiliary legality loss (binary cross-entropy over the `N_BUY_BLOCKERS`
+per-stock outputs) added to PPO's loss when the policy has a legality head."""
+const LEGALITY_LOSS_COEF = 0.5
+
+"""Clip applied to `log(cash / (price·(1+fee)))`, the affordability input."""
+const AFFORD_LOG_CLIP = 5f0

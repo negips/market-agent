@@ -240,6 +240,21 @@ were taken on the earlier $N{+}1$-token, $C{=}3$ policy; the policy now has
 one fewer input channel and (under v2) one extra token, which shifts the fitted
 coefficients slightly but not the $N^2$ scaling. They have not been re-run.
 
+\paragraph{Game v3.} The v3 rule set (\code{--game-version 3}, BSE at a 15-minute cadence)
+simplifies the network and removes every token except the stocks: the macro and news
+branches are switched off, the GRU is replaced by a single dense fusion layer over the
+stock's $70$ hourly log-returns, its eight state features (held flag, unrealised P\&L, hold
+time left, current 15-minute price, and four legality inputs: rebuy cooldown left, affordability
+of one share, position-cap headroom, sellable) and the seven portfolio scalars repeated beside it, and
+there is neither a cash nor a portfolio token. Attention therefore runs over the $N$ stock
+tokens alone, $\Theta(N^2)$, and the critic reads the mean attended token together with the
+portfolio scalars. An auxiliary head on the attended tokens predicts which rule would refuse a purchase of that
+stock (cooldown, cash, free slot, position cap); it adds a per-stock $O(N)$ term and feeds neither the action
+nor the value. The policy has $29{,}129$ parameters (against $43{,}301$ for v2). The
+fused per-stock vector is computed once per stock, so the dense layer costs $O(N)$; the
+measurements in Section~\ref{sec:measurement} still describe the earlier GRU policy and have
+not been re-run, but the dominant $N^2 B$ attention term is unchanged in kind.
+
 % ─────────────────────────────────────────────────────────────────────────
 \section{Empirical Characterization of the Baseline}
 \label{sec:measurement}
@@ -341,7 +356,10 @@ parts:
   \item \textbf{Portfolio token} $m_{\text{port}}$, from the global portfolio
         scalars, likewise kept separate. Under game v2 the cash token is a
         further fixed context token ($|\mathcal{C}|=K+3$); it is not a
-        candidate, so it adds no $N$-dependent cost.
+        candidate, so it adds no $N$-dependent cost. Game v3 has no macro, portfolio
+        or cash token at all (the portfolio scalars enter every stock's fusion
+        layer instead), so for v3 the context set would reduce to the $K$ anchor
+        stocks, $|\mathcal{C}|=K$.
 \end{itemize}
 \begin{equation}
   \mathcal{C} \;=\; \{h_j : j \in \mathcal{A}\} \,\cup\, \{m_{\text{macro}}, m_{\text{port}}\},

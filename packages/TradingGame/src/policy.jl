@@ -29,6 +29,7 @@ struct ActorCriticPolicy
     cash_encoder      :: Union{Nothing, Dense}   # game v2 only — embeds the cash token (see `GameRules.cash_token`)
     global_in_fusion  :: Int                     # > 0: width of the portfolio scalars concatenated onto every stock's fusion input (game v3); 0: separate portfolio token
     history_bars      :: Int                     # > 0: length of the price window fed directly to `fusion` (no GRU); 0: GRU encoder
+    legality_head     :: Union{Nothing, Dense}   # auxiliary head: per stock, N_BUY_BLOCKERS logits "a BUY would be refused because …" (see `buy_blockers`); nothing = none
 end
 
 Flux.@layer ActorCriticPolicy
@@ -52,6 +53,10 @@ returns of the price window are concatenated with the other per-stock features
 and go straight into `fusion` (a single `Dense(70 + 4 → 64)`); it needs
 `price_channels=1`. `stock_features=4` (game v3) adds the stock's instantaneous 15-minute price to
 the three holding features that join each stock's embedding in `fusion`.
+`legality_head=true` (game v3) adds the auxiliary head `Dense(embed_dim → N_BUY_BLOCKERS)` on the attended stock tokens: it predicts, per
+stock, which of the four reasons (cooldown, cash for one share, free slot, position cap) would make a BUY refused; its
+cross-entropy against `buy_blockers` is added to PPO's loss (`LEGALITY_LOSS_COEF`) and it never feeds the action or the
+value (`legality_logits`). `stock_features=8` then covers the four legality inputs too.
 `price_channels=1` (game v3) feeds the GRU the normalised close only, with no
 previous-day range channel; the window length needs no setting here (the GRU
 takes any number of bars). `use_macro=false` / `use_news=false` (game v3) build the policy without the macro
@@ -86,7 +91,7 @@ function ActorCriticPolicy(; embed_dim::Int=64, macro_embed_dim::Int=16,
                             stock_features::Int=N_HOLDING_FEATURES,
                             history_bars::Int=0,
                             portfolio_in_fusion::Bool=false, portfolio_scalars::Int=N_PORTFOLIO_SCALARS_V2,
-                            portfolio_to_critic::Bool=false)
+                            portfolio_to_critic::Bool=false, legality_head::Bool=false)
     seed !== nothing && Random.seed!(seed)
     n_portfolio = portfolio_in_fusion ? portfolio_scalars : (cash_token ? N_PORTFOLIO_SCALARS_V2 : N_PORTFOLIO_SCALARS)
     portfolio_in_fusion && (cash_token || use_macro) &&
@@ -114,7 +119,8 @@ function ActorCriticPolicy(; embed_dim::Int=64, macro_embed_dim::Int=16,
     cash_encoder = cash_token ? Dense(N_CASH_TOKEN_FEATURES => embed_dim, relu) : nothing
 
     return ActorCriticPolicy(hourly_encoder, fusion, macro_encoder, portfolio_encoder,
-                              attn, actor_head, critic_head, cash_encoder, global_width, history_bars)
+                              attn, actor_head, critic_head, cash_encoder, global_width, history_bars,
+                              legality_head ? Dense(embed_dim => N_BUY_BLOCKERS) : nothing)
 end
 
 """
@@ -134,6 +140,27 @@ Forward pass over a batch produced by `stack_observations`.
 function (m::ActorCriticPolicy)(hourly::AbstractArray{<:Real, 4}, news::AbstractArray{<:Real, 3},
                                  holding::AbstractArray{<:Real, 3}, macro_ctx::AbstractArray{<:Real, 3},
                                  portfolio::AbstractMatrix{<:Real})
+    action_logits, buy_weight_logit, value, _ = _forward(m, hourly, news, holding, macro_ctx, portfolio)
+    return action_logits, buy_weight_logit, value
+end
+
+"""`(N_BUY_BLOCKERS, N, B)` logits of the auxiliary legality head (`nothing` if the policy has none),
+alongside the usual `(action_logits, buy_weight_logit, value)`: returns the 4-tuple
+`(action_logits, buy_weight_logit, value, legality_logits)`. Sigmoid of a row is the predicted probability
+that the matching `buy_blockers` reason applies."""
+function legality_logits(m::ActorCriticPolicy, hourly::AbstractArray{<:Real, 4}, news::AbstractArray{<:Real, 3},
+                          holding::AbstractArray{<:Real, 3}, macro_ctx::AbstractArray{<:Real, 3},
+                          portfolio::AbstractMatrix{<:Real})
+    al, bw, v, stock_out = _forward(m, hourly, news, holding, macro_ctx, portfolio)
+    N, B = size(stock_out, 2), size(stock_out, 3)
+    leg = m.legality_head === nothing ? nothing :
+          reshape(m.legality_head(reshape(stock_out, size(stock_out, 1), N * B)), N_BUY_BLOCKERS, N, B)
+    return al, bw, v, leg
+end
+
+function _forward(m::ActorCriticPolicy, hourly::AbstractArray{<:Real, 4}, news::AbstractArray{<:Real, 3},
+                   holding::AbstractArray{<:Real, 3}, macro_ctx::AbstractArray{<:Real, 3},
+                   portfolio::AbstractMatrix{<:Real})
     bars, ch, N, B = size(hourly)
     embed_dim = size(m.actor_head.weight, 2)
 
@@ -202,7 +229,7 @@ function (m::ActorCriticPolicy)(hourly::AbstractArray{<:Real, 4}, news::Abstract
     critic_in = size(m.critic_head.layers[1].weight, 2) > embed_dim ? vcat(port_out, portfolio) : port_out
     value = vec(m.critic_head(critic_in))
 
-    return action_logits, buy_weight_logit, value
+    return action_logits, buy_weight_logit, value, stock_out
 end
 
 """`(use_news, stock_features)` of `policy`, read off `fusion`'s input width
@@ -211,7 +238,8 @@ distinct, so the width identifies the combination)."""
 function policy_stock_inputs(policy::ActorCriticPolicy)
     extra = size(policy.fusion.weight, 2) - policy.global_in_fusion -
             (policy.history_bars > 0 ? policy.history_bars : size(policy.actor_head.weight, 2))
-    for sf in (N_HOLDING_FEATURES, N_HOLDING_FEATURES + 1)
+    for sf in (N_HOLDING_FEATURES, N_HOLDING_FEATURES + 1,
+               N_HOLDING_FEATURES + N_LEGALITY_FEATURES, N_HOLDING_FEATURES + 1 + N_LEGALITY_FEATURES)
         extra == sf && return (false, sf)
         extra == sf + N_NEWS_FEATURES && return (true, sf)
     end
@@ -237,7 +265,8 @@ function save_policy(policy::ActorCriticPolicy, path::String;
     history_bars   = policy.history_bars
     global_in_fusion = policy.global_in_fusion
     critic_global    = size(policy.critic_head.layers[1].weight, 2) - embed_dim
-    BSON.@save path state embed_dim macro_embed_dim attn_heads critic_hidden meta cash_token use_macro use_news price_channels stock_features history_bars global_in_fusion critic_global
+    legality_head    = policy.legality_head !== nothing
+    BSON.@save path state embed_dim macro_embed_dim attn_heads critic_hidden meta cash_token use_macro use_news price_channels stock_features history_bars global_in_fusion critic_global legality_head
     @info "Policy saved → $path"
 end
 
@@ -256,6 +285,7 @@ function load_policy(path::String)
     critic_global    = get(d, :critic_global, 0)       # absent before the critic could see the portfolio directly
     global_in_fusion = get(d, :global_in_fusion, 0)   # absent before the portfolio scalars could be merged into fusion
     history_bars   = get(d, :history_bars, 0)      # absent in checkpoints written before the direct history encoder
+    legality_head  = get(d, :legality_head, false)   # absent before the auxiliary legality head
     stock_features = get(d, :stock_features, N_HOLDING_FEATURES)
     price_channels = get(d, :price_channels, N_PRICE_CHANNELS)   # absent in checkpoints written before game v3's single-channel window
     policy = ActorCriticPolicy(embed_dim=embed_dim, macro_embed_dim=macro_embed_dim,
@@ -264,12 +294,12 @@ function load_policy(path::String)
                                 price_channels=price_channels, stock_features=stock_features,
                                 history_bars=history_bars, portfolio_in_fusion=global_in_fusion > 0,
                                 portfolio_scalars=max(global_in_fusion, critic_global, 1),
-                                portfolio_to_critic=critic_global > 0)
+                                portfolio_to_critic=critic_global > 0, legality_head=legality_head)
     Flux.loadmodel!(policy, state)
     hyperparams = (embed_dim=embed_dim, macro_embed_dim=macro_embed_dim,
                    attn_heads=attn_heads, critic_hidden=critic_hidden, cash_token=cash_token,
                    use_macro=use_macro, use_news=use_news, price_channels=price_channels,
                    stock_features=stock_features, history_bars=history_bars,
-                   global_in_fusion=global_in_fusion, critic_global=critic_global)
+                   global_in_fusion=global_in_fusion, critic_global=critic_global, legality_head=legality_head)
     return policy, hyperparams, meta
 end

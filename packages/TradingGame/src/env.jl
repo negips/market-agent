@@ -142,10 +142,11 @@ docstring) — irrelevant to every other bar, so the default
 its own `rng` here instead so a given seed covers the whole rollout.
 """
 function step!(env::TradingGameEnv, raw_actions::JointAction=RawAction[];
-                rng::AbstractRNG=Random.default_rng())::StepResult
+                rng::AbstractRNG=Random.default_rng(),
+                timer::Union{Nothing, PhaseTimer}=nothing)::StepResult
     env.config === nothing && error("TradingGameEnv.step!: call reset! before step!")
     rules = env.config.rules
-    rules.same_bar_execution && return _step_same_bar!(env, raw_actions, rules; rng=rng)
+    rules.same_bar_execution && return _step_same_bar!(env, raw_actions, rules; rng=rng, timer=timer)
 
     _advance_clock!(env)
     date_idx = env.cache.date_index[env.current_date]
@@ -295,27 +296,35 @@ penalties. There is no forced exit: lots held `rules.max_hold_days`+ days only
 cost `rules.hold_penalty_coef` times their share of portfolio value per bar,
 the stock analogue of the cash penalty."""
 function _step_same_bar!(env::TradingGameEnv, raw_actions::JointAction, rules::GameRules;
-                          rng::AbstractRNG=Random.default_rng())::StepResult
+                          rng::AbstractRNG=Random.default_rng(),
+                          timer::Union{Nothing, PhaseTimer}=nothing)::StepResult
+    t0 = tic(timer)
     date_idx = env.cache.date_index[env.current_date]
     n_settled = _settle_reserved_cash!(env.portfolio, date_idx)
+    t0 = toc!(timer, "env_step.settle", t0)
 
     n_executed = 0
     events = TradeEvent[]
     illegal = Ref(0.0)
     value_at_decision = rules.terminal_reward ? portfolio_value(env) : 0.0   # what "1% of portfolio value" is taken of
+    t0 = toc!(timer, "env_step.value_at_decision", t0)
     if is_decision_bar(env)
         resolved = resolve_actions(env, raw_actions, date_idx; rng=rng,
                                     penalty=illegal, illegal_cost=rules.illegal_penalty_coef)
+        t0 = toc!(timer, "env_step.resolve_actions", t0)
         events = _apply_actions!(env, resolved, date_idx)
         n_executed = length(resolved)
+        t0 = toc!(timer, "env_step.apply_actions", t0)
     end
 
     _advance_clock!(env)
     new_date_idx = env.cache.date_index[env.current_date]
     n_settled += _settle_reserved_cash!(env.portfolio, new_date_idx)
+    t0 = toc!(timer, "env_step.advance_clock", t0)
 
     breakdown = portfolio_breakdown(env)
     value = breakdown.value
+    t0 = toc!(timer, "env_step.mark_value", t0)
     done  = env.current_hour_idx >= env.end_hour_idx
 
     reward = rules.terminal_reward ? 0.0 : _log_return_reward!(env, new_date_idx, value, done)
@@ -366,6 +375,7 @@ function _step_same_bar!(env::TradingGameEnv, raw_actions::JointAction, rules::G
         "actions_executed"      => n_executed,
         "trades"                => events,
     )
+    toc!(timer, "env_step.reward_info", t0)
     return StepResult(reward, done, info)
 end
 

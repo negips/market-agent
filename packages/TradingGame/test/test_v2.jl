@@ -159,4 +159,28 @@ buy_a(env) = [RawAction(env.cache.sym_index["AAA"], BUY, 1.0)]
                              rng=MersenneTwister(2))
         @test isfinite(stats["loss"])
     end
+
+    @testset "collect_rollout reports env-step phases and a run summary under same-bar rules" begin
+        cache = make_test_cache(n_days=30)
+        env = TradingGameEnv(cache)
+        cfg = EpisodeConfig(initial_cash=100_000.0, start_date=cache.dates[1], end_date=cache.dates[end],
+                             candidate_universe=cache.companies, rules=rules_v2())
+        policy = ActorCriticPolicy(embed_dim=8, macro_embed_dim=4, attn_heads=2, critic_hidden=[8], cash_token=true)
+        timer, summary = PhaseTimer(), Ref{Any}(nothing)
+        buffer = collect_rollout(env, policy, cfg; rng=MersenneTwister(1), timer=timer, summary=summary)
+        for name in ("setup.reset", "observe", "forward", "env_step", "env_step.resolve_actions", "env_step.apply_actions",
+                     "env_step.mark_value", "softmax_sample", "store")
+            @test haskey(timer.secs, name)
+        end
+        @test timer.counts["forward"] == length(buffer)
+        @test timer.secs["env_step"] >= sum(v for (k, v) in timer.secs if startswith(k, "env_step.")) * 0.999
+        sm = summary[]
+        @test sm.n_bars == length(buffer)
+        @test sm.initial_value == 100_000.0
+        @test sm.actions.hold + sm.actions.sell + sm.actions.buy == length(buffer) * length(env.candidate_order)
+        @test sm.final_value ≈ portfolio_value(env) atol=0.01
+        @test 0 <= sm.max_drawdown <= 1 && sm.min_value <= sm.peak_value
+        @test sm.fees_paid >= 0 && sm.n_buys >= 0
+        @test sm.final_cash + sm.final_reserved + sm.final_stocks ≈ sm.final_value atol=0.05
+    end
 end

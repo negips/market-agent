@@ -10,10 +10,11 @@ with no backend (`serve.sh` is a plain file server), so "live" here means
 it on a timer" — the same pattern every other page on this site already uses
 for `nse_companies_latest.json` etc.
 
-`save_val_run!` is the one exception to the overwrite pattern: it *appends*
-one JSON line per completed held-out validation episode to a separate file
-(`val_runs.jsonl`), so the website can plot every validation run's curve
-across the whole training process, not just whichever one is currently live.
+`save_val_run!` is the one exception to the overwrite pattern: it writes one
+file per completed held-out validation episode (`val_runs/iter_NNNNN.json`,
+never overwritten) plus a small `val_runs/index.json` of per-run summaries, so
+the website can plot every validation run's curve across the whole training
+process from the index alone and fetch a run's full trades only when asked.
 """
 
 using Dates, JSON3
@@ -262,36 +263,94 @@ function _value_curve_json(tracker::LiveTracker)
             for i in 1:tracker.curve_len]
 end
 
-"""Append one completed held-out validation episode's full portfolio-value
-curve, trade list, and final holdings snapshot to `path` as a single JSON
-line. Call once right after a val-phase `collect_rollout` finishes
-(`train.jl`), before the next `start_episode!` resets `tracker`'s curve/trade
-buffers for the following phase — `tracker` at that point holds exactly this
-val episode's data (every `start_episode!` call clears both, so there's no
-cross-episode leakage to worry about). `env` must likewise still be at the
-val rollout's terminal state (true right after `collect_rollout` returns,
-before anything else touches it) — `final_holdings` is
-`_holdings_snapshot_unified(env)` taken at that moment: one row per symbol
-(not per lot, unlike `live_status.json`'s `"holdings"` field), since a full
-episode's worth of buying/adding-to-position activity would otherwise mean
-the same symbol repeats at several different lot prices in a one-off
-end-of-episode summary. Both shapes share enough fields that
-`tradinggamelive.html` still renders them with one common row template.
+"""Number of points kept per run's curve in `val_runs/index.json`. The full
+curve (one point per decision bar, thousands) lives in the run's own file."""
+const VAL_INDEX_CURVE_POINTS = 80
 
-Unlike `live_status.json` (overwritten on every write — it only ever shows
-the *current* episode), this file is pure append: every held-out run this
-training process has ever completed accumulates here, oldest first, never
-overwritten or trimmed — so `tradinggamelive.html` can plot each iteration's
-held-out portfolio-value curve as its own line and compare them across the
-whole run, not just see the latest. No-op if `path` is empty, matching
-`make_live_callback`'s disabled-live convention (and note: if live tracking
-is disabled, `tracker`'s curve/trade buffers were never populated per-bar
-either — see `make_live_callback` — so there would be nothing to save here
-regardless)."""
-function save_val_run!(tracker::LiveTracker, path::String, env::TradingGameEnv;
+"""Indices of at most `k` evenly spaced elements of `1:n`, always including `1`
+and `n`."""
+function _downsample_indices(n::Integer, k::Integer)
+    n <= k && return collect(1:n)
+    return unique(round.(Int, range(1, n; length=k)))
+end
+
+"""Name of run `iteration`'s full file inside a `val_runs/` directory."""
+val_run_filename(iteration::Integer) = "iter_" * lpad(string(iteration), 5, '0') * ".json"
+
+"""Summary row of one validation run for `val_runs/index.json`: scalars plus a
+downsampled value curve as parallel arrays (`t`, `v` = portfolio value, `s` =
+stocks value, `c` = cash incl. reserved; values rounded to whole rupees).
+`curve` is the full curve, a vector of `(t, value, stocks_value, cash_value)`."""
+function _val_index_row(iteration, val_return, final_value, started_at, curve, n_trades::Integer)
+    keep = _downsample_indices(length(curve), VAL_INDEX_CURVE_POINTS)
+    return (
+        iteration   = iteration,
+        val_return  = val_return,
+        final_value = final_value,
+        started_at  = started_at,
+        n_bars      = length(curve),
+        n_trades    = n_trades,
+        curve       = (t = [curve[i].t for i in keep],
+                       v = [round(Int, curve[i].value) for i in keep],
+                       s = [round(Int, curve[i].stocks_value) for i in keep],
+                       c = [round(Int, curve[i].cash_value) for i in keep]),
+    )
+end
+
+"""Write one run to `dir` (created if missing): the full run as
+`iter_NNNNN.json` and its summary row into `index.json` (`{"runs": [...]}`,
+oldest first; a row with the same iteration is replaced). `run` is a
+NamedTuple with `iteration`, `val_return`, `final_value`, `started_at`,
+`value_curve`, `trades` and optionally `final_holdings`. Both files are written
+atomically, so the page never reads a half-written one."""
+function _write_val_run_files(dir::String, run)
+    mkpath(dir)
+    _write_atomic(joinpath(dir, val_run_filename(run.iteration)), run)
+    index_path = joinpath(dir, "index.json")
+    rows = Any[]
+    if isfile(index_path)
+        old = JSON3.read(read(index_path, String))
+        append!(rows, [r for r in old.runs if r.iteration != run.iteration])
+    end
+    push!(rows, _val_index_row(run.iteration, run.val_return, run.final_value,
+                                run.started_at, run.value_curve, length(run.trades)))
+    sort!(rows; by = r -> r.iteration)
+    _write_atomic(index_path, (runs = rows,))
+    return nothing
+end
+
+"""Save one completed held-out validation episode — its full portfolio-value
+curve, trade list and final holdings snapshot — as `iter_NNNNN.json` in the
+directory `dir` (`val_runs/`), and add its summary to `dir/index.json`. Call
+once right after a val-phase `collect_rollout` finishes (`train.jl`), before
+the next `start_episode!` resets `tracker`'s curve/trade buffers for the
+following phase — `tracker` at that point holds exactly this val episode's data
+(every `start_episode!` call clears both, so there's no cross-episode leakage
+to worry about). `env` must likewise still be at the val rollout's terminal
+state (true right after `collect_rollout` returns, before anything else
+touches it) — `final_holdings` is `_holdings_snapshot_unified(env)` taken at
+that moment: one row per symbol (not per lot, unlike `live_status.json`'s
+`"holdings"` field), since a full episode's worth of buying/adding-to-position
+activity would otherwise mean the same symbol repeats at several different lot
+prices in a one-off end-of-episode summary. Both shapes share enough fields
+that `tradinggamelive.html` still renders them with one common row template.
+
+Unlike `live_status.json` (overwritten on every write — it only ever shows the
+*current* episode), `dir` only accumulates: every held-out run this training
+process has ever completed stays, oldest first, never trimmed — so
+`tradinggamelive.html` can plot each iteration's held-out portfolio-value curve
+as its own line and compare them across the whole run. The page loads only
+`index.json` (a few hundred KB however many runs exist) and fetches a run's
+file when it needs its trades or holdings; before this split every run was one
+line of a `val_runs.jsonl` the page had to download whole (1.5 GB after ~490
+runs). No-op if `dir` is empty, matching `make_live_callback`'s disabled-live
+convention (and note: if live tracking is disabled, `tracker`'s curve/trade
+buffers were never populated per-bar either — see `make_live_callback` — so
+there would be nothing to save here regardless)."""
+function save_val_run!(tracker::LiveTracker, dir::String, env::TradingGameEnv;
                         iteration::Int, val_return::Real, val_value::Real)
-    isempty(path) && return nothing
-    row = (
+    isempty(dir) && return nothing
+    run = (
         iteration      = iteration,
         val_return     = val_return,
         final_value    = val_value,
@@ -300,11 +359,39 @@ function save_val_run!(tracker::LiveTracker, path::String, env::TradingGameEnv;
         trades         = tracker.trades,
         final_holdings = _holdings_snapshot_unified(env),
     )
-    open(path, "a") do io
-        JSON3.write(io, row)
-        println(io)
-    end
+    _write_val_run_files(dir, run)
     return nothing
+end
+
+"""Convert an old `val_runs.jsonl` (one run per line) into the `val_runs/`
+layout `save_val_run!` writes, streaming line by line so the 1.5 GB file never
+sits in memory. Existing run files in `dir` are overwritten; the source is left
+untouched. Returns the number of runs converted.
+
+# Arguments
+- `src`: path to `val_runs.jsonl`.
+- `dir`: output directory (`val_runs/`).
+
+# Example
+```julia
+split_val_runs_jsonl("website/data/trading_game/val_runs.jsonl",
+                     "website/data/trading_game/val_runs")
+```"""
+function split_val_runs_jsonl(src::String, dir::String)
+    mkpath(dir)
+    rows = Any[]
+    open(src) do io
+        for line in eachline(io)
+            isempty(strip(line)) && continue
+            run = JSON3.read(line)
+            _write_atomic(joinpath(dir, val_run_filename(run.iteration)), run)
+            push!(rows, _val_index_row(run.iteration, run.val_return, run.final_value,
+                                        run.started_at, run.value_curve, length(run.trades)))
+        end
+    end
+    sort!(rows; by = r -> r.iteration)
+    _write_atomic(joinpath(dir, "index.json"), (runs = rows,))
+    return length(rows)
 end
 
 function _write_live_status(tracker::LiveTracker, env::TradingGameEnv)

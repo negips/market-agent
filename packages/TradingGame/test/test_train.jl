@@ -107,7 +107,7 @@ end
         @test isfile(ckpt)
         loaded, hyperparams, meta = load_policy(ckpt)
         @test meta["checkpoint"] == true
-        @test hyperparams == (embed_dim=8, macro_embed_dim=4, attn_heads=2, critic_hidden=[8], cash_token=false, use_macro=true, use_news=true, price_channels=2, stock_features=3, history_bars=0, global_in_fusion=0, critic_global=0)
+        @test hyperparams == (embed_dim=8, macro_embed_dim=4, attn_heads=2, critic_hidden=[8], cash_token=false, use_macro=true, use_news=true, price_channels=2, stock_features=3, history_bars=0, global_in_fusion=0, critic_global=0, legality_head=false)
         # train_policy! always reloads best-checkpointed weights before returning,
         # so the returned `policy` and the on-disk checkpoint must match exactly.
         obs = assemble_observation(env)
@@ -166,6 +166,40 @@ end
                                      rng=MersenneTwister(9))
         @test length(log["val_return"]) == 3   # iterations 2, 4, 6
         @test log["best_return"] in log["val_return"]   # checkpoint metric was the held-out return
+    end
+
+    @testset "timing.json and val_summary.json: one row per iteration / validation run" begin
+        env, train_config, policy = _train_setup(n_days=40)
+        val_config = EpisodeConfig(initial_cash=100_000.0, start_date=env.cache.dates[21],
+                                    end_date=env.cache.dates[end], candidate_universe=env.cache.companies)
+        tpath = tempname() * ".json"
+        spath = tempname() * ".json"
+        policy, log = train_policy!(policy, env, train_config; val_config=val_config,
+                                     iterations=4, k_epochs=1, minibatch_size=16, eval_every=2,
+                                     timing_path=tpath, val_summary_path=spath, rng=MersenneTwister(13))
+
+        timing = JSON3.read(read(tpath, String)).runs
+        @test [r.iteration for r in timing] == [1, 2, 3, 4]
+        names(rows) = [r.name for r in rows]
+        @test isempty(timing[1].val)                       # no validation on iteration 1
+        @test "observe" in names(timing[2].val) && "forward" in names(timing[2].val) && "env_step" in names(timing[2].val)
+        @test "observe.history" in names(timing[2].val) && "observe.holding" in names(timing[2].val)
+        @test "forward_backward" in names(timing[1].update) && "optimizer" in names(timing[1].update)
+        @test "train_rollout" in names(timing[1].iteration_phases) && "val_rollout" in names(timing[2].iteration_phases)
+        @test all(r -> r.secs >= 0, timing[2].val)
+        top = sum(r.secs for r in timing[2].val if !occursin('.', r.name))
+        @test top <= timing[2].iter_secs
+
+        summ = JSON3.read(read(spath, String)).runs
+        @test [r.iteration for r in summ] == [2, 4]
+        r = summ[1]
+        @test r.final_value > 0 && r.initial_value == 100_000.0
+        @test r.actions.hold + r.actions.sell + r.actions.buy == r.n_bars * length(env.candidate_order)
+        @test 0 <= r.max_drawdown <= 1
+        @test r.peak_value >= r.final_value >= r.min_value || r.peak_value >= r.min_value
+        @test r.penalty_rupees >= 0 && r.n_penalty_bars >= 0
+        @test r.rollout_secs > 0 && r.ms_per_bar > 0
+        @test r.val_return == log["val_return"][1] || isapprox(r.val_return, log["val_return"][1]; atol=1e-5)
     end
 
     @testset "iteration_offset continues numbering across a simulated --resume" begin

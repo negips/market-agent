@@ -511,7 +511,7 @@
           <div>
             <div class="flow-name">Build inference cache</div>
             <div class="flow-cmd">julia --project=packages/StockSwingPredictor scripts/build_cache.jl</div>
-            <div class="flow-sub">Reads all OHLCV CSVs once → aligned daily + hourly matrices → inference_cache.bson (~42 MB). Loaded into memory at session start for O(1) prediction slices.</div>
+            <div class="flow-sub">Reads all OHLCV CSVs once → aligned daily + hourly matrices → inference_cache.bson (~42 MB). Loaded into memory at session start for O(1) prediction slices. For the Trading Game (v3) build the BSE 15-minute variant instead: <code>--exchange bse --granularity 15min --min-mcap 500</code> adds a 15-minute clock and an hourly history axis (see <code>TradingSetup.md</code>); note it overwrites the cache the swing predictor reads.</div>
           </div>
         </div>
         <div class="flow-item">

@@ -135,6 +135,7 @@ Base.@kwdef struct GameRules
     reward_window_days  :: Int     = 0     # terminal reward only: trading days per reward window; 0 = a single window, the whole episode
     use_history         :: Bool    = false # true: price window from the cache's hourly history axis + the live 15-minute close as a separate snapshot input
     premask             :: Bool    = false # true: impossible moves (a sell with nothing sellable) are masked out of the policy's distribution before sampling
+    legality_inputs     :: Bool    = false # true: per-stock legality features (cooldown, affordability, cap headroom, sellable) + free-slots scalar join the observation, and the policy has an auxiliary legality head
     illegal_penalty_coef :: Float64 = 0.0  # reward charged, at once, per illegal move (a fraction of portfolio value); see `resolve_actions`
 end
 
@@ -195,7 +196,7 @@ rules_v3(; cash_penalty::Real=0.0, hold_penalty::Real=0.0,
               use_macro=false, use_news=false, premask=true,
               use_volatility=false, obs_window_days=OBS_WINDOW_DAYS_V3, use_history=true,
               cap_features=true, portfolio_in_fusion=true, portfolio_to_critic=true,
-              illegal_penalty_coef=Float64(illegal_penalty), history_encoder=history_encoder,
+              illegal_penalty_coef=Float64(illegal_penalty), history_encoder=history_encoder, legality_inputs=true,
               terminal_reward=terminal_reward, reward_window_days=reward_window_days) :
     error("rules_v3: history_encoder must be :gru or :direct, got :$history_encoder")
 
@@ -220,13 +221,17 @@ obs_window_bars(rules::GameRules, cache) =
 """Per-stock state features in the observation's `holding` tensor under `rules`:
 held flag, quantity-weighted unrealised P&L, remaining hold budget, plus — with
 `use_history` — the stock's instantaneous price (the current 15-minute close,
-normalised by the history window's anchor). The tensor keeps its `holding` name."""
-n_stock_features(rules::GameRules) = N_HOLDING_FEATURES + (rules.use_history ? 1 : 0)
+normalised by the history window's anchor) and — with `legality_inputs` — four legality
+features (rebuy cooldown left, affordability, position-cap headroom, sellable flag). The tensor
+keeps its `holding` name."""
+n_stock_features(rules::GameRules) =
+    N_HOLDING_FEATURES + (rules.use_history ? 1 : 0) + (rules.legality_inputs ? N_LEGALITY_FEATURES : 0)
 
 """Width of the observation's portfolio vector under `rules` (see
 `N_PORTFOLIO_SCALARS`/`N_PORTFOLIO_SCALARS_V2`)."""
 n_portfolio_scalars(rules::GameRules) =
-    (rules.cash_token || rules.cap_features) ? N_PORTFOLIO_SCALARS_V2 : N_PORTFOLIO_SCALARS
+    ((rules.cash_token || rules.cap_features) ? N_PORTFOLIO_SCALARS_V2 : N_PORTFOLIO_SCALARS) +
+    (rules.legality_inputs ? N_LEGALITY_PORTFOLIO : 0)
 
 """
 Configuration for one simulated episode.

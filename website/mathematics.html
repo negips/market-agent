@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mathematics — market-agent</title>
+  <link rel="stylesheet" href="assets/style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+  <style>
+    .math-wrap { max-width: 1040px }
+    .m-intro { font-size: 13px; color: var(--text-dim); line-height: 1.75; margin-bottom: 22px }
+    .m-card { background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: var(--radius); padding: 14px 18px; margin-bottom: 16px }
+    .m-card.stock { border-left-color: var(--green) }
+    .m-card.time  { border-left-color: var(--accent) }
+    .m-card.head  { border-left-color: var(--yellow) }
+    .m-card.in    { border-left-color: var(--muted) }
+    .m-card h3 { margin: 0 0 4px; font: 600 14px var(--mono); color: var(--text) }
+    .m-card .what { font-size: 12.5px; color: var(--text-dim); line-height: 1.7; margin-bottom: 8px }
+    .m-card .shapes { font-size: 12px; color: var(--text-dim); line-height: 1.8; border-top: 1px solid var(--border); margin-top: 8px; padding-top: 8px }
+    .m-card .shapes b { color: var(--text); font-weight: 600 }
+    .m-card .katex-display { margin: .7em 0; overflow-x: auto; overflow-y: hidden }
+    .m-card h3 { cursor: pointer; user-select: none }
+    .m-card h3::before { content: '▾'; display: inline-block; width: 16px; color: var(--text-dim); transition: transform .12s }
+    .m-card.collapsed h3::before { transform: rotate(-90deg) }
+    .m-card.collapsed > :not(h3) { display: none }
+    .m-bar { display: flex; gap: 8px; margin-bottom: 14px }
+    .m-bar button { background: var(--surface); border: 1px solid var(--border); color: var(--text-dim); border-radius: 6px; padding: 4px 12px; font: 12px var(--mono); cursor: pointer }
+    .m-bar button:hover { color: var(--text); background: var(--surface2) }
+    .m-toc { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 22px }
+    .m-toc a { font: 11.5px var(--mono); color: var(--text-dim); border: 1px solid var(--border); border-radius: 5px; padding: 3px 9px; text-decoration: none }
+    .m-toc a:hover { color: var(--text); background: var(--surface2) }
+    .m-card .vis { margin: 4px 0 6px; padding: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; overflow-x: auto }
+    table.m-dims { border-collapse: collapse; font-size: 12px; margin-bottom: 24px }
+    table.m-dims th, table.m-dims td { padding: 5px 14px 5px 0; text-align: left; border-bottom: 1px solid var(--border) }
+    table.m-dims th { color: var(--text-dim); font-weight: 600 }
+    table.m-dims td:first-child { font-family: var(--mono) }
+  </style>
+</head>
+<body>
+<script src="assets/nav.js"></script>
+<script src="assets/fc_visuals.js"></script>
+
+<div class="main">
+  <div class="page-header">
+    <div class="page-title">Mathematics</div>
+    <div class="page-subtitle">Forecaster v4 · every layer in matrix form, in the order the data flows</div>
+  </div>
+
+  <div class="page-content"><div class="math-wrap">
+
+    <div class="m-intro">
+      One training window holds <b>M</b> consecutive minutes of <b>N</b> stocks. Every layer below is written for one window (the batch
+      dimension just repeats it). Vectors are columns, a bold-free capital letter is a matrix whose <em>rows are tokens</em>, and
+      <span data-tex="\mathbf 1_n"></span> is a column of <em>n</em> ones, so <span data-tex="\mathbf 1_n b^\top"></span> adds the bias <em>b</em> to every row.
+      The layer list and parameter counts are on the <a href="architecture.html">Architecture</a> page (Forecaster_v4 tab).
+    </div>
+
+    <div class="m-card in" style="border-left-color:var(--accent)" id="overview"><h3>Overview</h3><div class="vis" id="ov-flow"></div><div class="vis" id="ov-axes"></div></div>
+    <div class="m-bar"><button onclick="fold(true)">Collapse all</button><button onclick="fold(false)">Expand all</button></div>
+    <div class="m-toc" id="toc"></div>
+
+    <table class="m-dims">
+      <thead><tr><th>Symbol</th><th>Meaning</th><th>Default</th></tr></thead>
+      <tbody>
+        <tr><td data-tex="N"></td><td>stocks in the window (any number, any companies)</td><td>40</td></tr>
+        <tr><td data-tex="M"></td><td>minutes in the window</td><td>96</td></tr>
+        <tr><td data-tex="d,\ H,\ d_h=d/H"></td><td>model width, heads, head size</td><td>64, 4, 16</td></tr>
+        <tr><td data-tex="L"></td><td>time blocks</td><td>4</td></tr>
+        <tr><td data-tex="K"></td><td>time features per minute</td><td>5</td></tr>
+        <tr><td data-tex="F=1+K+2"></td><td>input features per stock token</td><td>8</td></tr>
+      </tbody>
+    </table>
+
+    <div id="cards"></div>
+
+  </div></div>
+</div>
+
+<script>
+const CARDS = [
+{ id: 'in', vis: 'in', cls: 'in', title: '0 · Inputs and preprocessing',
+  what: 'Close prices become percent log-returns; the clock becomes K smooth features; each stock gets two summary numbers so that a stock with no fixed slot can still be told apart.',
+  tex: String.raw`
+r_{t,i} = \operatorname{clip}\!\Big(100\,\ln\frac{c_{t,i}}{c_{t-1,i}},\ \pm r_{\max}\Big)
+\qquad
+\tau_t=\Big[\tfrac{m_t}{375},\ \sin\tfrac{2\pi w_t}{5},\ \cos\tfrac{2\pi w_t}{5},\ \ln(1+g_t),\ \mathbb 1[\text{first bar}]\Big]^{\top}
+$$
+$$
+c_i=\Big[\tfrac1{375}\sum_{t=s-375}^{s-1}|r_{t,i}|,\ \ \tfrac1{375}\sum_{t=s-375}^{s-1}\mathbb 1[\text{traded}_{t,i}]\Big]^{\top}`,
+  shapes: '<b>R</b> ∈ ℝ<sup>M×N</sup> returns · <b>T</b> ∈ ℝ<sup>M×K</sup> time features (m = minute of day, w = weekday, g = days since previous bar) · <b>C</b> ∈ ℝ<sup>N×2</sup> per-stock context. A minute with no trade keeps the previous close, so its return is 0 and it is flagged "not traded".' },
+
+{ id: 'embed', vis: 'embed', cls: 'stock', title: '1 · Stock embedding',
+  what: 'Each stock at each minute becomes one token. The stock\'s own return, the clock and its context are concatenated and projected by one matrix shared by every stock and every minute.',
+  tex: String.raw`
+X_t=\big[\,r_t\ \ \ \mathbf 1_N\tau_t^{\top}\ \ \ C\,\big]\in\mathbb R^{N\times F}
+$$
+$$
+E_t \;=\; X_t\,W_e^{\top}+\mathbf 1_N\,b_e^{\top}\ \in\mathbb R^{N\times d},\qquad t=1,\dots,M`,
+  shapes: '<b>W<sub>e</sub></b> ∈ ℝ<sup>d×F</sup>, <b>b<sub>e</sub></b> ∈ ℝ<sup>d</sup>. Output <b>E</b> ∈ ℝ<sup>M×N×d</sup>. Parameters: F·d + d.' },
+
+{ id: 'ln', vis: 'mha', cls: 'in', title: 'Building block · LayerNorm, attention, GELU',
+  what: 'Used by layers 2 and 4. LayerNorm normalises each token (each row) over its d features. Multi-head attention projects the rows to queries, keys and values, splits them into H heads of size d<sub>h</sub>, and mixes the value rows with softmax weights.',
+  tex: String.raw`
+\operatorname{LN}(A)=\Big(A-\mu\mathbf 1_d^{\top}\Big)\oslash\sqrt{\sigma^{2}\mathbf 1_d^{\top}+\varepsilon}\ \odot\ \mathbf 1\gamma^{\top}+\mathbf 1\beta^{\top},\quad \mu=\tfrac1d A\mathbf 1_d,\ \ \sigma^2=\tfrac1d (A-\mu\mathbf 1^{\top})^{\odot2}\mathbf 1_d
+$$
+$$
+Q=AW_Q^{\top}+\mathbf 1b_Q^{\top},\ \ K=AW_K^{\top}+\mathbf 1b_K^{\top},\ \ V=AW_V^{\top}+\mathbf 1b_V^{\top}\qquad(\text{each }n\times d)
+$$
+$$
+O_h=\operatorname{softmax}\!\Big(\tfrac{Q_hK_h^{\top}}{\sqrt{d_h}}+B\Big)V_h,\quad h=1..H,\qquad
+\operatorname{MHA}(A)=\big[O_1\ \cdots\ O_H\big]\,W_O^{\top}+\mathbf 1b_O^{\top}
+$$
+$$
+\operatorname{GELU}(x)=\tfrac12x\Big(1+\tanh\!\big(\sqrt{2/\pi}\,(x+0.044715\,x^{3})\big)\Big)`,
+  shapes: '<b>A</b> ∈ ℝ<sup>n×d</sup> (n tokens); <b>Q<sub>h</sub>, K<sub>h</sub>, V<sub>h</sub></b> ∈ ℝ<sup>n×d<sub>h</sub></sup> are the h-th column blocks; each of <b>W<sub>Q</sub>, W<sub>K</sub>, W<sub>V</sub>, W<sub>O</sub></b> ∈ ℝ<sup>d×d</sup>; softmax acts on each row. <b>B</b> ∈ ℝ<sup>n×n</sup> is the mask: <b>0</b> in layer 2, causal in layer 4 (see there). LN parameters: 2d. MHA parameters: 4(d² + d).' },
+
+{ id: 'mix', vis: 'mix', cls: 'stock', title: '2 · Stock mixing (attention over the N stocks)',
+  what: 'Within one minute the N stock tokens look at each other, so a stock\'s token can use what the rest of the market did. There is no positional code, so the order of the stocks does not matter. The mean of the mixed tokens is the market summary of that minute.',
+  tex: String.raw`
+E'_t \;=\; E_t+\operatorname{MHA}\big(\operatorname{LN}(E_t)\big)\qquad (B=0,\ n=N)
+$$
+$$
+s_t \;=\; \tfrac1N\,E_t'^{\top}\mathbf 1_N\ \in\mathbb R^{d},\qquad S=\big[s_1\ \cdots\ s_M\big]^{\top}\in\mathbb R^{M\times d}`,
+  shapes: 'Applied independently for each t, so M attention problems of size N×N, i.e. M·H·N² score entries. Output <b>E′</b> ∈ ℝ<sup>M×N×d</sup>, <b>S</b> ∈ ℝ<sup>M×d</sup>. Parameters: 2d + 4(d² + d).' },
+
+{ id: 'fuse', vis: 'fuse', cls: 'stock', title: '3 · Fuse the market summary and add position',
+  what: 'Every stock token receives its minute\'s market summary through one linear map, plus a learned vector for its position in the window.',
+  tex: String.raw`
+Z_{i}\;=\;E'_{\cdot,i}\;+\;S\,W_s^{\top}+\mathbf 1_M b_s^{\top}\;+\;P\ \in\mathbb R^{M\times d}\qquad\text{for each stock } i`,
+  shapes: '<b>E′<sub>·,i</sub></b> ∈ ℝ<sup>M×d</sup> is stock i\'s column of tokens over time; <b>W<sub>s</sub></b> ∈ ℝ<sup>d×d</sup>, <b>b<sub>s</sub></b> ∈ ℝ<sup>d</sup>, <b>P</b> ∈ ℝ<sup>M×d</sup> learned. The same S and P are added to every stock. Output <b>Z</b> ∈ ℝ<sup>N×M×d</sup>. Parameters: d² + d + M·d.' },
+
+{ id: 'time', vis: 'time', cls: 'time', title: '4 · Time block × L (causal attention over the M minutes)',
+  what: 'For one stock, the M tokens form a sequence. Minute t may only look at minutes up to t, enforced by the mask. A feed-forward network then transforms each token on its own.',
+  tex: String.raw`
+B_{ts}=\begin{cases}0 & s\le t\\ -\infty & s>t\end{cases}\qquad(\text{lower-triangular, } n=M)
+$$
+$$
+Z\ \leftarrow\ Z+\operatorname{MHA}\big(\operatorname{LN}(Z)\big)
+$$
+$$
+Z\ \leftarrow\ Z+\Big(\operatorname{GELU}\big(\operatorname{LN}(Z)\,W_1^{\top}+\mathbf 1b_1^{\top}\big)\Big)W_2^{\top}+\mathbf 1b_2^{\top}`,
+  shapes: '<b>Z</b> ∈ ℝ<sup>M×d</sup> per stock (N independent sequences with shared weights), <b>W<sub>1</sub></b> ∈ ℝ<sup>4d×d</sup>, <b>W<sub>2</sub></b> ∈ ℝ<sup>d×4d</sup>. Score entries per block: N·H·M². Each of the L blocks has its own weights. Parameters per block: 2·2d + 4(d²+d) + (4d²+4d) + (4d²+d). Dropout (training only) multiplies each added term by a random 0/1 mask scaled by 1/(1−p).' },
+
+{ id: 'final', cls: 'time', title: '5 · Final LayerNorm',
+  what: 'One more normalisation of every token before the heads.',
+  tex: String.raw`H=\operatorname{LN}(Z)\in\mathbb R^{M\times d}\ \text{ per stock},\qquad H\in\mathbb R^{M\times N\times d}\ \text{overall}`,
+  shapes: 'Parameters: 2d.' },
+
+{ id: 'ret', vis: 'ret', cls: 'head', title: '6 · Return head (next-minute return: a location and a scale)',
+  what: 'One small linear map turns each stock token at minute t into two numbers: the expected return at minute t+1 (the location μ) and how uncertain that is (a log-scale). The same map is used for every stock. The return is then modelled as a Student-t distribution with that location and scale.',
+  tex: String.raw`\begin{pmatrix}\mu_{t,i}\\ s_{t,i}\end{pmatrix}=W_r\,h_{t,i}+b_r,\qquad \log\sigma_{t,i}=c+a\tanh s_{t,i},\qquad r_{t+1,i}\sim t_\nu\big(\mu_{t,i},\sigma_{t,i}\big)`,
+  shapes: '<b>W<sub>r</sub></b> ∈ ℝ<sup>2×d</sup>, <b>b<sub>r</sub></b> ∈ ℝ<sup>2</sup>; c = −0.5 and a = 2.5 keep σ between about 0.05 and 7 return units (one unit is the RMS return of the data). Row t of μ and σ describes row t+1 of <b>R</b>. Because of the causal mask, every row is a valid prediction, so one window gives M targets per stock. The mean of the distribution is μ, its standard deviation σ·√(ν/(ν−2)). Parameters: 2d + 2.' },
+
+{ id: 'time-head', vis: 'timehead', cls: 'head', title: '7 · Time head (next timestamp)',
+  what: 'Averages the tokens of all stocks at a minute and predicts the next bar\'s clock features: minute-of-day fraction, log day-gap and weekday.',
+  tex: String.raw`\bar h_t=\tfrac1N\sum_{i=1}^{N}H_{t,i}\in\mathbb R^{d},\qquad \hat\tau_{t+1}=\pi(\tau_t)+D\,(W_\tau\,\bar h_t+b_\tau)\in\mathbb R^{3},\qquad D=\mathrm{diag}\big(\tfrac1{375},1,1\big)`,
+  shapes: '<b>W<sub>τ</sub></b> ∈ ℝ<sup>3×d</sup>, <b>b<sub>τ</sub></b> ∈ ℝ<sup>3</sup>. Parameters: 3d + 3. <b>π(τ<sub>t</sub>)</b> is the calendar&#39;s own guess, not learned: one session minute on within a day, and at the last minute the next weekday with a gap of one day (three after a Friday). The head is zero-initialised and only learns the correction (holidays); its first output is in minutes, so a half-minute miss is an error of order one.' },
+
+{ id: 'loss', vis: 'loss', cls: 'head', title: 'Loss',
+  what: 'The return term is the negative log-likelihood of the next return under the predicted Student-t, counted only where the target stock actually traded (a forward-filled zero is not information). Each term is weighted by σ^(2β) held constant, so the model cannot lower the loss just by inflating σ where its mean is wrong. The timestamp error is a plain squared error, weighted down. A Gaussian likelihood or a Huber loss on μ alone can be selected instead.',
+  tex: String.raw`
+\ell_\nu(r;\mu,\sigma)=\log\sigma+\tfrac{\nu+1}{2}\log\!\Big(1+\tfrac1\nu\big(\tfrac{r-\mu}{\sigma}\big)^{2}\Big)+c_\nu,\qquad c_\nu=\log\Gamma\!\big(\tfrac\nu2\big)-\log\Gamma\!\big(\tfrac{\nu+1}2\big)+\tfrac12\log(\nu\pi)
+$$
+$$
+\mathcal L_{\text{ret}}=\frac{\sum_{t,i}m_{t+1,i}\,\operatorname{sg}\!\big(\sigma_{t,i}^{2\beta}\big)\,\ell_\nu\!\big(r_{t+1,i};\mu_{t,i},\sigma_{t,i}\big)}{\sum_{t,i}m_{t+1,i}},\qquad
+\mathcal L_{\tau}=\frac1{M}\sum_t\big\|\hat\tau_{t+1}-\tau_{t+1}\big\|^{2}
+$$
+$$
+\mathcal L=\mathcal L_{\text{ret}}+\lambda_\tau\,\mathcal L_\tau,\qquad \lambda_\tau=0.1`,
+  shapes: '<b>m<sub>t,i</sub></b> ∈ {0,1} is the "traded" flag, sg is stop-gradient, ν = 4 and β = 0.5 by default. Trained with AdamW, warm-up then cosine learning-rate decay, gradient-norm clip 1.0.' },
+
+{ id: 'eval', cls: 'in', title: 'How the result is scored',
+  what: 'One-minute returns are close to unpredictable, so the model is always compared with trivial predictors on the same masked targets. The location is scored like a point forecast; the scale is scored by likelihood and by calibration.',
+  tex: String.raw`
+\text{skill}=1-\frac{\text{MSE}(\mu,r_{t+1})}{\text{MSE}(0,\,r_{t+1})},\qquad
+\text{repeat-last: }\ \mu_{t,i}=r_{t,i},\qquad
+\text{hit rate}=\Pr\big[\operatorname{sign}\mu=\operatorname{sign}r_{t+1}\ \big|\ r_{t+1}\ne0,\ m=1\big]
+$$
+$$
+\text{NLL gain}=\overline{\ell_\nu(r;0,\sigma_{\text{base}})}-\overline{\ell_\nu(r;\mu,\sigma)},\qquad
+\text{coverage}_p=\Pr\Big[\tfrac{|r_{t+1}-\mu_t|}{\sigma_t}\le h_p\Big]\ \text{(should equal }p)`,
+  shapes: 'Skill 0 means no better than predicting zero; a hit rate of 50% means no better than a coin. The scale baselines are one constant σ per stock and a σ from the exponentially weighted recent squared returns; a positive NLL gain means the predicted σ carries information they lack. Coverage compares the share of targets inside the model own 68% and 95% intervals with 0.68 and 0.95. Results are reported overall, per stock and by minute-of-day slot (predicted against realised standard deviation).' },
+];
+
+function fold(all) { document.querySelectorAll('.m-card').forEach(c => c.classList.toggle('collapsed', all)); }
+document.addEventListener('click', e => {
+  const h = e.target.closest('.m-card h3');
+  if (h) h.parentElement.classList.toggle('collapsed');
+});
+document.getElementById('toc').addEventListener('click', e => {
+  const a = e.target.closest('a'); if (!a) return;
+  const c = document.querySelector(a.getAttribute('href')); if (c) c.classList.remove('collapsed');
+});
+function katexReady(fn) {
+  if (window.katex && window.renderMathInElement) return fn();
+  setTimeout(() => katexReady(fn), 50);
+}
+document.getElementById('ov-flow').innerHTML = fcVisHtml('flow');
+document.getElementById('ov-axes').innerHTML = fcVisHtml('axes');
+document.getElementById('toc').innerHTML = CARDS.map(c => `<a href="#${c.id}">${c.title.split(' · ')[0]}${c.title.includes(' · ') ? '' : ''}</a>`).join('');
+document.getElementById('cards').innerHTML = CARDS.map(c => `
+  <div class="m-card ${c.cls}" id="${c.id}">
+    <h3>${c.title}</h3>
+    <div class="what">${c.what}</div>
+    ${c.vis ? `<div class="vis">${fcVisHtml(c.vis)}</div>` : ''}
+    <div class="eq">$$${c.tex}$$</div>
+    <div class="shapes">${c.shapes}</div>
+  </div>`).join('');
+</script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/contrib/auto-render.min.js"></script>
+<script>
+window.addEventListener('load', () => {
+  document.querySelectorAll('[data-tex]').forEach(el => {
+    try { katex.render(el.dataset.tex, el, { throwOnError: false }); } catch (e) {}
+  });
+  renderMathInElement(document.body, {
+    delimiters: [{ left: '$$', right: '$$', display: true }],
+    throwOnError: false, errorColor: '#f76f6f',
+  });
+  window.__mathDone = true;
+});
+</script>
+</body>
+</html>

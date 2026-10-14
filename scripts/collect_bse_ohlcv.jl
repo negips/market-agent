@@ -3,7 +3,7 @@ collect_bse_ohlcv.jl
 
 Initial collection of BSE OHLCV bars for all BSE-listed EQ instruments.
 
-Fetches daily, hourly, 5-minute, 15-minute, and 1-minute OHLCV from Kite's
+Fetches daily, hourly, 15-minute, 5-minute, and 1-minute OHLCV from Kite's
 BSE instrument list, all from the same `--from` start date. The BSE symbol
 universe is derived directly from Kite's BSE instrument download (not from
 nse_companies_latest.json).
@@ -28,8 +28,8 @@ Usage:
   julia --project=packages/StockSwingPredictor scripts/collect_bse_ohlcv.jl
   julia --project=packages/StockSwingPredictor scripts/collect_bse_ohlcv.jl --daily-only
   julia --project=packages/StockSwingPredictor scripts/collect_bse_ohlcv.jl --hourly-only
-  julia --project=packages/StockSwingPredictor scripts/collect_bse_ohlcv.jl --5min-only
   julia --project=packages/StockSwingPredictor scripts/collect_bse_ohlcv.jl --15min-only
+  julia --project=packages/StockSwingPredictor scripts/collect_bse_ohlcv.jl --5min-only
   julia --project=packages/StockSwingPredictor scripts/collect_bse_ohlcv.jl --1min-only
   julia --project=packages/StockSwingPredictor scripts/collect_bse_ohlcv.jl --skip-1min
   julia --project=packages/StockSwingPredictor scripts/collect_bse_ohlcv.jl --symbol RELIANCE
@@ -85,7 +85,7 @@ function parse_args()
             println("""
 collect_bse_ohlcv.jl — initial BSE OHLCV collection
 
-Fetches daily, hourly, 5-min, 15-min, and 1-min bars — all from --from — for
+Fetches daily, hourly, 15-min, 5-min, and 1-min bars — all from --from — for
 every BSE-listed EQ instrument in Kite's instrument list. Each interval is
 chunked under Kite's per-request span cap (60/100/200/400/2000 days
 respectively), which is NOT a retention limit — --from 2010-01-04 works for
@@ -97,13 +97,13 @@ scope a trial run first.
 Flags:
   --daily-only        Only fetch daily bars
   --hourly-only       Only fetch hourly (60-min) bars
-  --5min-only         Only fetch 5-minute bars
   --15min-only        Only fetch 15-minute bars
+  --5min-only         Only fetch 5-minute bars
   --1min-only         Only fetch 1-minute bars
   --skip-daily        Skip the daily pass (overrides --daily-only if both given)
   --skip-hourly       Skip the hourly pass (overrides --hourly-only if both given)
-  --skip-5min         Skip the 5-minute pass (overrides --5min-only if both given)
   --skip-15min        Skip the 15-minute pass (overrides --15min-only if both given)
+  --skip-5min         Skip the 5-minute pass (overrides --5min-only if both given)
   --skip-1min         Skip the 1-minute pass (overrides --1min-only if both given)
   --symbol SYM        Fetch only this BSE tradingsymbol (e.g. --symbol RELIANCE)
   --refresh           Re-fetch all even if CSV already exists
@@ -191,18 +191,18 @@ function main()
                              args["from"], to_date; refresh=refresh, slog)
     end
 
-    # ── 5-minute ──────────────────────────────────────────────────────────────
-    if run_5min
-        logboth(slog, "── BSE 5-min: $(length(symbols)) symbols ($(args["from"]) → $to_date) ──")
-        collect_ohlcv_5min(symbols, token_map, session, bse_gran_dir("5min"),
-                           args["from"], to_date; refresh=refresh, slog)
-    end
-
     # ── 15-minute ─────────────────────────────────────────────────────────────
     if run_15min
         logboth(slog, "── BSE 15-min: $(length(symbols)) symbols ($(args["from"]) → $to_date) ──")
         collect_ohlcv_15min(symbols, token_map, session, bse_gran_dir("15min"),
                             args["from"], to_date; refresh=refresh, slog)
+    end
+
+    # ── 5-minute ──────────────────────────────────────────────────────────────
+    if run_5min
+        logboth(slog, "── BSE 5-min: $(length(symbols)) symbols ($(args["from"]) → $to_date) ──")
+        collect_ohlcv_5min(symbols, token_map, session, bse_gran_dir("5min"),
+                           args["from"], to_date; refresh=refresh, slog)
     end
 
     # ── 1-minute ──────────────────────────────────────────────────────────────

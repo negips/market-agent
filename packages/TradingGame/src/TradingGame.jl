@@ -15,7 +15,7 @@ not exceed `MAX_CASH_FRACTION` of portfolio value (rule 14, enforced as a
 reward penalty rather than a mask — see `MAX_CASH_FRACTION`'s docstring), a
 sold symbol can't be newly bought again for `REBUY_COOLDOWN_DAYS` trading days
 (rule 15), decisions happen at every bar of the cache (`decision_granularity`: 15-minute or hourly),
-reward is reported every `REWARD_INTERVAL_DAYS` trading days rather than
+reward (v1/v2) is reported every `REWARD_INTERVAL_DAYS` trading days rather than
 every bar, via either of two switchable algorithms (`TRAINING_REWARD_MODE`
 — `SPARSE_WINDOW` or `ROLLING_WINDOW`, see their docstring for the formula/
 tradeoffs of each; decision cadence is unaffected either way), and the
@@ -27,9 +27,7 @@ objective is to maximise the total value of the portfolio, evaluated every
 Everything above describes **v1**, the original game and the default. **v2**
 (`rules_v2`, selected per episode through `EpisodeConfig(...; rules=rules_v2())`
 or `--game-version 2` on `scripts/train_trading_policy.jl`) changes four things,
-all carried by a [`GameRules`](@ref); **v3** (`rules_v3`) is v2 played on BSE at a
-15-minute cadence with the macro context and news features switched off, and refuses any
-other cache:
+all carried by a [`GameRules`](@ref):
 
 - cash is a pseudo-stock — an extra attention token (cash/value, reserved/value,
   cap utilisation, days over the cap) with its own cap, `MAX_CASH_FRACTION`;
@@ -38,7 +36,28 @@ other cache:
   per-bar penalty (`hold_penalty`, default `0.0`);
 - the cash-ceiling penalty is a flag too (`cash_penalty`, default `0.0`).
 
-A v2 policy carries the cash token, so a checkpoint only loads under the version
+**v3** (`rules_v3`, `--game-version 3`) is v2's rules played on **BSE at a 15-minute
+cadence**, simplified, and refuses any other cache (`reset!` demands one built with
+`build_cache.jl --exchange bse --granularity 15min`):
+
+- price input is two sets — the newest 70 *completed* hourly bars as log-returns
+  (`LOG_RETURN_SCALE·ln(c_i/c_{i-1})`, from the cache's hourly history axis) and, per stock, the
+  current 15-minute close as a snapshot return; no macro, no news, no volatility channel;
+- the network is a single dense fusion layer (`Dense(70 + 8 + 7 → 64)`: history, per-stock state incl. four legality inputs,
+  the seven portfolio scalars repeated beside every stock) plus attention over the N stocks — no GRU
+  (`history_encoder = :gru` restores it), no cash or portfolio token — and the critic also reads the
+  portfolio scalars (29,129 parameters). Four per-stock legality inputs (rebuy cooldown left, affordability, position-cap
+  headroom, sellable — `legality_state`) and the free-slot count make the refusing rules visible to the network, and an
+  auxiliary legality head (`buy_blockers` labels, `LEGALITY_LOSS_COEF`) is trained to predict why a buy would be refused;
+- impossible sells (nothing sellable) are masked *before* the policy samples (`sellable_mask`,
+  `mask_action_logits`), so its probabilities are conditional; every other refused move is
+  charged `illegal_penalty ×` the portfolio value at the decision;
+- the reward is 0 on every bar and, at the end of each reward window (`reward_window_days`
+  trading days; 0 = the whole period), `(V_end − V_start)/V_start` minus the penalties accumulated
+  in the window in rupees over `V_start` (`terminal_reward`); PPO's discount follows
+  (`discount_factors`).
+
+A policy's layers depend on the version, so a checkpoint only loads under the version
 it was trained with.
 
 ## Stages
@@ -49,7 +68,9 @@ it was trained with.
 4. Full-scale training + historical backtest validation — in progress:
    candidate universe (`universe.jl`, `scripts/build_market_universe_snapshot.jl`) done;
    historical news-signal backfill (`scripts/backfill_news_signals.jl`,
-   `news_features.jl`) done.
+   `news_features.jl`) done (v1/v2 only); the BSE 15-minute pipeline and game v3 are built and
+   tested in short real-data runs, a full multi-year v3 run is the open step; per-step validation
+   diagnostics (`step_log.jl`, `scripts/val_steps_summary.jl`) done.
 5. Live execution — explicitly out of scope for this package; see
    `StockSwingPredictor.broker.jl` for the read-only Kite portfolio functions a
    future live-execution follow-up would extend (no order-placement function
@@ -70,8 +91,8 @@ reset!(env, EpisodeConfig(
 ))
 
 result = step!(env, heuristic_policy(env))   # or random_policy(env), or your own JointAction
-result.reward         # usually 0 — nonzero only once every REWARD_INTERVAL_DAYS trading days
-                       # (plus rule 14's small per-bar cash-ceiling penalty, every step)
+result.reward         # v1/v2: usually 0 — nonzero once every REWARD_INTERVAL_DAYS trading days
+                       # (plus rule 14's small per-bar cash-ceiling penalty); v3: 0 until a reward window ends
 portfolio_value(env)
 ```
 
@@ -98,7 +119,7 @@ train_config = EpisodeConfig(initial_cash=1_000_000.0, start_date=Date(2024,1,1)
 policy, log = train_policy!(policy, env, train_config;
                       iterations=100, checkpoint_path="policy.bson",
                       episode_log_path="episode_log.jsonl", stop_file="STOP")
-log["train_return"]   # Σ log-returns per training-rollout episode — should trend upward
+log["train_return"]   # Σ per-episode rewards (v1/v2: log-returns; v3: window gains minus penalties) — should trend upward
 ```
 
 See also: [StockSwingPredictor](@ref)
@@ -107,6 +128,8 @@ module TradingGame
 
 include("constants.jl")
 include("types.jl")
+include("timing.jl")
+include("run_summary.jl")
 include("action.jl")
 include("env.jl")
 include("baseline_policy.jl")
@@ -119,6 +142,11 @@ include("live.jl")
 include("train.jl")
 include("universe.jl")
 include("date_windows.jl")
+include("minute_cache.jl")
+include("forecast_dist.jl")
+include("forecaster.jl")
+include("forecast_train.jl")
+include("forecast_baseline.jl")
 include("display.jl")
 
 export
@@ -143,7 +171,8 @@ export
     CashConstraintViolation,
 
     # action
-    resolve_actions, sellable_mask, mask_action_logits, MASKED_LOGIT,
+    resolve_actions, sellable_mask, mask_action_logits, MASKED_LOGIT, legality_state, buy_blockers,
+    N_LEGALITY_FEATURES, N_LEGALITY_PORTFOLIO, N_BUY_BLOCKERS, LEGALITY_LOSS_COEF,
 
     # env
     reset!, step!, portfolio_value, portfolio_breakdown, is_decision_bar, decision_granularity, current_price,
@@ -165,10 +194,11 @@ export
     RolloutStep, collect_rollout, compute_gae, ppo_update!,
 
     # live
-    LiveTracker, start_episode!, make_live_callback, start_update!, make_update_callback, save_val_run!,
+    LiveTracker, start_episode!, make_live_callback, start_update!, make_update_callback, save_val_run!, split_val_runs_jsonl,
 
     # train
     train_policy!, save_policy_training_log,
+    PhaseTimer, tic, toc!, phase_rows, total_secs, save_timing!, save_val_summary!,
     StepLog, save_step_log, load_val_steps, step_summary, save_step_summary,
 
     # universe
@@ -177,6 +207,16 @@ export
     build_universes, save_universe_snapshot, load_universe_snapshot,
 
     # date_windows
-    resolve_date_windows, save_date_window, load_date_window
+    resolve_date_windows, save_date_window, load_date_window,
+
+    # v4 minute forecaster
+    MinuteCache, MinuteCacheError, build_forecaster_cache, build_minute_cache, save_minute_cache, load_minute_cache, GRANULARITIES, GranularitySpec, n_slot_buckets,
+    window_starts, make_batch, ForecastBatch, minute_time_features, first_bar_on_or_after, last_bar_on_or_before,
+    MINUTES_PER_DAY, N_FORECAST_FEATURES, N_TIME_FEATURES, N_CONTEXT_FEATURES, CONTEXT_BARS, MINUTE_RET_CLIP,
+    Forecaster, ForecasterConfig, ForecasterConfigError, forecaster_config, n_parameters, forecast_loss,
+    save_forecaster, load_forecaster, warm_start_forecaster, TIME_LOSS_COEF, forecast_dtype, convert_forecaster, FORECAST_DTYPES,
+    FORECAST_LOSSES, STUDENT_T_NU, NLL_BETA, LOGSIGMA_CENTER, LOGSIGMA_HALFRANGE, ForecastLossError, forecast_loss_kind, forecast_nll, central_halfwidth, unit_std, student_t_const,
+    EvalSet, evaluate_forecaster, score_forecasts, train_forecaster!, spread_starts, scheduled_lr,
+    ARBaseline, fit_ar_baseline, evaluate_ar_baseline, predict_ar, mean_abs_factor
 
 end

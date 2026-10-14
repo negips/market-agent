@@ -191,3 +191,74 @@ function mask_action_logits(logits::AbstractArray{<:Real}, sell_ok::AbstractArra
     z     = zero(extra)
     return logits .+ vcat(z, extra, z)                                  # row 2 = SELL
 end
+
+
+# ── Legality state (what the policy is shown, and what the auxiliary head predicts) ─────
+
+"""
+Everything that decides whether a BUY or SELL on each candidate would be refused,
+as numbers (all `(N,)` vectors in `env.candidate_order` order, plus the scalar
+`free_slots`):
+
+- `cooldown_left`: trading days until a not-held stock may be bought again (rule 15); 0 when
+  free, and 0 for a held stock (the cooldown only blocks *opening* a position).
+- `afford`: `log(cash / (price·(1+FEE_RATE)))` clipped to `±AFFORD_LOG_CLIP` — how many shares
+  today's cash buys, as a log ratio; below 0 means not even one share (`-AFFORD_LOG_CLIP` when
+  there is no price or no cash).
+- `headroom`: the room left under rule 12's position cap as a fraction of the cap, `[0, 1]`
+  (`(MAX_POSITION_FRACTION·V − position value) / (MAX_POSITION_FRACTION·V)`).
+- `sellable`: 1 where a lot is past the `MIN_HOLD_DAYS` lock-up — the pre-sampling sell mask.
+- `held`: Bool, any lot held.
+- `free_slots`: `n_max_holdings(N) − distinct symbols held`, floored at 0 (rule 13).
+
+`buy_blockers` turns these into the four Bool reasons a BUY would be refused.
+"""
+function legality_state(env::TradingGameEnv, date_idx::Int)
+    N        = length(env.candidate_order)
+    n_max    = n_max_holdings(length(env.candidate_sym_idx))
+    cash     = env.portfolio.cash
+    value    = portfolio_value(env)
+    held_val = Dict{Int, Float64}()
+    sellable = Set{Int}()
+    for h in env.portfolio.holdings
+        p = current_price(env, h.sym_idx)
+        held_val[h.sym_idx] = get(held_val, h.sym_idx, 0.0) + (isnan(p) ? 0.0 : h.quantity * p)
+        (date_idx - h.entry_date_idx >= MIN_HOLD_DAYS) && push!(sellable, h.sym_idx)
+    end
+
+    cooldown_left = zeros(Float32, N)
+    afford        = fill(-AFFORD_LOG_CLIP, N)
+    headroom      = zeros(Float32, N)
+    sell_flag     = zeros(Float32, N)
+    held          = falses(N)
+    cap = MAX_POSITION_FRACTION * value
+    for (c, sym_idx) in enumerate(env.candidate_order)
+        held[c] = haskey(held_val, sym_idx)
+        held[c] || (cooldown_left[c] = Float32(max(0, get(env.portfolio.rebuy_cooldown, sym_idx, date_idx) - date_idx)))
+        price = current_price(env, sym_idx)
+        if cash > 0 && !isnan(price) && price > 0
+            afford[c] = Float32(clamp(log(cash / (price * (1 + FEE_RATE))), -AFFORD_LOG_CLIP, AFFORD_LOG_CLIP))
+        end
+        cap > 0 && (headroom[c] = Float32(clamp((cap - get(held_val, sym_idx, 0.0)) / cap, 0, 1)))
+        sell_flag[c] = sym_idx in sellable ? 1f0 : 0f0
+    end
+    return (cooldown_left=cooldown_left, afford=afford, headroom=headroom, sellable=sell_flag,
+            held=held, free_slots=max(0, n_max - length(held_val)), n_max=n_max)
+end
+
+"""`(N_BUY_BLOCKERS, N)` Bool: row `r` is `true` where a BUY on that candidate would be refused
+for reason `r` — 1 rebuy cooldown (rule 15), 2 cash cannot fund one share (rule 5), 3 no free
+holding slot for a new position (rule 13), 4 position cap reached (rule 12). All `false` for a
+stock means a buy of it is legal. These are the auxiliary legality head's targets."""
+function buy_blockers(env::TradingGameEnv, date_idx::Int)::Matrix{Bool}
+    s = legality_state(env, date_idx)
+    N = length(s.held)
+    out = falses(N_BUY_BLOCKERS, N)
+    for c in 1:N
+        out[1, c] = s.cooldown_left[c] > 0
+        out[2, c] = s.afford[c] < 0
+        out[3, c] = !s.held[c] && s.free_slots == 0
+        out[4, c] = s.headroom[c] <= 0
+    end
+    return out
+end

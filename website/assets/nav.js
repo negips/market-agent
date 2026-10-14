@@ -55,6 +55,13 @@
               </svg>`,
     },
     {
+      href:  'mathematics.html',
+      label: 'Mathematics',
+      icon:  `<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24">
+                <path d="M18 5H7l6 7-6 7h11"/>
+              </svg>`,
+    },
+    {
       href:  'tradinggame.html',
       label: 'Trading Game',
       icon:  `<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24">

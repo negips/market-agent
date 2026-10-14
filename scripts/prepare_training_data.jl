@@ -60,6 +60,7 @@ side effects at all — including no universe build, no Ollama calls, no
 Kite calls.
 
 Usage:
+  julia --project=packages/TradingGame scripts/prepare_training_data.jl --config configs/bse_v3.toml
   julia --project=packages/TradingGame scripts/prepare_training_data.jl
   julia --project=packages/TradingGame scripts/prepare_training_data.jl --dry-run
   julia --project=packages/TradingGame scripts/prepare_training_data.jl --val-days 120
@@ -83,6 +84,9 @@ every time.
 
 using StockSwingPredictor, TradingGame, Dates
 
+include(joinpath(@__DIR__, "run_config.jl"))
+using .RunConfigs
+
 const REPO_ROOT      = joinpath(@__DIR__, "..")
 const CACHE_FILE     = normpath(joinpath(REPO_ROOT, "website", "data", "inference_cache.bson"))
 const DATA_DIR       = normpath(joinpath(REPO_ROOT, "website", "data"))
@@ -91,6 +95,9 @@ const DATE_WINDOW_FILE = normpath(joinpath(REPO_ROOT, "website", "data", "tradin
 const SCRIPTS_DIR    = @__DIR__
 
 function parse_args()
+    config_path = RunConfigs.take_config_arg!(ARGS)
+    print_config = RunConfigs.take_flag!(ARGS, "--print-config")
+    cfg = config_path === nothing ? nothing : RunConfigs.load_or_exit(config_path)
     args = Dict{String, Any}(
         "val_window"       => "trailing",
         "val_days"         => 60,
@@ -104,7 +111,17 @@ function parse_args()
         "skip_news"        => false,
         "skip_1min"        => false,
         "dry_run"          => false,
+        "strategy"         => "shared-topcap",
+        "n_train"          => N_CANDIDATE_STOCKS,
+        "n_val"            => N_CANDIDATE_STOCKS,
+        "disjoint"         => false,
+        "seed"             => nothing,
+        "bands"            => String[],
+        "min_mcap"         => 0.0,
     )
+    for sec in ("dates", "prepare", "universe")
+        merge!(args, RunConfigs.section_opts(cfg, sec))
+    end
     i = 1
     while i <= length(ARGS)
         a = ARGS[i]
@@ -122,8 +139,9 @@ Options (date-window resolution — identical to train_trading_policy.jl):
   --val-end DATE
 
 Universe (stage 1):
-  --n N                 SharedTopMarketCap size if a universe needs building
-                        (default: $(args["n"]))
+  --n N                 Candidates per side if a universe needs building
+                        (default: $(args["n"])). The strategy itself (random,
+                        disjoint-topcap, …) comes from the config's [universe] section.
   --rebuild-universe    Rebuild even if universe_latest.json already exists
 
 Stage control:
@@ -131,6 +149,11 @@ Stage control:
   --skip-news           Skip the news backfill stage
   --skip-1min           Skip the 1-minute snapshot stage
   --dry-run             Print resolved windows + planned commands, do nothing
+
+Config:
+  --config PATH         TOML run file (configs/*.toml): reads [dates], [prepare] and
+                        [universe]. Command-line flags override it.
+  --print-config        Show the resolved settings and exit
   -h, --help            Show this message
 """)
             exit(0)
@@ -152,6 +175,10 @@ Stage control:
     end
     args["val_window"] in ("trailing", "same") ||
         error("Unknown --val-window '$(args["val_window"])'. Expected: trailing, same")
+    if print_config
+        RunConfigs.print_resolved(stdout, "prepare_training_data.jl", config_path, args)
+        exit(0)
+    end
     return args
 end
 
@@ -201,7 +228,7 @@ function main()
         elseif isfile(UNIVERSE_FILE) && !args["rebuild_universe"]
             println("  (universe_latest.json already exists — using as-is; pass --rebuild-universe to force)")
         else
-            println("  [in-process] build universe: SharedTopMarketCap(n=$(args["n"])) → $UNIVERSE_FILE")
+            println("  [in-process] build universe: $(args["strategy"]) (n=$(args["n"])) → $UNIVERSE_FILE")
         end
         if args["skip_news"]
             println("  (skip news backfill — --skip-news)")
@@ -229,9 +256,10 @@ function main()
         @info "Stage 1/3: universe_latest.json already exists, using as-is " *
               "(pass --rebuild-universe to regenerate): $UNIVERSE_FILE"
     else
-        @info "Stage 1/3: building universe (SharedTopMarketCap, n=$(args["n"]))…"
-        pool = eligible_candidates(cache, joinpath(DATA_DIR, "$(cache.exchange)_companies_latest.json"))
-        strategy = SharedTopMarketCap(n=args["n"])
+        @info "Stage 1/3: building universe ($(args["strategy"]), n=$(args["n"]))…"
+        pool = eligible_candidates(cache, joinpath(DATA_DIR, "$(cache.exchange)_companies_latest.json");
+                                    min_market_cap_cr=args["min_mcap"])
+        strategy = RunConfigs.universe_strategy(args)
         train, val = build_universes(strategy, pool)
         save_universe_snapshot(strategy, train, val, UNIVERSE_FILE)
         @info "  Saved $(length(train)) train / $(length(val)) val candidates → $UNIVERSE_FILE"

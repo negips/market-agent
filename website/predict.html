@@ -253,6 +253,30 @@
       cursor: pointer;
     }
     .reset-zoom-btn:hover { color: var(--text); border-color: var(--accent); }
+
+    /* ── Mode tabs + Forecaster v4 view ── */
+    .mode-tabs { display: flex; gap: 6px; margin-top: 8px; }
+    .mode-tab {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+      color: var(--muted); font-family: var(--mono); font-size: 12px; padding: 4px 12px; cursor: pointer;
+    }
+    .mode-tab.active { color: var(--text); border-color: var(--accent); }
+    #view-fc { overflow-y: auto; height: calc(100vh - 92px); padding-bottom: 24px; }
+    #view-fc .query-bar input[type="text"] { text-transform: uppercase; }
+    #fc-symbols { width: 340px; }
+    #fc-horizon, #fc-n { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-family: var(--mono); font-size: 13px; padding: 5px 8px; }
+    #inp-time { width: 120px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-family: var(--mono); font-size: 13px; padding: 5px 10px; color-scheme: dark; }
+    #fc-stats { grid-template-columns: repeat(4, 1fr); }
+    .fc-grid { display: grid; grid-template-columns: 1fr; gap: 10px; }
+    .fc-chart-card { height: 360px; }
+    .fc-table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+    .fc-table-wrap table.data-table { font-size: 12px; }
+    .fc-in { color: var(--green); } .fc-out { color: #ef4444; } .fc-na { color: var(--muted); }
+    .fc-switch { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; color: var(--text); user-select: none; }
+    .fc-switch input { accent-color: var(--accent); cursor: pointer; }
+    .fc-note { font-size: 11px; color: var(--muted); margin: 6px 0 10px; line-height: 1.5; }
+    .fc-sel { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-family: var(--mono); font-size: 12px; padding: 3px 8px; }
+    .query-bar button.small { padding: 4px 9px; font-size: 11px; }
   </style>
 </head>
 <body>
@@ -261,8 +285,14 @@
   <main class="main">
     <div class="page-header">
       <div class="page-title">Predict</div>
-      <div class="page-subtitle">Run the trained model on a symbol + date and compare against actual prices.</div>
+      <div class="page-subtitle" id="page-sub">Run the trained model on a symbol + date and compare against actual prices.</div>
+      <div class="mode-tabs">
+        <button class="mode-tab active" id="tab-swing" onclick="setMode('swing')">Swing predictor (daily)</button>
+        <button class="mode-tab" id="tab-fc" onclick="setMode('fc')">Forecaster v4 (1-minute)</button>
+      </div>
     </div>
+
+    <div id="view-swing">
 
     <div class="page-content" style="padding: 10px 32px 0;">
 
@@ -363,6 +393,81 @@
 
       </div><!-- .charts-area -->
     </div><!-- .page-content -->
+    </div><!-- #view-swing -->
+
+    <div id="view-fc" style="display:none; padding: 10px 32px 0;">
+      <div class="query-bar">
+        <label for="fc-symbols">Stocks</label>
+        <input id="fc-symbols" type="text" placeholder="RECLTD, RVNL, INDIGO …" autocomplete="off">
+        <input id="fc-n" type="number" min="1" max="500" value="8" style="width:64px" title="how many companies the buttons fill in (the first N of the list)">
+        <label class="fc-switch" title="draw the N companies at random from the list instead of taking the first N"><input type="checkbox" id="fc-random" checked>random</label>
+        <button class="small" onclick="fcFillUniverse('val')">val companies</button>
+        <button class="small" onclick="fcFillUniverse('train')">train companies</button>
+        <button class="small" onclick="fcFillUniverse('both')" title="draw from the train and val companies together">train + val</button>
+        <label for="fc-date">Date</label>
+        <input id="fc-date" type="date" value="2025-06-12">
+        <label for="inp-time">Last bar</label>
+        <input id="inp-time" type="time" value="12:00" min="09:15" max="15:29">
+        <label for="fc-horizon">Next</label>
+        <input id="fc-horizon" type="number" min="1" max="2880" value="1" style="width:80px" title="1 to 2880 session minutes (48 hours); 375 minutes = one trading day">
+        <label for="fc-horizon">minutes</label>
+        <button onclick="fcGenerateCommand()">Generate command</button>
+        <button class="load-btn" onclick="fcLoad()">Load result</button>
+      </div>
+      <div class="cmd-box hidden" id="fc-cmd-box">
+        <span style="color:var(--muted);flex-shrink:0">$</span>
+        <code id="fc-cmd-text"></code>
+        <button onclick="fcCopyCmd()">copy</button>
+      </div>
+      <div class="error-banner hidden" id="fc-error"></div>
+
+      <div class="stats-row" id="fc-stats">
+        <div class="stat-card"><div class="stat-label">Section</div><div class="stat-value muted" id="fc-st-section" style="font-size:13px">—</div><div class="stat-sub" id="fc-st-section-sub">&nbsp;</div></div>
+        <div class="stat-card"><div class="stat-label">Predicting bar</div><div class="stat-value muted" id="fc-st-next" style="font-size:13px">—</div><div class="stat-sub" id="fc-st-next-sub">&nbsp;</div></div>
+        <div class="stat-card"><div class="stat-label">Actual inside the intervals</div><div class="stat-value muted" id="fc-st-in">—</div><div class="stat-sub" id="fc-st-in-sub">&nbsp;</div></div>
+        <div class="stat-card"><div class="stat-label">Interval coverage over the section</div><div class="stat-value muted" id="fc-st-cov">—</div><div class="stat-sub" id="fc-st-cov-sub">all 96 predictions, traded bars</div></div>
+      </div>
+
+      <div class="fc-note">
+        The model predicts, at every minute, a distribution for the next minute's return: a location (the mean) and a scale. The table is the
+        <b>next vector</b>: for every stock, the predicted next close and its 68% and 95% central intervals against the close that actually followed. The chart
+        also draws the prediction the model made at every earlier minute of the section (each predicts the bar one step ahead; the model is causal, so none of
+        them saw the bar it predicts). A stock that did not trade in the next minute keeps its last close, so a flat actual there is not a hit.
+        Run <code>scripts/predict_minute_forecaster.jl</code> (the command above) to change the section; the page reads <code>data/forecast_prediction.json</code>.
+      </div>
+
+      <div class="fc-note" id="fc-step-box" style="display:none">
+        <b>Iterated forecast.</b> Each minute is generated from the one before: a return is drawn from the model's predicted distribution, appended to the window,
+        and the model runs again, for <span id="fc-paths"></span> independent paths. The model has no target for the overnight move, so when a forecast crosses into a new day its first minute is drawn from that stock's own past overnight gaps, and the bands widen accordingly. The mean and the intervals are taken over the paths.
+        Show the vector at minute +<input type="range" id="fc-step" min="1" max="1" value="1" oninput="fcStepChange()" style="vertical-align:middle;width:260px">
+        <b id="fc-step-lbl"></b>
+      </div>
+
+      <div class="fc-grid">
+        <div class="fc-table-wrap">
+          <table class="data-table" id="fc-table">
+            <thead id="fc-thead"></thead>
+            <tbody id="fc-tbody"><tr><td colspan="12" class="fc-na">No result loaded. Generate the command, run it, then click Load result.</td></tr></tbody>
+          </table>
+        </div>
+
+        <div class="chart-card fc-chart-card">
+          <div class="chart-header">
+            <div style="display:flex;gap:10px;align-items:center">
+              <div class="chart-title" id="fc-chart-title">Section</div>
+              <select class="fc-sel" id="fc-stock-sel" onchange="fcDrawChart()"></select>
+            </div>
+            <div class="chart-legend">
+              <span><span class="legend-dot" style="background:#34d399"></span>Actual close</span>
+              <span><span class="legend-dot" style="background:#4f8ef7"></span>Predicted next close (mean)</span>
+              <span id="fc-leg-roll" style="display:none"><span class="legend-dot" style="background:#f472b6"></span>Iterated forecast (mean)</span>
+              <span id="fc-switches" style="display:flex;gap:12px"></span>
+            </div>
+          </div>
+          <div class="canvas-wrap"><canvas id="fc-chart"></canvas></div>
+        </div>
+      </div>
+    </div>
   </main>
 
   <script>
@@ -372,6 +477,7 @@
 
   // ── Init ──────────────────────────────────────────────────────────────────
   document.addEventListener('DOMContentLoaded', () => {
+    if (new URLSearchParams(location.search).get('mode') === 'fc') setMode('fc');
     // Default date to yesterday (most recent likely trading day)
     const inp = document.getElementById('inp-date');
     const d   = new Date();
@@ -891,6 +997,316 @@
   function clearError() {
     document.getElementById('error-banner').classList.add('hidden');
   }
+
+  // ── Forecaster v4 view ────────────────────────────────────────────────────
+  let fcData = null;
+  let fcChart = null;
+
+  function setMode(mode) {
+    const fc = mode === 'fc';
+    document.getElementById('view-swing').style.display = fc ? 'none' : '';
+    document.getElementById('view-fc').style.display = fc ? '' : 'none';
+    document.getElementById('tab-swing').classList.toggle('active', !fc);
+    document.getElementById('tab-fc').classList.toggle('active', fc);
+    document.getElementById('page-sub').textContent = fc
+      ? 'Load a section of minute prices, predict the next minute of every stock with the v4 forecaster, and compare with what happened.'
+      : 'Run the trained model on a symbol + date and compare against actual prices.';
+    if (fc && !fcData) fcLoad(true);
+    try { history.replaceState(null, '', fc ? '?mode=fc' : location.pathname); } catch {}
+  }
+
+  function fcErr(msg) {
+    const el = document.getElementById('fc-error');
+    el.textContent = msg || '';
+    el.classList.toggle('hidden', !msg);
+  }
+
+  async function fcFillUniverse(role) {
+    try {
+      const res = await fetch('data/trading_game/universe_latest.json');
+      const u = await res.json();
+      const name = c => typeof c === 'string' ? c : c.symbol;
+      const list = (role === 'val' ? u.val_candidates : role === 'train' ? u.train_candidates
+                    : (u.train_candidates || []).concat(u.val_candidates || [])).map(name);
+      const n = Math.max(1, parseInt(document.getElementById('fc-n').value) || 8);
+      let pick = list.slice();
+      if (document.getElementById('fc-random').checked) {
+        for (let i = pick.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [pick[i], pick[j]] = [pick[j], pick[i]];
+        }
+      }
+      document.getElementById('fc-symbols').value = pick.slice(0, n).join(', ');
+      fcErr('');
+    } catch (e) { fcErr('Could not read data/trading_game/universe_latest.json: ' + e.message); }
+  }
+
+  function fcGenerateCommand() {
+    const syms = document.getElementById('fc-symbols').value.split(/[\s,]+/).filter(Boolean).map(s => s.toUpperCase());
+    const date = document.getElementById('fc-date').value;
+    const time = document.getElementById('inp-time').value || '12:00';
+    if (!date) { fcErr('Enter a date first.'); return; }
+    fcErr('');
+    let cmd = `julia --project=packages/TradingGame scripts/predict_minute_forecaster.jl --date ${date} --time ${time}`;
+    if (syms.length) cmd += ` --symbols ${syms.join(',')}`;
+    const hz = parseInt(document.getElementById('fc-horizon').value) || 1;
+    if (hz > 1) cmd += ` --horizon ${hz}`;
+    cmd += ' --device gpu';
+    document.getElementById('fc-cmd-text').textContent = cmd;
+    document.getElementById('fc-cmd-box').classList.remove('hidden');
+  }
+
+  function fcCopyCmd() {
+    navigator.clipboard.writeText(document.getElementById('fc-cmd-text').textContent).catch(() => {});
+    const btn = document.querySelector('#fc-cmd-box button');
+    btn.textContent = 'copied!';
+    setTimeout(() => btn.textContent = 'copy', 1500);
+  }
+
+  async function fcLoad(silent = false) {
+    try {
+      const res = await fetch('data/forecast_prediction.json?t=' + Date.now());
+      if (!res.ok) { if (!silent) fcErr('forecast_prediction.json not found. Run the command above first.'); return; }
+      fcData = await res.json();
+      fcErr('');
+      fcRender();
+    } catch (e) {
+      if (!silent) fcErr('Failed to load forecast_prediction.json: ' + e.message);
+    }
+  }
+
+  const fcOk = v => v != null && isFinite(v);
+  const fcPct = (a, b) => (fcOk(a) && fcOk(b) && b !== 0) ? (a / b - 1) * 100 : null;
+  const fcSign = v => v == null ? '—' : (v >= 0 ? '+' : '') + v.toFixed(3) + '%';
+  const fcTime = dt => dt.slice(11, 16);
+
+  const FC_BAND_COLORS = ['#f59e0b', '#4f8ef7', '#a78bfa', '#34d399'];
+  let fcOn = {};
+
+  function fcNormalise(d) {
+    if (d.levels) return d;
+    d.levels = [d.level];
+    d.stocks.forEach(st => {
+      const key = String(Math.round(d.level * 100));
+      st.bands = { [key]: { level: d.level, lo: st.pred_lo, hi: st.pred_hi, coverage_in_section: st.coverage_in_section } };
+    });
+    return d;
+  }
+  const fcKey = l => String(Math.round(l * 100));
+  const fcKeys = () => fcData.levels.map(fcKey);
+  const fcActiveKeys = () => fcKeys().filter(k => fcOn[k]);
+  const fcBandColor = k => FC_BAND_COLORS[fcKeys().indexOf(k) % FC_BAND_COLORS.length];
+
+  const fcStep = () => (fcData && fcData.rollout) ? (parseInt(document.getElementById('fc-step').value) || 1) : 1;
+
+  function fcStepChange() { fcRenderTable(); fcRenderStat(); }
+
+  function fcNext(st) {
+    const n = st.close.length;
+    const last = st.close[n - 2];
+    if (fcData.rollout && !st.rollout) {
+      const bands = {}; fcKeys().forEach(key => { bands[key] = { lo: null, hi: null }; });
+      return { last, actual: null, mean: null, bands, sigma: null, counted: false, priced: false, predRet: null };
+    }
+    if (fcData.rollout && st.rollout) {
+      const k = fcStep() - 1, ro = st.rollout;
+      const bands = {};
+      fcKeys().forEach(key => { bands[key] = { lo: ro.bands[key].lo[k], hi: ro.bands[key].hi[k] }; });
+      const actual = ro.actual[k], mean = ro.mean[k];
+      return { last, actual, mean, bands, sigma: ro.sd_pct[k], counted: ro.traded[k], priced: fcOk(last) && fcOk(actual),
+               predRet: fcPct(mean, last) };
+    }
+    const actual = st.close[n - 1];
+    const k = st.pred_mean.length - 1;
+    const bands = {};
+    fcKeys().forEach(key => { bands[key] = { lo: st.bands[key].lo[k], hi: st.bands[key].hi[k] }; });
+    return { last, actual, mean: st.pred_mean[k], bands, sigma: st.pred_sigma_pct[k], counted: st.counted[k],
+             priced: fcOk(last) && fcOk(actual), predRet: st.pred_return_pct[k] };
+  }
+
+  function fcRenderStat() {
+    const d = fcData;
+    const step = fcStep();
+    const dt = d.rollout ? d.rollout.datetimes[step - 1] : d.next;
+    const e = document.getElementById('fc-st-next'); e.textContent = `${dt.slice(0, 10)}  ${fcTime(dt)}`; e.classList.remove('muted');
+    document.getElementById('fc-st-next-sub').textContent = (d.rollout ? `+${step} min · ` : '') + `${d.model.loss} (ν=${d.model.nu}), d=${d.model.d}, ${d.model.blocks} blocks`;
+    document.getElementById('fc-step-lbl').textContent = d.rollout ? `${step}  (${fcTime(dt)})` : '';
+  }
+
+  function fcSavedPaths() {
+    const st = fcData.stocks.find(s => s.rollout);
+    return st ? st.rollout.sample_paths.length : 0;
+  }
+
+  function fcBuildSwitches() {
+    const box = document.getElementById('fc-switches');
+    const hasRo = !!(fcData.rollout);
+    document.getElementById('fc-leg-roll').style.display = hasRo ? '' : 'none';
+    box.innerHTML = (hasRo ? `<label class="fc-switch"><input type="checkbox" ${fcShowPaths ? 'checked' : ''} onchange="fcTogglePaths(this.checked)"><span class="legend-dot" style="background:rgba(196,181,253,.6)"></span>sample paths</label><label class="fc-switch" title="how many of the saved sample paths to draw">show <input type="number" id="fc-npaths" min="1" max="${fcSavedPaths()}" value="${Math.min(fcNPaths, fcSavedPaths())}" onchange="fcSetNPaths(this.value)" style="width:56px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--mono);font-size:12px;padding:2px 6px"> of ${fcSavedPaths()}</label>` : '') + fcKeys().map(k =>
+      `<label class="fc-switch"><input type="checkbox" ${fcOn[k] ? 'checked' : ''} onchange="fcToggle('${k}', this.checked)">
+         <span class="legend-dot" style="background:${fcBandColor(k)};height:8px;opacity:.7"></span>${k}% interval</label>`).join('');
+  }
+
+  function fcToggle(key, on) {
+    fcOn[key] = on;
+    fcRenderTable();
+    fcDrawChart();
+  }
+
+  const fcF = v => fcOk(v) ? v.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
+
+  function fcRenderTable() {
+    const d = fcData;
+    const act = fcActiveKeys();
+    document.getElementById('fc-thead').innerHTML = '<tr><th class="no-sort">Stock</th><th class="no-sort num">Last close</th><th class="no-sort num">Predicted mean</th>' +
+      act.map(k => `<th class="no-sort num">Lower ${k}%</th><th class="no-sort num">Upper ${k}%</th>`).join('') +
+      `<th class="no-sort num">${fcData.rollout ? 'Actual' : 'Actual next'}</th><th class="no-sort num">${fcData.rollout ? 'Pred. return (from last)' : 'Pred. return'}</th><th class="no-sort num">${fcData.rollout ? 'Actual return (from last)' : 'Actual return'}</th><th class="no-sort num">${fcData.rollout ? 'σ (cum.)' : 'σ'}</th><th class="no-sort">Inside</th></tr>`;
+    const tally = {}; fcKeys().forEach(k => tally[k] = [0, 0]);
+    const rows = d.stocks.map(st => {
+      const n = fcNext(st);
+      let status;
+      if (!n.priced) status = '<span class="fc-na">no price</span>';
+      else if (!n.counted) status = '<span class="fc-na">not traded</span>';
+      else status = fcKeys().filter(k => fcOn[k]).map(k => {
+        const hit = n.actual >= n.bands[k].lo && n.actual <= n.bands[k].hi;
+        return `<span class="${hit ? 'fc-in' : 'fc-out'}">${k}% ${hit ? '✓' : '✗'}</span>`;
+      }).join(' ') || '<span class="fc-na">—</span>';
+      if (n.priced && n.counted) fcKeys().forEach(k => { tally[k][1]++; if (n.actual >= n.bands[k].lo && n.actual <= n.bands[k].hi) tally[k][0]++; });
+      return `<tr><td><b>${st.symbol}</b></td><td class="num">${fcF(n.last)}</td><td class="num">${fcF(n.mean)}</td>` +
+        act.map(k => `<td class="num">${fcF(n.bands[k].lo)}</td><td class="num">${fcF(n.bands[k].hi)}</td>`).join('') +
+        `<td class="num">${fcF(n.actual)}</td>
+        <td class="num">${fcSign(n.predRet)}</td>
+        <td class="num">${fcSign(fcPct(n.actual, n.last))}</td>
+        <td class="num">${fcOk(n.sigma) ? n.sigma.toFixed(3) + '%' : '—'}</td><td>${status}</td></tr>`;
+    });
+    document.getElementById('fc-tbody').innerHTML = rows.join('');
+    const parts = fcKeys().map(k => tally[k][1] ? `${k}%: ${tally[k][0]}/${tally[k][1]}` : null).filter(Boolean);
+    const e = document.getElementById('fc-st-in'); e.textContent = parts.length ? parts.join('  ·  ') : '—'; e.classList.remove('muted');
+    e.style.fontSize = '14px';
+  }
+
+  function fcRender() {
+    const d = fcData = fcNormalise(fcData);
+    fcKeys().forEach(k => { if (!(k in fcOn)) fcOn[k] = true; });
+    Object.keys(fcOn).forEach(k => { if (!fcKeys().includes(k)) delete fcOn[k]; });
+    fcBuildSwitches();
+
+    const setStat = (id, text, sub, subId) => {
+      const e = document.getElementById(id); e.textContent = text; e.classList.remove('muted');
+      if (subId) document.getElementById(subId).textContent = sub;
+    };
+    setStat('fc-st-section', `${d.first_input.slice(0, 10)}  ${fcTime(d.first_input)} → ${fcTime(d.last_input)}`,
+            `${d.stocks.length} stocks, ${d.model.window} minutes`, 'fc-st-section-sub');
+    const box = document.getElementById('fc-step-box');
+    const slider = document.getElementById('fc-step');
+    if (d.rollout) {
+      slider.max = d.rollout.horizon;
+      if (+slider.value > d.rollout.horizon || !box.dataset.on) slider.value = 1;
+      document.getElementById('fc-paths').textContent = d.rollout.paths;
+      box.style.display = ''; box.dataset.on = '1';
+    } else { box.style.display = 'none'; box.dataset.on = ''; slider.value = 1; }
+    fcRenderStat();
+    document.getElementById('fc-st-in-sub').textContent = 'shown bar, stocks that traded (expected: the level)';
+
+    const cov = fcKeys().map(k => {
+      const v = d.stocks.map(s => s.bands[k].coverage_in_section).filter(fcOk);
+      return v.length ? `${k}%: ${(100 * v.reduce((a, b) => a + b, 0) / v.length).toFixed(1)}%` : null;
+    }).filter(Boolean);
+    const ce = document.getElementById('fc-st-cov'); ce.textContent = cov.length ? cov.join('  ·  ') : '—'; ce.classList.remove('muted'); ce.style.fontSize = '14px';
+    document.getElementById('fc-st-cov-sub').textContent = 'every prediction of the section, traded bars, mean over stocks';
+
+    fcRenderTable();
+    const sel = document.getElementById('fc-stock-sel');
+    const prev = sel.value;
+    sel.innerHTML = d.stocks.map(s => `<option value="${s.symbol}">${s.symbol}</option>`).join('');
+    if (d.stocks.some(s => s.symbol === prev)) sel.value = prev;
+    fcDrawChart();
+  }
+
+  function fcDrawChart() {
+    if (!fcData) return;
+    const sym = document.getElementById('fc-stock-sel').value;
+    const st = fcData.stocks.find(s => s.symbol === sym);
+    if (!st) return;
+    const ro = (fcData.rollout && st.rollout) ? st.rollout : null;
+    const Hfull = ro ? fcData.rollout.horizon : 1;
+    // long forecasts are thinned to about FC_MAX_STEPS points so the chart stays responsive
+    const stride = Math.max(1, Math.ceil(Hfull / FC_MAX_STEPS));
+    const steps = [];
+    for (let h = 1; h <= Hfull; h++) if (h === 1 || h === Hfull || h % stride === 0) steps.push(h);
+    const H = steps.length;
+    const L = fcData.datetimes.length;
+    const dts = fcData.datetimes.concat(ro ? steps.slice(1).map(h => fcData.rollout.datetimes[h - 1]) : []);
+    const multiDay = dts.some(t => t.slice(0, 10) !== dts[0].slice(0, 10));
+    const labels = dts.map(t => multiDay ? t.slice(5, 10) + ' ' + fcTime(t) : fcTime(t));
+    const nul = v => fcOk(v) ? v : null;
+    const pad = arr => arr.concat(Array(H - 1).fill(null));
+    const shift = arr => pad([null].concat(arr.map(nul)));
+    const pick = arr => steps.map(h => arr[h - 1]);
+    const actual = (ro ? st.close.concat(pick(ro.actual).slice(1)) : st.close).map(nul);
+    const mean = shift(st.pred_mean);
+    const lastIdx = L - 1;
+    const nextPt = arr => arr.map((v, i) => i === lastIdx ? v : null);
+    const dayChange = fcData.datetimes.findIndex((t, i) => i > 0 && t.slice(0, 10) !== fcData.datetimes[i - 1].slice(0, 10));
+    document.getElementById('fc-chart-title').textContent =
+      `${fcData.first_input.slice(0, 10)}  ${fcTime(fcData.first_input)} → ${multiDay ? dts[dts.length - 1].slice(0, 10) + ' ' : ''}${fcTime(dts[dts.length - 1])}` + (stride > 1 ? `  (forecast drawn every ${stride} min)` : '') + (dayChange > 0 ? '  (crosses a day boundary)' : '');
+    if (fcChart) fcChart.destroy();
+    if (!actual.some(v => v != null)) { fcChart = null; return; }
+    const hexA = (hex, a) => { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`; };
+    const sets = [];
+    const bandPair = (key, lo, hi, tag, alpha) => {
+      const col = fcBandColor(key);
+      sets.push({ label: `lo${key}`, band: key, tag, data: lo, borderColor: hexA(col, .55), borderWidth: 0.8, backgroundColor: 'transparent', pointRadius: 0, fill: false, spanGaps: true, order: 6 });
+      sets.push({ label: `hi${key}`, band: key, tag, data: hi, borderColor: hexA(col, .55), borderWidth: 0.8, backgroundColor: hexA(col, alpha), pointRadius: 0, fill: '-1', spanGaps: true, order: 5 });
+    };
+    // widest first, so the narrower band is painted on top of it
+    fcActiveKeys().sort((a, b) => b - a).forEach(k => {
+      bandPair(k, shift(st.bands[k].lo), shift(st.bands[k].hi), '', k === fcKeys()[0] ? .28 : .16);
+    });
+    if (ro) {
+      const origin = st.close[L - 2];
+      const roArr = v => { const out = Array(L - 2).fill(null); out.push(origin); return out.concat(pick(v).map(nul)); };
+      if (fcShowPaths) {
+        ro.sample_paths.slice(0, fcNPaths).forEach((pth, i) => sets.push({ label: `path ${i + 1}`, path: true, data: roArr(pth), borderColor: FC_PATH_COLOR, borderWidth: 1.4, pointRadius: 0, spanGaps: true, order: 0 }));
+      }
+      fcActiveKeys().sort((a, b) => b - a).forEach(k => {
+        bandPair(k, roArr(ro.bands[k].lo), roArr(ro.bands[k].hi), ' (iterated)', k === fcKeys()[0] ? .22 : .14);
+      });
+      sets.push({ label: 'Iterated forecast (mean)', data: roArr(ro.mean), borderColor: '#f472b6', borderWidth: 1.8, pointRadius: 0, spanGaps: true, order: 1 });
+    }
+    sets.push(
+      { label: 'Predicted next close', data: mean, borderColor: '#4f8ef7', borderDash: [4, 3], borderWidth: 1.5, pointRadius: 0, spanGaps: true, order: 2 },
+      { label: 'Actual close', data: actual, borderColor: '#34d399', borderWidth: 1.5, pointRadius: 0, stepped: true, spanGaps: true, order: 1 },
+      { label: 'Predicted (next bar)', data: nextPt(mean), borderColor: '#4f8ef7', backgroundColor: '#4f8ef7', pointRadius: 6, pointStyle: 'triangle', showLine: false, order: 0 },
+      { label: 'Actual (next bar)', data: nextPt(actual), borderColor: '#34d399', backgroundColor: '#34d399', pointRadius: 6, pointStyle: 'rectRot', showLine: false, order: 0 });
+    const ctx = document.getElementById('fc-chart').getContext('2d');
+    fcChart = new Chart(ctx, {
+      type: 'line',
+      data: { labels, datasets: sets },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: { filter: c => !c.dataset.path, callbacks: {
+            title: items => dts[items[0].dataIndex].replace('T', ' ').slice(0, 16),
+            label: c => c.dataset.band ? `${c.dataset.label.startsWith('lo') ? 'lower' : 'upper'} ${c.dataset.band}%${c.dataset.tag}: ${c.parsed.y?.toFixed(2)}`
+                                       : `${c.dataset.label}: ${c.parsed.y?.toFixed(2)}` } }
+        },
+        scales: {
+          x: { ticks: { color: '#6b7280', maxTicksLimit: 12, font: { size: 10 } }, grid: { color: 'rgba(255,255,255,.04)' } },
+          y: { ticks: { color: '#6b7280', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,.04)' } }
+        }
+      }
+    });
+  }
+
+  const FC_MAX_STEPS = 600;
+  const FC_PATH_COLOR = 'rgba(196,181,253,.6)';
+  let fcShowPaths = false;
+  let fcNPaths = 10;
+  function fcSetNPaths(v) { fcNPaths = Math.max(1, parseInt(v) || 1); fcDrawChart(); }
+  function fcTogglePaths(on) { fcShowPaths = on; fcDrawChart(); }
   </script>
 </body>
 </html>

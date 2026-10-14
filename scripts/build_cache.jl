@@ -19,12 +19,16 @@ Prerequisites:
   - website/data/{nse,bse}_companies_latest.json with confidence scores
 
 Usage:
+  julia --project=packages/StockSwingPredictor scripts/build_cache.jl --config configs/bse_v3.toml
   julia --project=packages/StockSwingPredictor scripts/build_cache.jl
   julia --project=packages/StockSwingPredictor scripts/build_cache.jl 200  # top-N only
   julia --project=packages/StockSwingPredictor scripts/build_cache.jl --exchange bse --granularity 15min --min-mcap 500
 """
 
 using StockSwingPredictor, JSON3, Dates
+
+include(joinpath(@__DIR__, "run_config.jl"))
+using .RunConfigs
 
 const REPO_ROOT      = joinpath(@__DIR__, "..")
 const DATA_DIR       = joinpath(REPO_ROOT, "website", "data")
@@ -33,8 +37,13 @@ const DEFAULT_CACHE_FILE = joinpath(DATA_DIR, "inference_cache.bson")
 const CONFIDENCE_THRESHOLD = 40
 
 function parse_args()
+    config_path = RunConfigs.take_config_arg!(ARGS)
+    print_config = RunConfigs.take_flag!(ARGS, "--print-config")
+    cfg = config_path === nothing ? nothing : RunConfigs.load_or_exit(config_path)
     opts = Dict{String,Any}("top_n" => typemax(Int), "exchange" => "nse", "granularity" => "hourly",
                             "min_mcap" => 0.0, "out" => DEFAULT_CACHE_FILE, "history" => nothing)
+    merge!(opts, RunConfigs.section_opts(cfg, "cache"))
+    haskey(opts, "out") && (opts["out"] = abspath(joinpath(REPO_ROOT, opts["out"])))
     i = 1
     while i <= length(ARGS)
         a = ARGS[i]
@@ -52,6 +61,10 @@ function parse_args()
     # a 15-minute clock gets an hourly history axis by default; an hourly cache has none
     opts["history"] === nothing && (opts["history"] = opts["granularity"] == "15min" ? "resample" : "none")
     opts["history"] in ("none", "resample", "hourly") || error("--history must be none, resample or hourly")
+    if print_config
+        RunConfigs.print_resolved(stdout, "build_cache.jl", config_path, opts)
+        exit(0)
+    end
     return opts
 end
 
@@ -77,6 +90,9 @@ Options:
   --min-mcap CR             Drop companies below this market cap (₹ Cr). Strongly advised for BSE:
                             most small caps barely trade, so their 15-min bars are forward-filled.
   --out PATH                Output file (default: website/data/inference_cache.bson)
+  --config PATH             TOML run file; this script reads its [cache] section (configs/*.toml).
+                            Command-line flags override it.
+  --print-config            Show the resolved settings and exit
 
 Output:
   website/data/inference_cache.bson  — ~42 MB (NSE hourly); BSE 15-min is ~0.2 MB per company-year

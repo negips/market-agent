@@ -25,6 +25,7 @@ company counts and/or different companies entirely (no symbol-identity
 embedding or positional encoding anywhere downstream).
 
 Usage:
+  julia --project=packages/TradingGame scripts/build_market_universe_snapshot.jl --config configs/bse_v3.toml
   julia --project=packages/TradingGame scripts/build_market_universe_snapshot.jl
   julia --project=packages/TradingGame scripts/build_market_universe_snapshot.jl --n 100
   julia --project=packages/TradingGame scripts/build_market_universe_snapshot.jl \\
@@ -46,6 +47,9 @@ Output: website/data/trading_game/universe_latest.json
 
 using TradingGame, StockSwingPredictor, Printf
 
+include(joinpath(@__DIR__, "run_config.jl"))
+using .RunConfigs
+
 const REPO_ROOT          = joinpath(@__DIR__, "..")
 const CACHE_FILE         = joinpath(REPO_ROOT, "website", "data", "inference_cache.bson")
 const DATA_DIR           = joinpath(REPO_ROOT, "website", "data")
@@ -54,24 +58,22 @@ const DATA_DIR           = joinpath(REPO_ROOT, "website", "data")
 const MIN_MARKET_CAP_CR = Ref(0.0)
 const OUTPUT_FILE        = joinpath(REPO_ROOT, "website", "data", "trading_game", "universe_latest.json")
 
-"""Parse `LO:HI:QUOTA` (HI may be `inf`/`infinity`, case-insensitive) into a
-`(lo, hi) => quota` pair for `BucketedRandom.quotas`."""
-function _parse_band(spec::String)
-    parts = split(spec, ":")
-    length(parts) == 3 || error("--band expects LO:HI:QUOTA, got '$spec'")
-    lo_s, hi_s, q_s = parts
-    hi = lowercase(hi_s) in ("inf", "infinity") ? Inf : parse(Float64, hi_s)
-    return (parse(Float64, lo_s), hi) => parse(Int, q_s)
-end
-
 function parse_args()
-    strategy_name = "shared-topcap"
-    n        = N_CANDIDATE_STOCKS
-    n_train  = N_CANDIDATE_STOCKS
-    n_val    = N_CANDIDATE_STOCKS
-    disjoint = false
-    seed     = nothing
-    bands    = Pair{Tuple{Float64, Float64}, Int}[]
+    config_path = RunConfigs.take_config_arg!(ARGS)
+    print_config = RunConfigs.take_flag!(ARGS, "--print-config")
+    cfg = config_path === nothing ? nothing : RunConfigs.load_or_exit(config_path)
+    u = Dict{String, Any}("strategy" => "shared-topcap", "n" => N_CANDIDATE_STOCKS,
+                          "n_train" => N_CANDIDATE_STOCKS, "n_val" => N_CANDIDATE_STOCKS,
+                          "disjoint" => false, "seed" => nothing, "bands" => String[], "min_mcap" => 0.0)
+    merge!(u, RunConfigs.section_opts(cfg, "universe"))
+    strategy_name = u["strategy"]
+    n        = u["n"]
+    n_train  = u["n_train"]
+    n_val    = u["n_val"]
+    disjoint = u["disjoint"]
+    seed     = u["seed"]
+    bands    = String[u["bands"]...]
+    MIN_MARKET_CAP_CR[] = u["min_mcap"]
 
     i = 1
     while i <= length(ARGS)
@@ -100,6 +102,9 @@ Options:
   --min-mcap CR         Drop companies below this market cap (₹ Cr) before the strategy runs.
                         Advised for BSE, where thin small caps have mostly forward-filled bars.
   --seed N              Reproducible split/draw (disjoint-topcap, random, random-bucketed)
+  --config PATH         TOML run file; this script reads its [universe] section (configs/*.toml).
+                        Command-line flags override it.
+  --print-config        Show the resolved settings and exit
 
 Output: $OUTPUT_FILE
 """)
@@ -111,23 +116,18 @@ Output: $OUTPUT_FILE
         elseif a == "--disjoint"; disjoint = true; i += 1
         elseif a == "--min-mcap"; MIN_MARKET_CAP_CR[] = parse(Float64, ARGS[i+1]); i += 2
         elseif a == "--seed";     seed = parse(Int, ARGS[i+1]); i += 2
-        elseif a == "--band";     push!(bands, _parse_band(ARGS[i+1])); i += 2
+        elseif a == "--band";     push!(bands, ARGS[i+1]); i += 2
         else; @warn "Unknown argument: $a"; i += 1
         end
     end
 
-    strategy = if strategy_name == "shared-topcap"
-        SharedTopMarketCap(n=n)
-    elseif strategy_name == "disjoint-topcap"
-        DisjointTopMarketCap(n_train=n_train, n_val=n_val, seed=seed)
-    elseif strategy_name == "random"
-        RandomUniverse(n=n, disjoint=disjoint, seed=seed)
-    elseif strategy_name == "random-bucketed"
-        isempty(bands) && error("--strategy random-bucketed requires at least one --band LO:HI:QUOTA")
-        BucketedRandom(quotas=bands, disjoint=disjoint, seed=seed)
-    else
-        error("Unknown --strategy '$strategy_name'. Expected: shared-topcap, disjoint-topcap, random, random-bucketed")
+    u = Dict{String, Any}("strategy" => strategy_name, "n" => n, "n_train" => n_train, "n_val" => n_val,
+                          "disjoint" => disjoint, "seed" => seed, "bands" => bands, "min_mcap" => MIN_MARKET_CAP_CR[])
+    if print_config
+        RunConfigs.print_resolved(stdout, "build_market_universe_snapshot.jl", config_path, u)
+        exit(0)
     end
+    strategy = RunConfigs.universe_strategy(u)
     return strategy
 end
 

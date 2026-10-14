@@ -2,7 +2,7 @@
 update_ohlcv.jl
 
 Incrementally update all OHLCV CSVs in website/data/ohlcv/{nse,bse}/{daily,
-hourly,5min,15min,1min}/ (both exchanges by default — pass --nse-only or
+hourly,15min,5min,1min}/ (both exchanges by default — pass --nse-only or
 --bse-only to restrict to one; macro CSVs under website/data/ohlcv/macro/
 keep their own flat, suffixed layout — too few files to need subfolders)
 with bars added since the last collection run.
@@ -22,9 +22,9 @@ longer it's left.
 
 Prerequisites:
   - sidecar/kite_session.json present         (node sidecar/kite_login.js)
-  - website/data/ohlcv/nse/{daily,hourly,5min,15min,1min}/ populated
+  - website/data/ohlcv/nse/{daily,hourly,15min,5min,1min}/ populated
     (run collect_nse_ohlcv.jl first, unless --bse-only)
-  - website/data/ohlcv/bse/{daily,hourly,5min,15min,1min}/ populated
+  - website/data/ohlcv/bse/{daily,hourly,15min,5min,1min}/ populated
     (run collect_bse_ohlcv.jl first, unless --nse-only)
 
 Usage:
@@ -33,11 +33,11 @@ Usage:
   julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --bse-only
   julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --daily-only
   julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --hourly-only
-  julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --5min-only
   julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --15min-only
+  julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --5min-only
   julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --1min-only
-  julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --skip-5min
   julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --skip-15min
+  julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --skip-5min
   julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --skip-1min
   julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --dry-run
   julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --symbol RELIANCE
@@ -576,11 +576,11 @@ Flags:
   --bse-only      Update BSE only (default: both NSE and BSE). Mutually exclusive with --nse-only.
   --daily-only    Update only daily bars.
   --hourly-only   Update only hourly (60-min) bars.
-  --5min-only     Update only 5-minute bars.
   --15min-only    Update only 15-minute bars.
+  --5min-only     Update only 5-minute bars.
   --1min-only     Update only 1-minute bars.
-  --skip-5min     Skip the 5-minute pass (overrides --5min-only if both given).
   --skip-15min    Skip the 15-minute pass (overrides --15min-only if both given).
+  --skip-5min     Skip the 5-minute pass (overrides --5min-only if both given).
   --skip-1min     Skip the 1-minute pass (overrides --1min-only if both given).
   --dry-run       Report what would be fetched without making any API calls.
   --log-file PATH Full per-symbol detail (default: $DEFAULT_LOG_FILE;
@@ -592,12 +592,12 @@ Flags:
                   tail -f the log file for live per-symbol status instead.
 
 Reads each existing {SYMBOL}.csv in website/data/ohlcv/{nse,bse}/{daily,
-hourly,5min,15min,1min}/ (both exchanges by default — pass --nse-only or
+hourly,15min,5min,1min}/ (both exchanges by default — pass --nse-only or
 --bse-only to update a single exchange), finds the last date, and fetches
 only the gap to yesterday. New rows are appended in-place. Macro instrument
 CSVs (website/data/ohlcv/macro/, flat and suffixed — not part of this
 subfolder layout) are updated once regardless of exchange selection, during
-the 5-min/15-min passes — there is no macro 1-min collection today, so
+the 15-min/5-min passes — there is no macro 1-min collection today, so
 --1min-only/--skip-1min never affect it.
 
 NOTE: no granularity here actually loses data if you skip a day — Kite's
@@ -671,6 +671,19 @@ a big gap in one go, not a race against data disappearing.
         t
     end
 
+    # CSVs left on disk from before a filter existed (ETF/INAV tickers, bonds, delisted names) are not
+    # in the token map and cannot be fetched; skip them once, loudly, instead of one warning per symbol per granularity.
+    active_syms(syms, token_map, label) = begin
+        dry_run && return syms
+        keep = filter(s -> haskey(token_map, s), syms)
+        gone = length(syms) - length(keep)
+        if gone > 0
+            example = join(first(sort(setdiff(syms, keep)), 5), ", ")
+            logboth(slog, "  $label: skipping $gone CSV(s) outside the current instrument filters (e.g. $example)")
+        end
+        keep
+    end
+
     # ── NSE update ────────────────────────────────────────────────────────────
     if run_nse
         isdir(NSE_OHLCV_DIR) || error("NSE OHLCV directory not found: $NSE_OHLCV_DIR\n" *
@@ -694,7 +707,13 @@ a big gap in one go, not a race against data disappearing.
             @info "Filtering to symbol: $sym_filter"
         end
 
-        logboth(slog, "Found $(length(daily_syms)) NSE daily, $(length(hourly_syms)) hourly, $(length(fivemin_syms)) 5-min, $(length(fifteenmin_syms)) 15-min, $(length(onemin_syms)) 1-min CSVs")
+        daily_syms      = active_syms(daily_syms, nse_token_map, "NSE daily")
+        hourly_syms     = active_syms(hourly_syms, nse_token_map, "NSE hourly")
+        fivemin_syms    = active_syms(fivemin_syms, nse_token_map, "NSE 5-min")
+        fifteenmin_syms = active_syms(fifteenmin_syms, nse_token_map, "NSE 15-min")
+        onemin_syms     = active_syms(onemin_syms, nse_token_map, "NSE 1-min")
+
+        logboth(slog, "Found $(length(daily_syms)) NSE daily, $(length(hourly_syms)) hourly, $(length(fifteenmin_syms)) 15-min, $(length(fivemin_syms)) 5-min, $(length(onemin_syms)) 1-min CSVs")
         logboth(slog, "═══ NSE ═══")
 
         if run_daily
@@ -709,16 +728,16 @@ a big gap in one go, not a race against data disappearing.
                            dry_run, out_dir=nse_gran_dir("hourly"))
         end
 
-        if run_5min
-            logboth(slog, "── 5-min bars ──")
-            update_5min!(fivemin_syms, nse_token_map, session, yest, slog;
-                        dry_run, out_dir=nse_gran_dir("5min"))
-        end
-
         if run_15min
             logboth(slog, "── 15-min bars ──")
             update_15min!(fifteenmin_syms, nse_token_map, session, yest, slog;
                          dry_run, out_dir=nse_gran_dir("15min"))
+        end
+
+        if run_5min
+            logboth(slog, "── 5-min bars ──")
+            update_5min!(fivemin_syms, nse_token_map, session, yest, slog;
+                        dry_run, out_dir=nse_gran_dir("5min"))
         end
 
         if run_1min
@@ -745,7 +764,13 @@ a big gap in one go, not a race against data disappearing.
                 bse_1min_syms   = filter(==(sym_filter), bse_1min_syms)
             end
 
-            logboth(slog, "Found $(length(bse_daily_syms)) BSE daily, $(length(bse_hourly_syms)) hourly, $(length(bse_5min_syms)) 5-min, $(length(bse_15min_syms)) 15-min, $(length(bse_1min_syms)) 1-min CSVs")
+            bse_daily_syms  = active_syms(bse_daily_syms, bse_token_map, "BSE daily")
+            bse_hourly_syms = active_syms(bse_hourly_syms, bse_token_map, "BSE hourly")
+            bse_5min_syms   = active_syms(bse_5min_syms, bse_token_map, "BSE 5-min")
+            bse_15min_syms  = active_syms(bse_15min_syms, bse_token_map, "BSE 15-min")
+            bse_1min_syms   = active_syms(bse_1min_syms, bse_token_map, "BSE 1-min")
+
+            logboth(slog, "Found $(length(bse_daily_syms)) BSE daily, $(length(bse_hourly_syms)) hourly, $(length(bse_15min_syms)) 15-min, $(length(bse_5min_syms)) 5-min, $(length(bse_1min_syms)) 1-min CSVs")
             logboth(slog, "═══ BSE ═══")
 
             if run_daily
@@ -760,16 +785,16 @@ a big gap in one go, not a race against data disappearing.
                                dry_run, out_dir=bse_gran_dir("hourly"))
             end
 
-            if run_5min
-                logboth(slog, "── 5-min bars ──")
-                update_5min!(bse_5min_syms, bse_token_map, session, yest, slog;
-                             dry_run, out_dir=bse_gran_dir("5min"))
-            end
-
             if run_15min
                 logboth(slog, "── 15-min bars ──")
                 update_15min!(bse_15min_syms, bse_token_map, session, yest, slog;
                               dry_run, out_dir=bse_gran_dir("15min"))
+            end
+
+            if run_5min
+                logboth(slog, "── 5-min bars ──")
+                update_5min!(bse_5min_syms, bse_token_map, session, yest, slog;
+                             dry_run, out_dir=bse_gran_dir("5min"))
             end
 
             if run_1min
@@ -785,8 +810,8 @@ a big gap in one go, not a race against data disappearing.
     # ── Macro update (exchange-independent — runs regardless of --nse-only/--bse-only) ──
     if run_5min || run_15min
         @info "═══ Macro ═══"
-        run_5min  && (@info "── 5-min bars ──";  update_macro_5min!(session, yest; dry_run))
         run_15min && (@info "── 15-min bars ──"; update_macro_15min!(session, yest; dry_run))
+        run_5min  && (@info "── 5-min bars ──";  update_macro_5min!(session, yest; dry_run))
     end
 
     close_script_log(slog, "exit normally")

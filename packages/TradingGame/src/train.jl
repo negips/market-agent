@@ -47,14 +47,19 @@ on) using `train_config` as the (repeated, per iteration) training episode.
 - `live_path`: when non-empty, streams this run's current episode (portfolio
   value curve, holdings, recent trades) to that JSON path every `live_every_bars`
   bars — see `live.jl` / `website/tradinggamelive.html`. Omit to disable.
+- `timing_path`: when non-empty, every iteration's phase timings (validation
+  rollout, training rollout, PPO update, checkpoint and log writes — see `PhaseTimer`)
+  are added to this `timing.json`; `val_summary_path` likewise gets one result row per
+  held-out validation run (`val_summary.json`, see `run_summary.jl`).
 - `val_steps_dir`/`val_steps_every`: when `val_steps_dir` is non-empty, every
   `val_steps_every`-th held-out rollout also writes `iter_NNNNN.bson` there (plus a
   small `iter_NNNNN.json` per-bar summary that `tradinggamelive.html` reads), with
   the probabilities, chosen action, critic value, book state and price for EVERY
   decision step, trades or not (see `StepLog`, `load_val_steps`). `0` disables.
-- `val_curve_path`: when non-empty, appends each completed held-out
-  validation episode's full portfolio-value curve and trades to this path
-  (one JSON line per episode, never overwritten — see `save_val_run!`).
+- `val_curve_path`: when non-empty, a directory (`val_runs/`) that gets one
+  `iter_NNNNN.json` per completed held-out validation episode (full
+  portfolio-value curve, trades, final holdings) plus an `index.json` of
+  per-run summaries (never overwritten — see `save_val_run!`).
   Only meaningful alongside a non-empty `live_path` (that's what populates
   the curve/trade buffers `save_val_run!` reads); omit to disable.
 - `iteration_offset`: added to every iteration number in logging/printing/
@@ -98,6 +103,8 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
                  val_curve_path::String="",
                  val_steps_dir::String="",
                  val_steps_every::Int=1,
+                 timing_path::String="",
+                 val_summary_path::String="",
                  live_every_bars::Int=5,
                  iteration_offset::Int=0,
                  device::Symbol=:cpu,
@@ -137,12 +144,14 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
         abs_iter   = iter + iteration_offset
         iter_start = time()
 
+        rollout_timer, update_timer, val_timer, loop_timer = PhaseTimer(), PhaseTimer(), PhaseTimer(), PhaseTimer()
         start_episode!(live_tracker; iteration=abs_iter, phase="train")
         rollout_start = time()
         buffer = collect_rollout(env, policy, train_config;
                                   macro_cache=macro_cache, news_fn=news_fn, rng=rng,
-                                  live_cb=make_live_callback(live_tracker))
+                                  live_cb=make_live_callback(live_tracker), timer=rollout_timer)
         rollout_secs = time() - rollout_start
+        add_phase!(loop_timer, "train_rollout", rollout_secs)
         train_return = sum(s.reward for s in buffer)
         train_value  = portfolio_value(env)   # env sits at the rollout's terminal state
 
@@ -154,8 +163,9 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
                              clip_eps=CLIP_EPS, value_loss_coef=VALUE_LOSS_COEF,
                              entropy_coef=entropy_coef, gamma=discount_factors(train_config.rules, env.cache)[1],
                              gae_lambda=discount_factors(train_config.rules, env.cache)[2], rng=rng,
-                             verbose=true, progress_cb=make_update_callback(live_tracker, env))
+                             verbose=true, progress_cb=make_update_callback(live_tracker, env), timer=update_timer)
         update_secs = time() - update_start
+        add_phase!(loop_timer, "ppo_update", update_secs)
 
         push!(log["train_return"], train_return)
         push!(log["train_final_value"], train_value)
@@ -167,19 +177,25 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
         candidate_return = val_config === nothing ? train_return : nothing
         val_return, val_value = nothing, nothing
         val_rollout_secs = 0.0
+        n_val_bars = 0
         do_eval = val_config !== nothing && (iter % eval_every == 0 || iter == iterations)
         if do_eval
             start_episode!(live_tracker; iteration=abs_iter, phase="val")
             val_rollout_start = time()
             log_steps = !isempty(val_steps_dir) && val_steps_every > 0 && (iter - 1) % val_steps_every == 0
             steps_ref = log_steps ? Ref{Any}(nothing) : nothing
+            summary_ref = Ref{Any}(nothing)
             eval_buffer = collect_rollout(env, policy, val_config;
                                            macro_cache=macro_cache, news_fn=news_fn,
                                            greedy=true, rng=rng, step_log=steps_ref,
-                                           live_cb=make_live_callback(live_tracker))
+                                           live_cb=make_live_callback(live_tracker),
+                                           timer=val_timer, summary=summary_ref)
             val_rollout_secs = time() - val_rollout_start
+            add_phase!(loop_timer, "val_rollout", val_rollout_secs)
+            n_val_bars = length(eval_buffer)
             val_return = sum(s.reward for s in eval_buffer)
             val_value  = portfolio_value(env)
+            tsave = tic(loop_timer)
             if steps_ref !== nothing && steps_ref[] !== nothing
                 save_step_summary(joinpath(val_steps_dir, "iter_" * lpad(string(abs_iter), 5, '0') * ".json"), steps_ref[];
                                   meta=Dict("iteration" => abs_iter, "val_return" => val_return, "val_final_value" => val_value))
@@ -188,13 +204,16 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
                                         "game_version" => val_config.rules.version, "n_candidates" => length(val_config.candidate_universe),
                                         "note" => "probs = HOLD/SELL/BUY after the sell mask; p_sell_raw is before it; greedy (argmax) validation rollout"))
             end
+            tsave = toc!(loop_timer, "val_save_steps", tsave)
             push!(log["val_return"], val_return)
             push!(log["val_final_value"], val_value)
             save_val_run!(live_tracker, val_curve_path, env; iteration=abs_iter, val_return=val_return, val_value=val_value)
+            toc!(loop_timer, "val_save_run", tsave)
             candidate_return = val_return
         end
 
         improved = candidate_return !== nothing && candidate_return > best_return
+        tckpt = tic(loop_timer)
         if improved
             best_return           = candidate_return
             best_state            = deepcopy(Flux.state(cpu(policy)))
@@ -207,9 +226,11 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
                                       "iteration" => abs_iter))
             end
         end
+        toc!(loop_timer, "checkpoint", tckpt)
 
         iter_secs = time() - iter_start
-        eval_str  = val_return === nothing ? "" : @sprintf(" | val %.4f", val_return)
+        eval_str  = (get(stats, "legality_loss", 0f0) > 0 ? @sprintf(" | legality %.4f", stats["legality_loss"]) : "") *
+                    (val_return === nothing ? "" : @sprintf(" | val %.4f", val_return))
         @printf("Iter %4d | train_return %.4f | value %.0f | loss %.4f%s | %s (rollout %s, val %s, update %s)%s\n",
                 abs_iter, train_return, train_value, stats["loss"], eval_str,
                 _fmt_duration(round(Int, iter_secs)), _fmt_duration(round(Int, rollout_secs)),
@@ -223,7 +244,8 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
             logged_best = isfinite(best_return) ? best_return : nothing
             open(episode_log_path, "a") do io
                 JSON3.write(io, (iteration=abs_iter, train_return=train_return, train_final_value=train_value,
-                                 loss=stats["loss"], val_return=val_return, val_final_value=val_value,
+                                 loss=stats["loss"], legality_loss=get(stats, "legality_loss", 0f0),
+                                 val_return=val_return, val_final_value=val_value,
                                  best_return=logged_best, improved=improved,
                                  rollout_secs=round(rollout_secs, digits=1),
                                  val_rollout_secs=round(val_rollout_secs, digits=1),
@@ -232,6 +254,20 @@ function train_policy!(policy::ActorCriticPolicy, env::TradingGameEnv, train_con
                 println(io)
             end
         end
+
+        if do_eval && !isempty(val_summary_path) && summary_ref[] !== nothing
+            per_bar_ms = n_val_bars > 0 ? 1000 * val_rollout_secs / n_val_bars : 0.0
+            save_val_summary!(val_summary_path, merge(
+                (iteration=abs_iter, val_return=round(Float64(val_return), digits=6), game_version=val_config.rules.version,
+                 n_candidates=length(val_config.candidate_universe)),
+                summary_ref[],
+                (rollout_secs=round(val_rollout_secs, digits=2), ms_per_bar=round(per_bar_ms, digits=2),
+                 train_rollout_secs=round(rollout_secs, digits=2), update_secs=round(update_secs, digits=2),
+                 iter_secs=round(time() - iter_start, digits=2))))
+        end
+        isempty(timing_path) || save_timing!(timing_path; iteration=abs_iter, bars_val=n_val_bars, bars_train=length(buffer),
+                                             val=val_timer, train_rollout=rollout_timer, update=update_timer,
+                                             loop=loop_timer, iter_secs=time() - iter_start)
 
         stop_now_file = isempty(stop_file) ? "" : replace(stop_file, "STOP" => "STOP_NOW")
         if !isempty(stop_now_file) && isfile(stop_now_file)

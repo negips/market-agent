@@ -1,0 +1,99 @@
+# One file per run, read by build_cache.jl, build_market_universe_snapshot.jl,
+# build_dataset.jl, prepare_training_data.jl and train_trading_policy.jl:
+#
+#   julia --project=packages/<pkg> scripts/<script>.jl --config configs/bse_v3.toml
+#
+# Each script reads only its own sections. A command-line flag overrides the file
+# for that one invocation; --print-config shows what a script would use.
+# Converted from build_market_universe.flags, prepare_training.flags and
+# train_trading_policy.flags (and the build_cache flags in CLAUDE.md's v3 recipe).
+
+[cache]                       # build_cache.jl
+exchange    = "bse"           # "nse" | "bse"
+granularity = "15min"          # "hourly" | "15min" 
+min_mcap    = 500.0           # drop companies below this market cap (Rs crore)
+history     = "resample"      # "resample" | "hourly" | "none"; v3 needs a history axis
+
+[universe]                    # build_market_universe_snapshot.jl, prepare_training_data.jl
+strategy = "random-bucketed"           # "shared-topcap" | "disjoint-topcap" | "random" | "random-bucketed"
+n        = 80                 # candidates per side (shared-topcap, random)
+disjoint = true               # independent train / val draws (random, random-bucketed)
+# seed     = 42               # reproducible draw; leave out for a fresh one each time
+# n_train  = 60               # disjoint-topcap only
+# n_val    = 20
+# bands    = ["0:5000:15", "5000:inf:15"]   # random-bucketed only: "LO:HI:QUOTA"
+bands    = ["2000:inf:80"]   # random-bucketed only: "LO:HI:QUOTA"
+
+[dataset]                     # build_dataset.jl (swing predictor, not the game)
+pred_hours = 70               # label length in hourly bars; 35 for v1/v2, 70 for v3
+
+[dates]                       # prepare_training_data.jl and train_trading_policy.jl share these
+train_start = 2022-01-03      # dates are written without quotes
+train_end   = 2024-12-30
+val_start   = 2025-01-01
+val_end     = 2025-12-30
+# val_window = "trailing"     # "trailing" | "same", used for any bound left out above
+# val_days   = 60
+
+[prepare]                     # prepare_training_data.jl
+skip_news = true              # news and 1-minute snapshots are NSE-only
+# skip_1min = true
+# skip_universe    = false
+# rebuild_universe = false
+
+[forecaster_cache]            # build_forecaster_cache.jl; the cache covers [dates] (plus 10 days of margin) unless from/to are given
+granularity 	= "1min"          # 1min | 5min | 15min | hourly | daily: the bar size the forecaster reads and predicts
+exchange 	= "bse"              # reads website/data/ohlcv/{exchange}/{1min,5min,15min,hourly,daily}
+# out              = "website/data/forecaster_cache_1min.bson"   # default: forecaster_cache_{granularity}.bson
+# from             = 2021-12-24
+# to               = 2025-12-30
+# min_day_fraction = 0.2      # a day joins the axis when this share of the symbols traded in it
+
+[forecaster]                  # train_minute_forecaster.jl (v4: next-minute return + timestamp; layers on architecture.html)
+window  	= 96          # M: minutes of history per window
+d       	= 32          # model width; must be a multiple of heads. Sweep 32 / 64 / 128 and keep the smallest that matches the best val skill
+heads   	= 4
+blocks  	= 4           # L: causal time-attention blocks
+dropout 	= 0.1
+epochs          = 80
+steps_per_epoch = 500         # an "epoch" is this many random batches
+batch           = 32          # windows per batch; memory is dominated by the M x M attention scores
+# lr              = 0.0003
+# weight_decay    = 0.01
+# warmup_steps    = 200
+# val_windows     = 256       # windows in each evaluation set
+device          = "gpu"     # "cpu" | "gpu"
+loss            = "student_t" # "student_t" | "gaussian" | "huber": predict a location and a scale per return and minimise the NLL, or fit the location alone (huber)
+nu              = 4.0         # Student-t degrees of freedom (above 2)
+# nll_beta        = 0.5       # beta-NLL exponent: weight each term by sigma^(2*beta), held constant; 0 = plain NLL
+# dtype           = "float32" # "float32" | "float16" | "float64": number type of the forward/backward pass
+# seed            = 42
+init_from       = "website/data/forecaster/forecaster.bson"   # fresh run (epoch 1, logs cleared) with weights warm-started from this checkpoint; the architecture must match
+resume          = false     # true = load forecaster.bson and continue the epoch numbering; exclusive with init_from; --no-resume overrides it
+
+[game]                        # train_trading_policy.jl
+version            = 3
+use_macro          = false
+use_news           = false
+illegal_penalty    = 0.0001   # fraction of portfolio value per illegal move
+reward_window_days = 3        # terminal reward paid every N trading days; 0 = whole period
+# reward_mode      = "terminal"   # "terminal" | "stepwise"
+# history_encoder  = "direct"     # "direct" | "gru"
+# initial_cash     = 1000000.0
+# cash_penalty     = 0.0
+# hold_penalty     = 0.0
+
+[train]                       # train_trading_policy.jl
+iterations = 500
+minibatch  = 128
+eval_every = 1
+entropy    = 0.01
+device     = "gpu"            # "cpu" | "gpu"
+# lr              = 0.0003
+# seed            = 42
+# val_steps_every = 1         # 0 disables the per-step validation log
+# live            = true      # false = no live_status.json
+# init_from       = "website/data/trading_game/policy.bson"   # fresh run (iteration 1) with weights warm-started from this checkpoint
+# resume          = false     # true = load policy.bson and continue the iteration numbering; exclusive with init_from; --no-resume overrides it
+
+

@@ -367,6 +367,22 @@ of exchange:
    or `ETF`-named `EQ` row on both exchanges is a genuine fund vehicle,
    none is an operating company's own name.
 
+10. `_NAV_NAME_RE` / `_AMC_NAME_RE` / `_BHARATBOND_SYM_RE`, and an `ETF` check that no
+   longer needs a word boundary on its left — NSE lists ~600 fund-linked
+   tickers as nominal `EQ` rows that the rules above all miss, and none of
+   them ever trades (their 1-minute collection returns "0 bars"):
+   **INAV** tickers, the indicative net asset value of an ETF
+   (`MAFSETINAV`, named `"MAFSETF INAV"`; `AUTOBEINAV`, `"AUTOBEES INAV"`; `AXISGOINAV`,
+   `"AXISGOLD NAV"`), 349 of them, which `\bETF\b` misses because the name
+   glues `ETF` to the fund's name (`MAFSETF`); AMC-prefixed tickers whose name
+   is `"<AMC> - <ticker>"` (`"BIRLASLAMC - ABGSECINAV"`, `"AONEAMC - AONESILVER"`), 265;
+   `ETF`-suffixed names (`"ABSLBANETF"`, 36); and the Bharat Bond ETF series
+   (`BHARATBOND-APR30`, named `"NSE INDEX BHARATBOND-APR30"`). Checked against
+   `nse_companies_latest.json` (the bhavcopy EQ-series list): these rules
+   drop 398 NSE tickers and **none** of them is in that company list, and
+   they drop nothing from BSE's list. `BEES` was tested and rejected as a
+   rule, because it would remove `FIRSTCRY` (`BRAINBEES SOLUTIONS`).
+
 BSE additionally needs two more checks, since many of its debt instruments
 carry cryptic, non-descriptive names (e.g. `773CG2034` named just
 `"773CG2034"`) that the name-based rules above can't catch:
@@ -427,7 +443,10 @@ const _DEBT_NAME_RE      = r"\bSDL\b|\bGOI\b|TBILL|GOLD\s?BONDS?|\bNCD\b|DEBENTU
 const _EXCLUDED_SUFFIXES = ("-RR", "-IV", "-E1", "-BE", "-BZ", "-BL", "-ST")
 const _TRUST_NAME_RE     = r"\bREIT\b|\bINVIT\b"i
 const _FUND_NAME_RE      = r"\bFUND\b"i
-const _ETF_NAME_RE       = r"\bETF\b"i
+const _ETF_NAME_RE       = r"ETF\b"i
+const _NAV_NAME_RE       = r"\bI?NAV\b"i
+const _AMC_NAME_RE       = r"AMC\s*-"i
+const _BHARATBOND_SYM_RE = r"^BHARATBOND"
 
 function build_token_map(instruments::DataFrame; exchange::String="NSE")::Dict{String, Int}
     map = Dict{String, Int}()
@@ -444,6 +463,10 @@ function build_token_map(instruments::DataFrame; exchange::String="NSE")::Dict{S
                 !isnothing(match(_TRUST_NAME_RE, name)) && continue
                 !isnothing(match(_FUND_NAME_RE, name))  && continue
                 !isnothing(match(_ETF_NAME_RE, name))   && continue
+                !isnothing(match(_NAV_NAME_RE, name))   && continue
+                !isnothing(match(_AMC_NAME_RE, name))   && continue
+                endswith(sym, "INAV")                   && continue
+                !isnothing(match(_BHARATBOND_SYM_RE, sym)) && continue
                 any(endswith(sym, s) for s in _EXCLUDED_SUFFIXES) && continue
                 if exchange == "BSE"
                     !isnothing(match(_BSE_DEBT_RE, sym))           && continue

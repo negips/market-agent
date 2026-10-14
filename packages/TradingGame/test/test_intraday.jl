@@ -114,7 +114,8 @@ end
         @test r2.cash_token && !r3.cash_token                    # v3 has no cash token...
         @test r3.cap_features && r3.portfolio_in_fusion          # ...the cash state rides in the portfolio scalars into fusion
         @test r3.portfolio_to_critic && !rules_v2().portfolio_to_critic   # ...and the critic reads them directly too
-        @test n_portfolio_scalars(r3) == N_PORTFOLIO_SCALARS_V2
+        @test n_portfolio_scalars(r3) == N_PORTFOLIO_SCALARS_V2 + N_LEGALITY_PORTFOLIO
+        @test n_portfolio_scalars(rules_v2()) == N_PORTFOLIO_SCALARS_V2
         @test (r2.use_macro, r2.use_news) == (true, true)
         @test (r3.use_macro, r3.use_news) == (false, false)
         cfg(rules, cache) = EpisodeConfig(initial_cash=1e5, start_date=cache.dates[1], end_date=cache.dates[end],
@@ -157,7 +158,7 @@ end
         @test_throws ErrorException rules_v3(history_encoder=:lstm)
         @test !r3.use_volatility && r3.obs_window_days == OBS_WINDOW_DAYS_V3 == 10
         @test n_price_channels(r3) == 1 && n_price_channels(rules_v2()) == 2
-        @test r3.use_history && n_stock_features(r3) == 4 && n_stock_features(rules_v2()) == 3
+        @test r3.use_history && n_stock_features(r3) == 4 + N_LEGALITY_FEATURES == 8 && n_stock_features(rules_v2()) == 3
         @test obs_window_bars(r3, cache) == 70                           # 10 trading days x 7 hourly history bars
         @test obs_window_bars(r3, make_test_cache()) == 70
         @test obs_window_bars(rules_v2(), cache) == N_HOURLY_BARS_SHORT   # v1/v2 keep the fixed 120 bars
@@ -287,7 +288,8 @@ end
 
     obs = assemble_observation(env)
     @test size(obs.hourly) == (70, 1, 2)                       # 70 hourly history bars, close only
-    @test size(obs.holding) == (4, 2)                          # held, P&L, hold left, snapshot
+    @test size(obs.holding) == (8, 2)                          # held, P&L, hold left, snapshot, 4 legality inputs
+    @test length(obs.portfolio) == 7
     @test all(isfinite, obs.hourly) && all(obs.hourly .> 0)
 
     # the window is 70 log-returns between the newest 71 COMPLETED hourly closes
@@ -312,22 +314,23 @@ end
     small = (embed_dim=8, macro_embed_dim=4, attn_heads=2, critic_hidden=[8])
     for (name, hb) in (("direct", 70), ("gru", 0))
         policy = ActorCriticPolicy(; small..., use_macro=false, use_news=false, portfolio_in_fusion=true,
-                                   portfolio_scalars=6, portfolio_to_critic=true,
-                                   price_channels=1, stock_features=4, history_bars=hb)
-        @test policy.portfolio_encoder === nothing && policy.cash_encoder === nothing && policy.global_in_fusion == 6
+                                   portfolio_scalars=7, portfolio_to_critic=true, legality_head=true,
+                                   price_channels=1, stock_features=8, history_bars=hb)
+        @test policy.portfolio_encoder === nothing && policy.cash_encoder === nothing && policy.global_in_fusion == 7
         @test (policy.hourly_encoder === nothing) == (hb > 0)
-        @test policy_stock_inputs(policy) == (false, 4)
+        @test policy_stock_inputs(policy) == (false, 8)
         reset!(env, cfg)
         buf = collect_rollout(env, policy, cfg; rng=MersenneTwister(2))
-        @test size(buf[1].obs.hourly) == (70, 1, 2) && size(buf[1].obs.holding) == (4, 2)
+        @test size(buf[1].obs.hourly) == (70, 1, 2) && size(buf[1].obs.holding) == (8, 2)
+        @test size(buf[1].blockers) == (N_BUY_BLOCKERS, 2)
         stats = ppo_update!(policy, Flux.setup(Flux.Adam(1e-3), policy), buf; k_epochs=1, minibatch_size=32)
-        @test isfinite(stats["loss"])
+        @test isfinite(stats["loss"]) && isfinite(stats["legality_loss"]) && stats["legality_loss"] > 0
 
         path = tempname() * ".bson"
         save_policy(policy, path; small...)
         loaded, hp, _ = load_policy(path)
-        @test hp.price_channels == 1 && hp.stock_features == 4 && hp.history_bars == hb && hp.global_in_fusion == 6 && hp.critic_global == 6
-        @test loaded.portfolio_encoder === nothing && loaded.global_in_fusion == 6
+        @test hp.price_channels == 1 && hp.stock_features == 8 && hp.history_bars == hb && hp.global_in_fusion == 7 && hp.critic_global == 7 && hp.legality_head
+        @test loaded.portfolio_encoder === nothing && loaded.global_in_fusion == 7 && loaded.legality_head !== nothing
         @test (loaded.hourly_encoder === nothing) == (hb > 0)
     end
 
@@ -372,6 +375,87 @@ end
     @test_throws ErrorException reset!(TradingGameEnv(nohist), cfg)
     @test_throws ErrorException TradingGame.assemble_observation!(zeros(Float32, 70, 2, 2), zeros(Float32, N_MACRO_DAYS, N_MACRO_SERIES),
         zeros(Float32, N_NEWS_FEATURES, 2), zeros(Float32, 4, 2), zeros(Float32, N_PORTFOLIO_SCALARS_V2), env)
+end
+
+@testset "Legality inputs and the auxiliary legality head" begin
+    syms = ["A", "B", "C", "D", "E", "F", "G", "H"]
+    cache = make_test_cache(symbols=syms, n_days=14)
+    rules = rules_v3(illegal_penalty=0.01)
+    cfg = EpisodeConfig(initial_cash=1e5, start_date=cache.dates[1], end_date=cache.dates[end], candidate_universe=syms,
+                        rules=GameRules(version=3, same_bar_execution=true, forced_exit=false, max_hold_days=MAX_HOLD_DAYS_V2,
+                                        use_macro=false, use_news=false, premask=true, cap_features=true, portfolio_in_fusion=true,
+                                        portfolio_to_critic=true, legality_inputs=true, illegal_penalty_coef=0.01))
+    env = TradingGameEnv(cache); reset!(env, cfg)
+    di() = env.cache.date_index[env.current_date]
+    @test rules.legality_inputs && !rules_v2().legality_inputs
+    @test n_stock_features(cfg.rules) == 3 + N_LEGALITY_FEATURES && n_portfolio_scalars(cfg.rules) == N_PORTFOLIO_SCALARS_V2 + 1
+
+    @testset "a fresh book: everything is buyable" begin
+        s = legality_state(env, di())
+        @test all(s.cooldown_left .== 0) && all(s.headroom .== 1) && all(s.sellable .== 0)
+        @test all(s.afford .> 0) && s.free_slots == s.n_max == n_max_holdings(8)
+        @test !any(buy_blockers(env, di()))
+        o = assemble_observation(env)
+        @test size(o.holding) == (7, 8)
+        @test all(o.holding[4, :] .== 0) && all(o.holding[5, :] .> 0) && all(o.holding[6, :] .== 1) && all(o.holding[7, :] .== 0)
+        @test o.portfolio[end] == 1f0
+    end
+
+    @testset "each blocker lights up exactly when its rule would refuse the buy" begin
+        # cash for less than one share of anything
+        env.portfolio.cash = 5.0
+        s = legality_state(env, di()); b = buy_blockers(env, di())
+        @test all(s.afford .< 0) && all(b[2, :])
+        env.portfolio.cash = 1e5
+
+        # a held stock: sellable only after the lock-up, no cooldown, headroom shrinks, a slot is used
+        step!(env, RawAction[RawAction(1, BUY, 1.0)])
+        s = legality_state(env, di()); b = buy_blockers(env, di())
+        @test s.free_slots == s.n_max - 1
+        @test s.headroom[1] < 1 && s.sellable[1] == 0
+        @test !b[3, 1]                                   # held, so no new slot needed
+        @test s.cooldown_left[1] == 0                    # the cooldown only blocks opening a position
+
+        # rule 15: sell it after the lock-up, then it sits in cooldown for REBUY_COOLDOWN_DAYS
+        while di() - env.portfolio.holdings[1].entry_date_idx < MIN_HOLD_DAYS
+            step!(env, RawAction[])
+        end
+        @test legality_state(env, di()).sellable[1] == 1
+        step!(env, RawAction[RawAction(1, SELL, 0.0)])
+        s = legality_state(env, di()); b = buy_blockers(env, di())
+        @test s.cooldown_left[1] > 0 && b[1, 1] && !any(b[1, 2:end])
+        o = assemble_observation(env)
+        @test o.holding[4, 1] ≈ s.cooldown_left[1] / REBUY_COOLDOWN_DAYS
+
+        # rule 13: every slot taken -> a not-held stock is blocked, a held one is not
+        env.portfolio.cash = 1e5
+        n_max = n_max_holdings(8)
+        step!(env, RawAction[RawAction(i, BUY, 1.0) for i in 2:(n_max + 1)])
+        s = legality_state(env, di()); b = buy_blockers(env, di())
+        @test s.free_slots == 0
+        held = findall(s.held)
+        @test all(!b[3, c] for c in held) && all(b[3, c] for c in setdiff(1:8, held))
+        @test assemble_observation(env).portfolio[end] == 0f0
+        # rule 12: a position at the cap has no headroom
+        env.portfolio.cash = 0.0
+        @test all(buy_blockers(env, di())[2, :])
+    end
+
+    @testset "rollout stores the labels, the policy has a legality head, and its loss trains down" begin
+        env2 = TradingGameEnv(cache)
+        policy = ActorCriticPolicy(embed_dim=16, macro_embed_dim=4, attn_heads=2, critic_hidden=[8], use_macro=false, use_news=false,
+                                   portfolio_in_fusion=true, portfolio_scalars=7, portfolio_to_critic=true,
+                                   price_channels=1, stock_features=8, history_bars=0, legality_head=true, seed=3)
+        # the v3 history axis needs an intraday cache; here the clock-window variant keeps the fixture light
+        @test policy.legality_head !== nothing
+        _, _, _, leg = TradingGame.legality_logits(policy, zeros(Float32, 5, 1, 8, 2), zeros(Float32, N_NEWS_FEATURES, 8, 2),
+                                                   zeros(Float32, 8, 8, 2), zeros(Float32, N_MACRO_DAYS, N_MACRO_SERIES, 2), zeros(Float32, 7, 2))
+        @test size(leg) == (N_BUY_BLOCKERS, 8, 2)
+        plain = ActorCriticPolicy(embed_dim=16, macro_embed_dim=4, attn_heads=2, critic_hidden=[8])
+        @test plain.legality_head === nothing
+        @test TradingGame.legality_logits(plain, zeros(Float32, 5, 2, 3, 1), zeros(Float32, N_NEWS_FEATURES, 3, 1),
+                                          zeros(Float32, 3, 3, 1), zeros(Float32, N_MACRO_DAYS, N_MACRO_SERIES, 1), zeros(Float32, 4, 1))[4] === nothing
+    end
 end
 
 @testset "Per-step validation log: every decision bar, trades or not" begin

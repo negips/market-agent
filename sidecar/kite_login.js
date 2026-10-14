@@ -43,6 +43,35 @@ try {
   }
 } catch { /* .env is optional */ }
 
+// ── Help ──────────────────────────────────────────────────────────────────────
+
+const HELP = `kite_login.js — obtain a fresh Kite Connect access token via browser automation.
+
+Usage:
+  node sidecar/kite_login.js [--account N] [--help]
+
+Options:
+  --account N   Use the Kite app KITE_HISTORICAL{N}_API_KEY/_SECRET (default 1,
+                which reads KITE_HISTORICAL_API_KEY/_SECRET). Each account has
+                its own rate limit and session file.
+  -h, --help    Show this help and exit.
+
+Required env vars (read from the repo-root .env):
+  KITE_HISTORICAL_API_KEY / _SECRET   (or KITE_HISTORICAL{N}_* for --account N)
+  KITE_USER_ID, KITE_PASSWORD, KITE_TOTP_SECRET
+
+Output:
+  sidecar/kite_session.json (account 1) or sidecar/kite_session{N}.json.
+  The token is valid for one trading day.
+
+Opens a visible Chromium window, so a display is required.
+`;
+
+if (process.argv.includes('--help') || process.argv.includes('-h')) {
+  console.log(HELP);
+  process.exit(0);
+}
+
 // ── Config ────────────────────────────────────────────────────────────────────
 
 const accountArg = process.argv.indexOf('--account');
