@@ -9,6 +9,10 @@ Sources:
   2. NSE sec_bhavdata  (nsearchives.nseindia.com) — today's EQ closing prices
   3. Tijori screener   (localhost:3001)           — market cap in ₹ Cr + sector
 
+Confidence scores already in nse_companies_latest.json (from run_confidence_checks.jl) are carried
+over by symbol, so refreshing prices and market caps does not discard them. Each score keeps its own
+`checked_at`; run_confidence_checks.jl re-scores the top N and overwrites theirs.
+
 Usage (sidecar must already be running on port 3001):
   julia scripts/companies/generate_nse_list.jl
   julia scripts/companies/generate_nse_list.jl 2026-09-07   # explicit date
@@ -143,14 +147,33 @@ end
 
 # ── Step 5: Write JSON ────────────────────────────────────────────────────────
 
+"""
+    load_existing_confidence(out_dir) -> (scores, confidence_at)
+
+The confidence results in `nse_companies_latest.json`, by symbol, and the time they were last computed (`nothing` if never).
+Failed analyses (`"confidence": null`) are not carried. Without an existing file there is nothing to carry.
+"""
+function load_existing_confidence(out_dir::String)
+    path = joinpath(out_dir, "nse_companies_latest.json")
+    isfile(path) || return Dict{String,Any}(), nothing
+    raw = JSON3.read(read(path, String))
+    scores = Dict{String,Any}()
+    for c in raw.companies
+        conf = get(c, :confidence, nothing)
+        conf === nothing || (scores[string(c.symbol)] = conf)
+    end
+    return scores, get(raw, :confidence_at, nothing)
+end
+
 function write_json(df::DataFrame, date::Date, out_dir::String)
     mkpath(out_dir)
+    kept, confidence_at = load_existing_confidence(out_dir)
     fname = "nse_companies_" * Dates.format(date, "yyyymmdd") * ".json"
     out_path = joinpath(out_dir, fname)
 
     companies = []
     for row in eachrow(df)
-        push!(companies, Dict(
+        push!(companies, merge(Dict(
             "symbol"        => row.symbol,
             "name"          => row.name,
             "isin"          => row.isin,
@@ -162,16 +185,18 @@ function write_json(df::DataFrame, date::Date, out_dir::String)
             "volume"        => ismissing(row.volume)        ? nothing : row.volume,
             "turnover_lacs" => ismissing(row.turnover_lacs) ? nothing : row.turnover_lacs,
             "market_cap_cr" => ismissing(row.market_cap_cr) ? nothing : row.market_cap_cr,
-        ))
+        ), haskey(kept, row.symbol) ? Dict("confidence" => kept[row.symbol]) : Dict{String,Any}()))
     end
 
-    payload = Dict(
+    payload = Dict{String,Any}(
         "date"          => string(date),
         "generated_at"  => string(now(UTC)),
         "total"         => length(companies),
         "sources"       => ["NSE equity list", "NSE sec_bhavdata", "Tijori Finance screener"],
         "companies"     => companies,
     )
+    confidence_at === nothing || (payload["confidence_at"] = string(confidence_at))
+    @info "Carried over $(count(c -> haskey(c, "confidence"), companies)) of $(length(kept)) existing confidence scores"
 
     open(out_path, "w") do io
         JSON3.pretty(io, payload)
@@ -203,6 +228,8 @@ Options:
 
 Prerequisites:
   - Tijori sidecar running on port 3001 (node sidecar/server_http.js)
+
+Existing confidence scores in nse_companies_latest.json are kept (matched by symbol).
 
 Output:
   website/data/nse_companies_YYYYMMDD.json   — dated snapshot

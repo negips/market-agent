@@ -24,6 +24,28 @@
     #main-table.bse .nse-only { display:none; }
     .bse-only-opt { display:none; }
     body.is-bse .bse-only-opt { display:inline-flex; }
+    .filter-bar { display:flex; flex-wrap:wrap; gap:10px 18px; align-items:flex-start; margin:0 0 14px; padding:10px 14px;
+                  background:var(--surface); border:1px solid var(--border); border-radius:8px; }
+    .filter-group { display:flex; flex-direction:column; gap:4px; }
+    .filter-group > label, .filter-group > .filter-title { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+    .range-pair { display:flex; align-items:center; gap:6px; color:var(--muted); }
+    .filter-bar input[type=text], .filter-bar select {
+      background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px;
+      padding:5px 8px; font-size:12.5px; font-family:inherit; }
+    .filter-bar input[type=text] { width:92px; }
+    .filter-bar select { max-width:200px; }
+    .filter-bar input:focus, .filter-bar select:focus { outline:none; border-color:var(--accent); }
+    .filter-bar input.invalid { border-color:var(--red, #ef4444); }
+    .preset-row { display:flex; gap:5px; flex-wrap:wrap; }
+    .preset { padding:3px 9px; border:1px solid var(--border); border-radius:12px; background:transparent; color:var(--text-dim);
+              cursor:pointer; font-size:11.5px; font-family:inherit; }
+    .preset:hover { border-color:var(--accent); color:var(--text); }
+    .preset.active { background:var(--accent); border-color:var(--accent); color:#fff; }
+    .filter-reset { margin-left:auto; padding:6px 12px; border:1px solid var(--border); border-radius:6px; background:transparent;
+                    color:var(--text-dim); cursor:pointer; font-size:12.5px; font-family:inherit; }
+    .filter-reset:hover:not(:disabled) { border-color:var(--accent); color:var(--text); }
+    .filter-reset:disabled { opacity:.45; cursor:default; }
+    body.is-bse .nse-only-filter { display:none; }
   </style>
 </head>
 <body>
@@ -80,6 +102,61 @@
       <div class="controls-right">
         <div class="controls-meta" id="stats-meta">Loading…</div>
       </div>
+    </div>
+
+    <div class="filter-bar" id="filter-bar">
+      <div class="filter-group">
+        <span class="filter-title">Market cap (₹ Cr)</span>
+        <div class="range-pair">
+          <input type="text" inputmode="decimal" id="f-mcap-min" placeholder="min" autocomplete="off" aria-label="Minimum market cap in crore rupees">
+          –
+          <input type="text" inputmode="decimal" id="f-mcap-max" placeholder="max" autocomplete="off" aria-label="Maximum market cap in crore rupees">
+        </div>
+        <div class="preset-row" id="mcap-presets">
+          <button type="button" class="preset" data-min="" data-max="500">&lt; 500</button>
+          <button type="button" class="preset" data-min="500" data-max="5000">500–5k</button>
+          <button type="button" class="preset" data-min="5000" data-max="20000">5k–20k</button>
+          <button type="button" class="preset" data-min="20000" data-max="">≥ 20k</button>
+        </div>
+      </div>
+      <div class="filter-group">
+        <span class="filter-title">Confidence score</span>
+        <div class="range-pair">
+          <input type="text" inputmode="decimal" id="f-conf-min" placeholder="min" autocomplete="off" aria-label="Minimum confidence score">
+          –
+          <input type="text" inputmode="decimal" id="f-conf-max" placeholder="max" autocomplete="off" aria-label="Maximum confidence score">
+        </div>
+      </div>
+      <div class="filter-group">
+        <label for="f-status">Confidence status</label>
+        <select id="f-status">
+          <option value="">All</option>
+          <option value="pass">Pass (≥ 40)</option>
+          <option value="fail">Fail (&lt; 40)</option>
+          <option value="unscored">Not scored</option>
+        </select>
+      </div>
+      <div class="filter-group nse-only-filter">
+        <span class="filter-title">Close (₹)</span>
+        <div class="range-pair">
+          <input type="text" inputmode="decimal" id="f-price-min" placeholder="min" autocomplete="off" aria-label="Minimum close price">
+          –
+          <input type="text" inputmode="decimal" id="f-price-max" placeholder="max" autocomplete="off" aria-label="Maximum close price">
+        </div>
+      </div>
+      <div class="filter-group nse-only-filter">
+        <span class="filter-title">Volume</span>
+        <div class="range-pair">
+          <input type="text" inputmode="decimal" id="f-vol-min" placeholder="min" autocomplete="off" aria-label="Minimum volume">
+          –
+          <input type="text" inputmode="decimal" id="f-vol-max" placeholder="max" autocomplete="off" aria-label="Maximum volume">
+        </div>
+      </div>
+      <div class="filter-group">
+        <label for="f-sector">Sector</label>
+        <select id="f-sector"><option value="">All sectors</option></select>
+      </div>
+      <button type="button" class="filter-reset" id="filter-reset" disabled>Reset filters</button>
     </div>
 
     <div class="tbl-wrap">
@@ -152,6 +229,8 @@ async function loadExchange(ex) {
 
   allData = data.companies;
   currentPage = 1;
+  fillSectors();
+  syncFilterUI();
   applyFilterAndSort();
   stateArea.style.display = 'none';
   table.style.display = '';
@@ -163,6 +242,93 @@ document.getElementById('ex-tabs').addEventListener('click', (e) => {
 });
 document.getElementById('bse-only-toggle').addEventListener('change', (e) => {
   bseOnly = e.target.checked; currentPage = 1; applyFilterAndSort();
+});
+
+const RANGE_FILTERS = {
+  mcap:  { min: 'f-mcap-min',  max: 'f-mcap-max',  value: c => c.market_cap_cr },
+  conf:  { min: 'f-conf-min',  max: 'f-conf-max',  value: c => c.confidence?.score },
+  price: { min: 'f-price-min', max: 'f-price-max', value: c => c.close_price, nseOnly: true },
+  vol:   { min: 'f-vol-min',   max: 'f-vol-max',   value: c => c.volume,      nseOnly: true },
+};
+const statusSel = document.getElementById('f-status');
+const sectorSel = document.getElementById('f-sector');
+const resetBtn  = document.getElementById('filter-reset');
+
+/** Parse a bound typed in an input ("1,500" ok); null when empty, NaN when not a number. */
+function readBound(id) {
+  const el = document.getElementById(id);
+  const text = el.value.trim().replace(/,/g, '');
+  const n = text === '' ? null : Number(text);
+  el.classList.toggle('invalid', n !== null && Number.isNaN(n));
+  return n;
+}
+
+/** Current filter state; a range filter with no usable bound is left out. NSE-only ranges do not apply on BSE. */
+function activeFilters() {
+  const ranges = [];
+  for (const f of Object.values(RANGE_FILTERS)) {
+    if (f.nseOnly && exchange === 'bse') continue;
+    const lo = readBound(f.min), hi = readBound(f.max);
+    const loOk = lo !== null && !Number.isNaN(lo), hiOk = hi !== null && !Number.isNaN(hi);
+    if (loOk || hiOk) ranges.push({ value: f.value, lo: loOk ? lo : -Infinity, hi: hiOk ? hi : Infinity });
+  }
+  return { ranges, status: statusSel.value, sector: sectorSel.value };
+}
+
+function passesFilters(c, f) {
+  for (const r of f.ranges) {
+    const v = r.value(c);
+    if (v == null || v < r.lo || v > r.hi) return false;
+  }
+  if (f.status) {
+    const conf = c.confidence;
+    if (f.status === 'unscored' ? conf?.score != null
+        : conf?.score == null || (f.status === 'pass') !== !!conf.pass) return false;
+  }
+  if (f.sector && (c.sector || '') !== f.sector) return false;
+  return true;
+}
+
+function syncFilterUI() {
+  const lo = readBound('f-mcap-min'), hi = readBound('f-mcap-max');
+  document.querySelectorAll('#mcap-presets .preset').forEach(b => {
+    const pl = b.dataset.min === '' ? null : Number(b.dataset.min), ph = b.dataset.max === '' ? null : Number(b.dataset.max);
+    b.classList.toggle('active', pl === lo && ph === hi);
+  });
+  const any = Object.values(RANGE_FILTERS).some(f => document.getElementById(f.min).value.trim() || document.getElementById(f.max).value.trim())
+              || statusSel.value || sectorSel.value;
+  resetBtn.disabled = !any;
+}
+
+function fillSectors() {
+  const keep = sectorSel.value;
+  const sectors = [...new Set(allData.map(c => c.sector).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  sectorSel.replaceChildren(new Option('All sectors', ''), ...sectors.map(s => new Option(s, s)));
+  sectorSel.value = sectors.includes(keep) ? keep : '';
+}
+
+let filterDebounce;
+function onFilterInput() {
+  clearTimeout(filterDebounce);
+  filterDebounce = setTimeout(() => { currentPage = 1; syncFilterUI(); applyFilterAndSort(); }, 200);
+}
+for (const f of Object.values(RANGE_FILTERS)) {
+  document.getElementById(f.min).addEventListener('input', onFilterInput);
+  document.getElementById(f.max).addEventListener('input', onFilterInput);
+}
+for (const el of [statusSel, sectorSel]) el.addEventListener('change', onFilterInput);
+document.getElementById('mcap-presets').addEventListener('click', (e) => {
+  const b = e.target.closest('.preset');
+  if (!b) return;
+  const same = b.classList.contains('active');
+  document.getElementById('f-mcap-min').value = same ? '' : b.dataset.min;
+  document.getElementById('f-mcap-max').value = same ? '' : b.dataset.max;
+  onFilterInput();
+});
+resetBtn.addEventListener('click', () => {
+  document.querySelectorAll('#filter-bar input').forEach(i => { i.value = ''; i.classList.remove('invalid'); });
+  statusSel.value = ''; sectorSel.value = '';
+  currentPage = 1; syncFilterUI(); applyFilterAndSort();
 });
 
 const searchInput = document.getElementById('search');
@@ -210,7 +376,8 @@ function updateSortUI() {
 }
 
 function applyFilterAndSort() {
-  const base = (exchange === 'bse' && bseOnly) ? allData.filter(c => !c.dual_listed) : allData;
+  const filters = activeFilters();
+  const base = allData.filter(c => !(exchange === 'bse' && bseOnly && c.dual_listed) && passesFilters(c, filters));
   filtered = searchTerm
     ? base.filter(c =>
         (c.name   || '').toLowerCase().includes(searchTerm) ||

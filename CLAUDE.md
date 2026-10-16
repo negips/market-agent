@@ -603,6 +603,9 @@ julia scripts/companies/generate_nse_list.jl 2026-09-07  # explicit date (for pa
 ```
 
 Writes `website/data/nse_companies_YYYYMMDD.json` and updates `website/data/nse_companies_latest.json`.
+Confidence scores already in `nse_companies_latest.json` are carried over by symbol (each keeps its own `checked_at`), so refreshing prices and market
+caps does not discard them; `run_confidence_checks.jl` re-scores the top N and overwrites theirs. Failed analyses are not carried, and a company
+that dropped out of the list loses its score.
 
 ### run_confidence_checks.jl
 
