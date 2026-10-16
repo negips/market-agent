@@ -75,10 +75,11 @@ const TAIL_PROBE_BYTES = 4096
 Make a CSV safe to append to. A write cut off mid-row leaves a last line with no newline; the next append would then
 glue its first row onto it (`2026-10-14,2026-10-15,14.26,…`). Looks only at the file's last `TAIL_PROBE_BYTES`:
 
-- ends in a newline, or no such line: unchanged (`:ok`)
-- last line has no newline but all the columns: a newline is added (`:newline_added`)
-- last line has no newline and too few columns (a cut-off row): that line is removed and a warning names it
-  (`:partial_dropped`), so the next fetch starts at the date the row was meant to hold.
+- last line has the header's column count: unchanged (`:ok`), plus a newline if it lacks one (`:newline_added`)
+- last line has more or fewer columns (a cut-off row, or rows glued together): that line is removed and a warning
+  names it (`:bad_line_dropped`), so the previous line becomes the latest record and the next fetch starts after it.
+
+The header line is never removed.
 """
 function _repair_tail!(path::String)::Symbol
     isfile(path) || return :missing
@@ -86,20 +87,30 @@ function _repair_tail!(path::String)::Symbol
     sz == 0 && return :ok
     return open(path, "r+") do io
         n_fields = count(==(','), readline(io)) + 1
+        header_end = position(io)
         start = max(0, sz - TAIL_PROBE_BYTES)
         seek(io, start)
         tail = read(io)
-        tail[end] == UInt8('\n') && return :ok
-        nl = findlast(==(UInt8('\n')), tail)
-        nl === nothing && return :ok
-        last_line = tail[nl+1:end]
-        if count(==(UInt8(',')), last_line) + 1 == n_fields
-            seekend(io); write(io, '\n')
-            return :newline_added
+        terminated = tail[end] == UInt8('\n')
+        body = terminated ? tail[1:end-1] : tail
+        nl = findlast(==(UInt8('\n')), body)
+        if nl === nothing
+            start > 0 && return :ok
+            line_start = header_end
+            last_line = tail[header_end+1:end]
+        else
+            line_start = start + nl
+            last_line = body[nl+1:end]
         end
-        truncate(io, start + nl)
-        @warn "$path: removed an unfinished last line ($(repr(String(copy(last_line))))) left by an interrupted write; its bar will be fetched again"
-        return :partial_dropped
+        line_start >= sz - (terminated ? 1 : 0) && return :ok
+        line_start < header_end && return :ok
+        if count(==(UInt8(',')), last_line) + 1 == n_fields
+            terminated || (seekend(io); write(io, '\n'))
+            return terminated ? :ok : :newline_added
+        end
+        truncate(io, line_start)
+        @warn "$path: removed a last line with the wrong number of columns ($(repr(String(copy(last_line))))); the previous line is now the latest record and the removed bar will be fetched again"
+        return :bad_line_dropped
     end
 end
 
