@@ -216,7 +216,7 @@ export
     Forecaster, ForecasterConfig, ForecasterConfigError, forecaster_config, n_parameters, forecast_loss,
     save_forecaster, load_forecaster, warm_start_forecaster, TIME_LOSS_COEF, forecast_dtype, convert_forecaster, FORECAST_DTYPES,
     FORECAST_LOSSES, STUDENT_T_NU, NLL_BETA, LOGSIGMA_CENTER, LOGSIGMA_HALFRANGE, ForecastLossError, forecast_loss_kind, forecast_nll, central_halfwidth, unit_std, student_t_const,
-    EvalSet, evaluate_forecaster, score_forecasts, train_forecaster!, spread_starts, scheduled_lr,
+    EvalSet, evaluate_forecaster, score_forecasts, train_forecaster!, carried_best, spread_starts, scheduled_lr,
     ARBaseline, fit_ar_baseline, evaluate_ar_baseline, predict_ar, mean_abs_factor
 
 end

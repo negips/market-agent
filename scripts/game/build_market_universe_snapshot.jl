@@ -56,7 +56,9 @@ const DATA_DIR           = joinpath(REPO_ROOT, "website", "data")
 
 """`--min-mcap`, set by `parse_args`."""
 const MIN_MARKET_CAP_CR = Ref(0.0)
-const OUTPUT_FILE        = joinpath(REPO_ROOT, "website", "data", "trading_game", "universe_latest.json")
+"""`--keep-val`, set by `parse_args`."""
+const KEEP_VAL = Ref(false)
+const OUTPUT_FILE       = joinpath(REPO_ROOT, "website", "data", "trading_game", "universe_latest.json")
 
 function parse_args()
     config_path = RunConfigs.take_config_arg!(ARGS)
@@ -102,7 +104,10 @@ Options:
   --min-mcap CR         Drop companies below this market cap (₹ Cr) before the strategy runs.
                         Advised for BSE, where thin small caps have mostly forward-filled bars.
   --seed N              Reproducible split/draw (disjoint-topcap, random, random-bucketed)
-  --config PATH         TOML run file; this script reads its [universe] section (configs/*.toml).
+  --keep-val            Keep the val companies of the existing universe_latest.json unchanged and draw only a new
+                        train set from the pool without them (rotating the train companies while the validation
+                        set stays comparable). Errors if a kept val company is no longer eligible.
+  --config PATH        TOML run file; this script reads its [universe] section (configs/*.toml).
                         Command-line flags override it.
   --print-config        Show the resolved settings and exit
 
@@ -115,6 +120,7 @@ Output: $OUTPUT_FILE
         elseif a == "--n-val";    n_val   = parse(Int, ARGS[i+1]); i += 2
         elseif a == "--disjoint"; disjoint = true; i += 1
         elseif a == "--min-mcap"; MIN_MARKET_CAP_CR[] = parse(Float64, ARGS[i+1]); i += 2
+        elseif a == "--keep-val"; KEEP_VAL[] = true; i += 1
         elseif a == "--seed";     seed = parse(Int, ARGS[i+1]); i += 2
         elseif a == "--band";     push!(bands, ARGS[i+1]); i += 2
         else; error("Unknown argument: $a (see --help)")
@@ -139,6 +145,23 @@ function _print_entries(label::String, entries)
     length(entries) > 10 && println("  … and $(length(entries) - 10) more")
 end
 
+"""
+    kept_val_entries(pool) -> Vector{UniverseEntry}
+
+The val companies of the existing `universe_latest.json`, taken from `pool` in their saved order. Errors if the file is
+missing or a saved val company is no longer in the pool (a changed `--min-mcap` or confidence list), since a silently
+different validation set would make losses from before and after incomparable.
+"""
+function kept_val_entries(pool)
+    isfile(OUTPUT_FILE) || error("--keep-val needs an existing $OUTPUT_FILE; build one first without it")
+    saved = load_universe_snapshot(OUTPUT_FILE).val
+    by_symbol = Dict(e.symbol => e for e in pool)
+    gone = [s for s in saved if !haskey(by_symbol, s)]
+    isempty(gone) || error("--keep-val: $(length(gone)) saved val companies are no longer eligible: " *
+                            join(first(gone, 10), ", ") * (length(gone) > 10 ? ", …" : ""))
+    return [by_symbol[s] for s in saved]
+end
+
 function main()
     strategy = parse_args()
 
@@ -160,8 +183,16 @@ function main()
         "check $companies_file and $CACHE_FILE cover the same universe")
     @info "  $(length(pool)) companies eligible"
 
+    kept_val = KEEP_VAL[] ? kept_val_entries(pool) : nothing
+    if kept_val !== nothing
+        kept_symbols = Set(e.symbol for e in kept_val)
+        pool = filter(e -> !(e.symbol in kept_symbols), pool)
+        @info "  --keep-val: $(length(kept_val)) val companies kept, $(length(pool)) left for the train draw"
+    end
+
     @info "Applying strategy: $(typeof(strategy))"
     (; train, val) = build_universes(strategy, pool)
+    kept_val === nothing || (val = kept_val)
 
     isempty(train) && error("Strategy produced an empty train universe — check --n/--n-train/--band " *
                              "quotas against the eligible pool size ($(length(pool)))")

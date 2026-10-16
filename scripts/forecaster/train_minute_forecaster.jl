@@ -52,7 +52,9 @@ Options (each also a key of the TOML's [forecaster]; a flag overrides the file):
   --eval-only           Do not train: score the saved forecaster.bson on the evaluation sets and rewrite
                         val_report.json (use it to re-score a finished run, e.g. after a metric change)
   --resume              Load forecaster.bson and continue the epoch numbering
-                        (--epochs then means "how many more"; the learning-rate schedule restarts).
+                        (--epochs then means "how many more"; the learning-rate schedule restarts). The checkpoint is
+                        replaced only by an epoch that beats the best val loss recorded in it, provided the validation set
+                        (val companies, dates, windows, objective) is unchanged; a changed cache scale is corrected for.
                         Also the [forecaster] key `resume`; --no-resume overrides a file's resume = true.
   --init-from PATH      A fresh run (epoch 1, cleared logs) whose weights start from the checkpoint at PATH
                         instead of random. The architecture (window, d, heads, blocks) must equal the
@@ -211,12 +213,13 @@ function main()
 
     if opts["resume"] || opts["eval_only"]
         isfile(checkpoint) || error("--resume/--eval-only needs a checkpoint, but there is none at $checkpoint")
-        model, mcfg, _ = load_forecaster(checkpoint)
+        model, mcfg, checkpoint_meta = load_forecaster(checkpoint)
         mcfg.bars_per_day == cache.bars_per_day || error("the checkpoint was trained on $(mcfg.bars_per_day) bars/day, but the $(cache.granularity) cache has $(cache.bars_per_day)")
         for (k, have) in (("window", mcfg.window), ("d", mcfg.d), ("heads", mcfg.heads), ("blocks", mcfg.blocks))
             opts[k] != have && @warn "--resume keeps the checkpoint's $k = $have (the config says $(opts[k]))"
         end
     else
+        checkpoint_meta = Dict{String, Any}()
         mcfg = ForecasterConfig(window=opts["window"], d=opts["d"], heads=opts["heads"], blocks=opts["blocks"],
                                 dropout=Float32(opts["dropout"]), bars_per_day=cache.bars_per_day)
         if isempty(opts["init_from"])
@@ -270,11 +273,20 @@ function main()
     @info "Forecaster: $(n_parameters(model)) parameters (window $M, d $(mcfg.d), $(mcfg.heads) heads, $(mcfg.blocks) blocks)"
 
     rng = opts["seed"] === nothing ? Random.default_rng() : MersenneTwister(opts["seed"])
+    comparable = Dict{String, Any}("val_symbols" => sort(universe.val), "val_start" => string(val_start), "val_end" => string(val_end),
+                                   "val_windows" => opts["val_windows"], "window" => M, "bars_per_day" => cache.bars_per_day,
+                                   "loss" => opts["loss"], "nu" => opts["nu"])
+    prior_best = opts["resume"] ? carried_best(checkpoint_meta, comparable, cache.scale, forecast_loss_kind(opts["loss"])) : nothing
+    if opts["resume"]
+        prior_best === nothing ?
+            @info("Resumed without a best loss to compare against (the checkpoint has none, or its validation set differs): the first epoch becomes the checkpoint") :
+            @info(@sprintf("Resumed: the checkpoint stays unless an epoch beats val loss %.4f (epoch %d)", prior_best.loss, prior_best.epoch))
+    end
     log = train_forecaster!(model, cache, train_cols, train_range, sets;
                             epochs=opts["epochs"], steps_per_epoch=opts["steps_per_epoch"], batch=opts["batch"],
                             lr=opts["lr"], weight_decay=opts["weight_decay"], warmup_steps=opts["warmup_steps"],
                             device=device, dtype=forecast_dtype(opts["dtype"]), loss=forecast_loss_kind(opts["loss"]), nu=opts["nu"], beta=opts["nll_beta"],
-                            rng=rng, out_dir=OUT_DIR, epoch_offset=epoch_offset,
+                            rng=rng, out_dir=OUT_DIR, epoch_offset=epoch_offset, prior_best=prior_best, comparable=comparable,
                             meta=Dict{String, Any}("loss" => opts["loss"], "nu" => opts["nu"], "nll_beta" => opts["nll_beta"], "dtype" => opts["dtype"]))
     write_report(joinpath(OUT_DIR, "val_report.json"), model, cache, sets, mcfg, device, forecast_dtype(opts["dtype"]),
                  forecast_loss_kind(opts["loss"]), opts["nu"])

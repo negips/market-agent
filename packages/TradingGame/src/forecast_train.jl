@@ -200,6 +200,41 @@ function scheduled_lr(step::Int, total::Int, lr::Real, warmup::Int)::Float32
     return Float32(lr * (0.1 + 0.9 * 0.5 * (1 + cos(π * min(p, 1.0)))))
 end
 
+"""Largest relative change of `cache.scale` for which a Huber loss still counts as the same quantity (an NLL is converted exactly)."""
+const BEST_SCALE_TOLERANCE = 1e-3
+
+"""
+    carried_best(meta, comparable, scale, loss) -> Union{Nothing, NamedTuple{(:loss, :epoch)}}
+
+The best validation loss of an earlier session, taken from the checkpoint's `meta`, so that a resumed run only replaces the
+checkpoint when it beats it. `nothing` (start the comparison afresh) when the checkpoint has no record, or when `comparable`
+(the validation set: companies, dates, windows, objective) differs from the one stored with it.
+
+The loss is in units of `cache.scale`, which changes with the companies in the cache; a negative log-likelihood is converted
+exactly (`NLL_x = NLL_scaled + log scale`), while a Huber loss is carried only when the scale is unchanged within
+[`BEST_SCALE_TOLERANCE`](@ref).
+
+# Arguments
+- `meta`: the `meta` dict of the checkpoint (see [`load_forecaster`](@ref)).
+- `comparable`: what must be identical for two validation losses to be comparable.
+- `scale`: `cache.scale` of the current run; `loss`: the objective (`:student_t`, `:gaussian` or `:huber`).
+
+# Returns
+`(loss, epoch)` in the current run's units, or `nothing`.
+"""
+function carried_best(meta::AbstractDict, comparable::AbstractDict, scale::Real, loss::Symbol)
+    all(k -> haskey(meta, k), ("best_loss", "best_epoch", "scale", "comparable")) || return nothing
+    meta["comparable"] == comparable || return nothing
+    old_scale = Float64(meta["scale"])
+    old_loss = Float64(meta["best_loss"])
+    epoch = Int(meta["best_epoch"])
+    if loss === :huber
+        abs(old_scale / scale - 1) <= BEST_SCALE_TOLERANCE || return nothing
+        return (loss=old_loss, epoch=epoch)
+    end
+    return (loss=old_loss + log(old_scale) - log(Float64(scale)), epoch=epoch)
+end
+
 """
     train_forecaster!(model, cache, train_cols, train_starts, eval_sets; kwargs...) -> Dict
 
@@ -215,6 +250,9 @@ Train `model` (moved to `device` and back) on random windows of `cache`.
   (dynamic loss scaling: halved and the step skipped on an overflow, doubled after 500 clean steps).
 - `out_dir`: where `forecaster.bson`, `epoch_log.jsonl` and `timing.json` go (empty = write nothing).
 - `epoch_offset`: numbering continues from here (for `--resume`).
+- `prior_best`: `(loss, epoch)` from [`carried_best`](@ref) when resuming: an epoch then counts as best (and rewrites the checkpoint)
+  only if it beats that loss; the model's starting weights are that best checkpoint. `nothing` = the first epoch is the best so far.
+- `comparable`: stored with the checkpoint with the best loss and scale, so a later resume can tell whether its validation set matches.
 - `stop_file`: creating `STOP` ends after the current epoch, `STOP_NOW` right away.
 
 # Returns
@@ -226,7 +264,8 @@ function train_forecaster!(model::Forecaster, cache::MinuteCache, train_cols::Ve
                            lr::Real=3e-4, weight_decay::Real=0.01, warmup_steps::Int=200, clip::Real=1.0,
                            device::Symbol=:cpu, dtype::Type{<:AbstractFloat}=Float32,
                            loss::Symbol=:student_t, nu::Real=STUDENT_T_NU, beta::Real=NLL_BETA, rng::AbstractRNG=Random.default_rng(),
-                           out_dir::String="", epoch_offset::Int=0, meta::Dict=Dict{String, Any}())
+                           out_dir::String="", epoch_offset::Int=0, meta::Dict=Dict{String, Any}(),
+                           prior_best::Union{Nothing, NamedTuple{(:loss, :epoch)}}=nothing, comparable::Dict=Dict{String, Any}())
     isempty(train_starts) && throw(MinuteCacheError("no training windows: the training date range is shorter than the window"))
     isempty(eval_sets) && throw(ArgumentError("train_forecaster! needs at least one EvalSet"))
     cfg = forecaster_config(model)
@@ -247,7 +286,9 @@ function train_forecaster!(model::Forecaster, cache::MinuteCache, train_cols::Ve
     stop_now_file = isempty(out_dir) ? "" : joinpath(out_dir, "STOP_NOW")
     isempty(out_dir) || mkpath(out_dir)
 
-    best_loss = Inf; best_epoch = 0; best_state = deepcopy(Flux.state(cpu(master)))
+    best_loss = prior_best === nothing ? Inf : prior_best.loss
+    best_epoch = prior_best === nothing ? 0 : prior_best.epoch
+    best_state = deepcopy(Flux.state(cpu(master)))
     history = Any[]; stopped = ""; step = 0; epochs_run = 0
     t_start = time(); started = string(now()); n_good = 0; loss_sum = 0.0
     function live!(state::String, e::Int, i::Int)
@@ -320,7 +361,8 @@ function train_forecaster!(model::Forecaster, cache::MinuteCache, train_cols::Ve
             best_state = deepcopy(Flux.state(cpu(master)))
             if !isempty(ckpt)
                 Flux.loadmodel!(model, best_state)
-                save_forecaster(model, ckpt; meta=meta)
+                save_forecaster(model, ckpt; meta=merge(meta, Dict{String, Any}(
+                    "best_loss" => best_loss, "best_epoch" => best_epoch, "scale" => Float64(cache.scale), "comparable" => comparable)))
             end
         end
         row = (epoch=epoch, step=step, lr=scheduled_lr(step, total, lr, warmup_steps), secs=round(time() - t_epoch, digits=2),

@@ -443,3 +443,58 @@ end
         @test cfg2.bars_per_day == 25 && forecaster_config(m2).bars_per_day == 25
     end
 end
+
+@testset "v4 best loss across --resume" begin
+    rng = MersenneTwister(5)
+    T = 6 * _M
+    lr = 0.3f0 .* randn(rng, Float32, T, 4)
+    dates = [Date(2024, 1, 1) + Day(i - 1) for i in 1:6]
+    c = MinuteCache(["A", "B", "C", "D"], dates, lr, trues(T, 4))
+    cfg = ForecasterConfig(window=16, d=16, heads=2, blocks=1, dropout=0f0)
+    starts = window_starts(c, dates[2], dates[5], 16)
+    sets = [EvalSet("val", [1, 2], spread_starts(starts, 8, 16))]
+    comparable = Dict{String, Any}("val_symbols" => ["A", "B"], "val_windows" => 8)
+
+    @testset "the checkpoint records its best loss, scale and validation set" begin
+        dir = mktempdir()
+        m = Forecaster(cfg; seed=1)
+        log = train_forecaster!(m, c, [3, 4], starts, sets; epochs=2, steps_per_epoch=5, batch=4, out_dir=dir,
+                                rng=MersenneTwister(2), comparable=comparable)
+        _, _, meta = load_forecaster(joinpath(dir, "forecaster.bson"))
+        @test meta["best_loss"] == log["best_loss"] && meta["best_epoch"] == log["best_epoch"]
+        @test meta["scale"] ≈ c.scale && meta["comparable"] == comparable
+        carried = carried_best(meta, comparable, c.scale, :student_t)
+        @test carried.loss ≈ log["best_loss"] && carried.epoch == log["best_epoch"]
+    end
+
+    @testset "carried_best: other validation set -> nothing; NLL converted to the new scale; Huber needs the same scale" begin
+        meta = Dict{String, Any}("best_loss" => 1.0, "best_epoch" => 7, "scale" => 0.5, "comparable" => comparable)
+        @test carried_best(meta, Dict{String, Any}("val_symbols" => ["A", "C"], "val_windows" => 8), 0.5, :student_t) === nothing
+        @test carried_best(Dict{String, Any}("best_loss" => 1.0), comparable, 0.5, :student_t) === nothing
+        @test carried_best(meta, comparable, 1.0, :student_t).loss ≈ 1.0 + log(0.5) - log(1.0)
+        @test carried_best(meta, comparable, 0.5, :huber).epoch == 7
+        @test carried_best(meta, comparable, 1.0, :huber) === nothing
+    end
+
+    @testset "a resumed session keeps the checkpoint unless it beats the carried loss" begin
+        dir = mktempdir()
+        m = Forecaster(cfg; seed=1)
+        train_forecaster!(m, c, [3, 4], starts, sets; epochs=1, steps_per_epoch=5, batch=4, out_dir=dir,
+                          rng=MersenneTwister(2), comparable=comparable)
+        ckpt = joinpath(dir, "forecaster.bson")
+        before = read(ckpt)
+        m2, _, _ = load_forecaster(ckpt)
+        log = train_forecaster!(m2, c, [3, 4], starts, sets; epochs=2, steps_per_epoch=5, batch=4, out_dir=dir, epoch_offset=1,
+                                rng=MersenneTwister(3), comparable=comparable, prior_best=(loss=-1000.0, epoch=1))
+        @test read(ckpt) == before
+        @test log["best_epoch"] == 1 && log["best_loss"] == -1000.0
+        @test all(!r.best for r in log["history"])
+        m3, _, _ = load_forecaster(ckpt)
+        X = randn(MersenneTwister(1), Float32, TradingGame.N_FORECAST_FEATURES, 3, 8, 2)
+        a = Flux.testmode!(m3)(X); b = Flux.testmode!(m2)(X)
+        @test all(a[i] ≈ b[i] for i in 1:3)
+        log2 = train_forecaster!(m3, c, [3, 4], starts, sets; epochs=1, steps_per_epoch=5, batch=4, out_dir=dir, epoch_offset=3,
+                                 rng=MersenneTwister(3), comparable=comparable, prior_best=(loss=1000.0, epoch=1))
+        @test log2["history"][1].best && log2["best_epoch"] == 4 && read(ckpt) != before
+    end
+end

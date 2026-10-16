@@ -138,6 +138,7 @@ market-agent/
 │   │   ├── ar_baseline.jl                    # v4: linear AR(k) baseline scored on the forecaster's own evaluation sets
 │   │   ├── build_forecaster_cache.jl         # v4: return cache (--granularity 1min|5min|15min|hourly|daily) for the universe's train + val companies
 │   │   ├── predict_minute_forecaster.jl      # v4: forecast one section of the minute cache -> website/data/forecast_prediction.json (predict.html, Forecaster v4 tab)
+│   │   ├── run_pipeline.jl                   # v4: universe -> forecaster cache -> training in one command; --rotate redraws the train companies, keeps the val ones
 │   │   ├── sweep_forecaster.jl               # v4: train once per value of one hyperparameter and compare
 │   │   ├── train_minute_forecaster.jl        # v4: trains TradingGame.Forecaster (supervised next-minute forecaster)
 │   ├── tools/       # ops server, Kite smoke test
@@ -295,6 +296,16 @@ julia --project=packages/TradingGame scripts/forecaster/train_minute_forecaster.
   pass. Float16 keeps Float32 master weights, scales the loss dynamically (skipping a step on overflow, logged as
   `skipped_steps`), computes the loss and the timestamp prior in Float32, and the checkpoint is always Float32.
   Float8 is not supported (no Julia type or Flux path).
+- **Pipeline:** `julia scripts/forecaster/run_pipeline.jl --config configs/bse_v3.toml` runs `build_market_universe_snapshot.jl`, `build_forecaster_cache.jl` and
+  `train_minute_forecaster.jl` in turn with the same config (`--skip-universe`, `--skip-cache`, `--skip-train`, `--dry-run`; arguments after `--` go to the trainer).
+  `--rotate` trains in rounds on changing companies: the universe stage gets `--keep-val` (the val companies of `universe_latest.json` are kept, so validation
+  losses stay comparable; a new train set is drawn from the rest of the pool with a fresh seed, or `--seed N`), and the old universe file is copied to
+  `website/data/trading_game/universes/` first. Typical round: `run_pipeline.jl --config configs/bse_v3.toml --rotate -- --resume --epochs 15 --device gpu`.
+  `--repeat N` runs the whole pipeline N times (universe, cache, train each round; rounds after the first add `--resume` and drop `--init-from`/`--no-resume`;
+  with `--seed S` round k uses S+k-1; `touch website/data/STOP_PIPELINE` ends after the current round).
+  The best val loss, its epoch, the cache scale and a description of the validation set are stored in the checkpoint's `meta`; a `--resume` only replaces `forecaster.bson`
+  with an epoch that beats it (`carried_best`). If the validation set differs (other val companies, dates, windows or objective) or the checkpoint predates this record,
+  the first epoch of the session becomes the checkpoint. An NLL is converted for a changed cache scale (`NLL_x = NLL_scaled + log scale`; a rotated train set changes the scale a little).
 - **Width:** `d` is a hyperparameter; sweep it (32 / 64 / 128, same seed) and keep the smallest whose val skill matches the best.
 - **Baseline:** `julia --project=packages/TradingGame scripts/forecaster/ar_baseline.jl --config configs/bse_v3.toml` fits a linear AR(k) location and a scaled
   time-of-day/recent-|r| scale model on the train companies and scores it on the same three evaluation sets (`ar_baseline.json` beside `val_report.json`),
@@ -659,6 +670,8 @@ julia --project=packages/StockSwingPredictor scripts/ohlcv/update_ohlcv.jl --dry
 # Update only daily bars (skip the slower hourly pass)
 julia --project=packages/StockSwingPredictor scripts/ohlcv/update_ohlcv.jl --daily-only
 ```
+
+Before reading a CSV's last date or appending to it, `update_ohlcv.jl` checks the last line (`_repair_tail!`): a missing newline is added, and a last line with the wrong number of columns (a cut-off row, or two rows glued together) is deleted with a warning, so the previous line is the latest record and the next fetch re-downloads from there. `--dry-run` never repairs.
 
 Both `collect_nse_ohlcv.jl`/`collect_bse_ohlcv.jl` and `update_ohlcv.jl` also take
 `--skip-daily`/`--skip-hourly`/`--skip-15min`/`--skip-5min`/`--skip-1min` (the
