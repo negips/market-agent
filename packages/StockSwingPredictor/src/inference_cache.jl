@@ -315,7 +315,7 @@ The index dicts are re-derived on load (they are not serialised).
 Typical load time: 1–3 seconds for a ~42 MB file.
 """
 function load_inference_cache(path::String)::InferenceCache
-    isfile(path) || error("Cache not found: $path\nRun: julia --project=packages/StockSwingPredictor scripts/build_cache.jl")
+    isfile(path) || error("Cache not found: $path\nRun: julia --project=packages/StockSwingPredictor scripts/ohlcv/build_cache.jl")
     d             = BSON.load(path)
     closes        = d[:closes]
     vols          = d[:vols]

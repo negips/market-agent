@@ -34,8 +34,8 @@ neither a login nor the sidecar — only the data already on disk.
 ## 1. Company list (occasional, per trading day you want a fresh snapshot)
 
 ```bash
-julia --project=packages/CompanyConfidence scripts/generate_nse_list.jl
-julia --project=packages/StockSwingPredictor scripts/generate_bse_list.jl
+julia --project=packages/CompanyConfidence scripts/companies/generate_nse_list.jl
+julia --project=packages/StockSwingPredictor scripts/companies/generate_bse_list.jl
 ```
 - NSE: builds `website/data/nse_companies_latest.json` — every NSE EQ-series company with closing
   price, market cap and Tijori slug.
@@ -47,8 +47,8 @@ Sidecar required.
 ## 2. Confidence scores (occasional)
 
 ```bash
-julia --project=packages/CompanyConfidence scripts/run_confidence_checks.jl 2305            # NSE
-julia --project=packages/CompanyConfidence scripts/run_bse_confidence_checks.jl --min-mcap 100   # BSE
+julia --project=packages/CompanyConfidence scripts/companies/run_confidence_checks.jl 2305            # NSE
+julia --project=packages/CompanyConfidence scripts/companies/run_bse_confidence_checks.jl --min-mcap 100   # BSE
 ```
 Runs the five fraud/reliability signals (Beneish M-Score, cash-flow vs. net income,
 promoter pledging, Tijori forensics flags) and writes a `confidence` score (0–100, pass ≥ 40)
@@ -61,8 +61,8 @@ scores for dual-listed companies and analyses the rest.
 First-time download, one per exchange and granularity (daily / hourly / 5min / 15min / 1min):
 
 ```bash
-julia --project=packages/StockSwingPredictor scripts/collect_nse_ohlcv.jl
-julia --project=packages/StockSwingPredictor scripts/collect_bse_ohlcv.jl
+julia --project=packages/StockSwingPredictor scripts/ohlcv/collect_nse_ohlcv.jl
+julia --project=packages/StockSwingPredictor scripts/ohlcv/collect_bse_ohlcv.jl
 ```
 Downloads bars from Kite into `website/data/ohlcv/{nse,bse}/{granularity}/{SYMBOL}.csv`.
 Use `--daily-only`, `--hourly-only`, `--15min-only`, `--1min-only`, etc. to restrict, `--refresh` to
@@ -80,7 +80,7 @@ granularity is still writing it.
 
 Routine upkeep (**daily**, after Kite login):
 ```bash
-julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl
+julia --project=packages/StockSwingPredictor scripts/ohlcv/update_ohlcv.jl
 ```
 Appends only the bars missing since the last run, for NSE + BSE and the macro series.
 `--nse-only`, `--bse-only`, `--dry-run`, `--daily-only` are available.
@@ -88,13 +88,13 @@ Appends only the bars missing since the last run, for NSE + BSE and the macro se
 Optional, extend history backward (hourly bars don't exist before ~2015-02; BSE 15-minute starts
 2019-01):
 ```bash
-julia --project=packages/StockSwingPredictor scripts/backfill_ohlcv.jl --dry-run
+julia --project=packages/StockSwingPredictor scripts/ohlcv/backfill_ohlcv.jl --dry-run
 ```
 
 ## 4. Macro series (v1/v2 only; once, then yearly)
 
 ```bash
-julia --project=packages/StockSwingPredictor scripts/collect_macro_ohlcv.jl
+julia --project=packages/StockSwingPredictor scripts/ohlcv/collect_macro_ohlcv.jl
 ```
 Downloads daily history for S&P 500, US VIX, crude, gold, silver, natural gas, copper
 (Yahoo) plus India VIX and USD/INR (Kite) into `website/data/ohlcv/macro/`. This is the
@@ -104,10 +104,10 @@ macro channel of the v1/v2 policy's observation; **game v3 ignores it** (not loa
 
 ```bash
 # v3: BSE, 15-minute clock + hourly history axis
-julia --project=packages/StockSwingPredictor scripts/build_cache.jl --exchange bse --granularity 15min --min-mcap 500
+julia --project=packages/StockSwingPredictor scripts/ohlcv/build_cache.jl --exchange bse --granularity 15min --min-mcap 500
 
 # v1/v2: NSE, hourly
-julia --project=packages/StockSwingPredictor scripts/build_cache.jl
+julia --project=packages/StockSwingPredictor scripts/ohlcv/build_cache.jl
 ```
 Aligns every confidence-passing company's bars onto shared time axes, forward-fills gaps, and
 writes `website/data/inference_cache.bson` (it **overwrites** the previous cache). The simulator reads
@@ -126,8 +126,8 @@ the last rebuild.
 ## 6. News data (v1/v2 only; skip with `--no-news`)
 
 ```bash
-julia --project=packages/NewsMonitor scripts/fetch_nse_history.jl
-julia --project=packages/NewsMonitor scripts/backfill_news_signals.jl
+julia --project=packages/NewsMonitor scripts/news/fetch_nse_history.jl
+julia --project=packages/NewsMonitor scripts/news/backfill_news_signals.jl
 ```
 - `fetch_nse_history.jl` downloads every NSE corporate announcement since 2010 into
   `nse_announcements.db` (SQLite, resumable, ~15 min).
@@ -143,7 +143,7 @@ News is NSE-only (NSE announcements keyed by NSE symbols), and **game v3 does no
 Pick the train/val company split. The recipe is the `[universe]` section of `configs/bse_v3.toml`:
 
 ```bash
-julia --project=packages/TradingGame scripts/build_market_universe_snapshot.jl --config configs/bse_v3.toml
+julia --project=packages/TradingGame scripts/game/build_market_universe_snapshot.jl --config configs/bse_v3.toml
 # the same thing as flags: --strategy random --n 40 --disjoint
 ```
 Filters to confidence ≥ 40 companies present in the inference cache (reading the company file of the
@@ -156,7 +156,7 @@ rebuild it after changing the cache's exchange. Other strategies: `shared-topcap
 ## 8. Training date windows
 
 ```bash
-julia --project=packages/TradingGame scripts/prepare_training_data.jl --config configs/bse_v3.toml
+julia --project=packages/TradingGame scripts/game/prepare_training_data.jl --config configs/bse_v3.toml
 ```
 (reads `[dates]`, `[prepare]` and `[universe]`; the flags `--skip-news --skip-1min --train-start …` still work and override the file). It:
 1. Skips the universe if `universe_latest.json` exists (so step 7's deliberate choice is kept).
@@ -172,7 +172,7 @@ julia --project=packages/TradingGame scripts/prepare_training_data.jl --config c
 ## 9. Start training
 
 ```bash
-julia --project=packages/TradingGame scripts/train_trading_policy.jl --config configs/bse_v3.toml
+julia --project=packages/TradingGame scripts/game/train_trading_policy.jl --config configs/bse_v3.toml
 ```
 (reads `[dates]`, `[game]` and `[train]`; every setting is a flag too, e.g. `--device gpu --iterations 5` overrides the file for one run. Add `--resume` only to continue an existing run of the same
 version — a first v3 run has no checkpoint, and v1/v2 checkpoints don't fit the v3 network).
@@ -194,7 +194,7 @@ Expect roughly a minute per iteration on 40 stocks for a 3-year 15-minute traini
 mostly the PPO update; the GPU only accelerates that update.
 
 Watch it at `website/tradinggamelive.html` (`./serve.sh website/tradinggamelive.html`), check progress with
-`julia --project=packages/TradingGame scripts/training_status.jl`, and stop with
+`julia --project=packages/TradingGame scripts/game/training_status.jl`, and stop with
 `touch website/data/trading_game/STOP` (saves a checkpoint) or `STOP_NOW` (no save).
 
 ### Studying what it learned
@@ -204,8 +204,8 @@ per-stock log: probabilities, chosen actions, V(s), book) plus a small `iter_NNN
 to list the bars on which nothing was traded. Summarise one with
 
 ```bash
-julia --project=packages/TradingGame scripts/val_steps_summary.jl            # newest run
-julia --project=packages/TradingGame scripts/val_steps_summary.jl 42         # iteration 42
+julia --project=packages/TradingGame scripts/game/val_steps_summary.jl            # newest run
+julia --project=packages/TradingGame scripts/game/val_steps_summary.jl 42         # iteration 42
 ```
 A fresh (non-`--resume`) run clears the previous run's `episode_log.jsonl`, `val_runs/` and `val_steps/`.
 

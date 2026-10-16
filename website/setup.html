@@ -502,7 +502,7 @@
           <div class="flow-step">3</div>
           <div>
             <div class="flow-name">Update OHLCV data</div>
-            <div class="flow-cmd">julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl</div>
+            <div class="flow-cmd">julia --project=packages/StockSwingPredictor scripts/ohlcv/update_ohlcv.jl</div>
             <div class="flow-sub">Appends only the missing bars since the last run — much faster than a full re-fetch. Use --daily-only to skip hourly.</div>
           </div>
         </div>
@@ -510,7 +510,7 @@
           <div class="flow-step">4</div>
           <div>
             <div class="flow-name">Build inference cache</div>
-            <div class="flow-cmd">julia --project=packages/StockSwingPredictor scripts/build_cache.jl</div>
+            <div class="flow-cmd">julia --project=packages/StockSwingPredictor scripts/ohlcv/build_cache.jl</div>
             <div class="flow-sub">Reads all OHLCV CSVs once → aligned daily + hourly matrices → inference_cache.bson (~42 MB). Loaded into memory at session start for O(1) prediction slices. For the Trading Game (v3) build the BSE 15-minute variant instead: <code>--exchange bse --granularity 15min --min-mcap 500</code> adds a 15-minute clock and an hourly history axis (see <code>TradingSetup.md</code>); note it overwrites the cache the swing predictor reads.</div>
           </div>
         </div>
@@ -518,7 +518,7 @@
           <div class="flow-step">5</div>
           <div>
             <div class="flow-name">Refresh NSE data</div>
-            <div class="flow-cmd">julia scripts/generate_nse_list.jl</div>
+            <div class="flow-cmd">julia scripts/companies/generate_nse_list.jl</div>
             <div class="flow-sub">Fetches latest bhavcopy — closing price &amp; market cap for all NSE EQ companies.</div>
           </div>
         </div>
@@ -526,7 +526,7 @@
           <div class="flow-step">6</div>
           <div>
             <div class="flow-name">Run confidence checks (optional — slow)</div>
-            <div class="flow-cmd">julia --project=packages/CompanyConfidence scripts/run_confidence_checks.jl 100</div>
+            <div class="flow-cmd">julia --project=packages/CompanyConfidence scripts/companies/run_confidence_checks.jl 100</div>
             <div class="flow-sub">Scores top-N companies by market cap. ~6–15s per company via sidecar.</div>
           </div>
         </div>
@@ -534,7 +534,7 @@
           <div class="flow-step">7</div>
           <div>
             <div class="flow-name">Refresh watchlist</div>
-            <div class="flow-cmd">julia --project=packages/EarningsCalendar scripts/generate_earnings_watchlist.jl</div>
+            <div class="flow-cmd">julia --project=packages/EarningsCalendar scripts/companies/generate_earnings_watchlist.jl</div>
             <div class="flow-sub">Merges NSE confirmed events + Tijori projections. Fetches live prices from Kite.</div>
           </div>
         </div>
@@ -542,7 +542,7 @@
           <div class="flow-step">8</div>
           <div>
             <div class="flow-name">Start news monitor daemon (optional)</div>
-            <div class="flow-cmd">julia scripts/monitor_news.jl</div>
+            <div class="flow-cmd">julia scripts/news/monitor_news.jl</div>
             <div class="flow-sub">Polls BSE every 60s + 3 RSS feeds every 5 min. Classifies with Claude Haiku → website/data/news_signals.jsonl. Kill with Ctrl-C; safe to restart.</div>
           </div>
         </div>
@@ -574,7 +574,7 @@
           <div class="flow-step">~</div>
           <div>
             <div class="flow-name">Enrich earnings dates from Tijori history</div>
-            <div class="flow-cmd">julia --project=packages/TijoriData scripts/enrich_earnings_dates.jl</div>
+            <div class="flow-cmd">julia --project=packages/TijoriData scripts/companies/enrich_earnings_dates.jl</div>
             <div class="flow-sub">Fetches historical earnings releases per company and projects next expected date via median gap. Resumable — skips already-projected companies. Writes website/data/earnings_projections.json.</div>
           </div>
         </div>
@@ -662,7 +662,7 @@
           <div class="status-dot done"></div>
           <div style="flex:1">
             <div class="roadmap-name">Jump Detection</div>
-            <div class="roadmap-sub">BNS rolling-window test (W=10 days) identifies days with statistically significant price jumps via realised variance vs bipower variation · Lee-Mykland bar-level attribution pinpoints the exact hourly bar and classifies as overnight gap vs intraday · scripts/identify_jump_events.jl outputs event table + JSON · jumps.html visualises LM time-series, coloured jump markers, and L(i) distribution histogram with ±cv overlay, all computed in-browser from the hourly CSV</div>
+            <div class="roadmap-sub">BNS rolling-window test (W=10 days) identifies days with statistically significant price jumps via realised variance vs bipower variation · Lee-Mykland bar-level attribution pinpoints the exact hourly bar and classifies as overnight gap vs intraday · scripts/swing/identify_jump_events.jl outputs event table + JSON · jumps.html visualises LM time-series, coloured jump markers, and L(i) distribution histogram with ±cv overlay, all computed in-browser from the hourly CSV</div>
           </div>
           <span class="roadmap-badge done">complete</span>
         </div>

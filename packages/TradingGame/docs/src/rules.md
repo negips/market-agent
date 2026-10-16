@@ -46,7 +46,7 @@ Markdown.parse(String(take!(io)))
 
 `EpisodeConfig(...; rules=rules_v1())` (the default), `rules_v2(; cash_penalty, hold_penalty, illegal_penalty)` or
 `rules_v3(; cash_penalty, hold_penalty, illegal_penalty, history_encoder, terminal_reward, reward_window_days)`
-picks the rule set; `scripts/train_trading_policy.jl --game-version 1|2|3` does the same from the CLI.
+picks the rule set; `scripts/game/train_trading_policy.jl --game-version 1|2|3` does the same from the CLI.
 
 | | v1 | v2 | v3 |
 |:---|:---|:---|:---|

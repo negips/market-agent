@@ -39,7 +39,7 @@ on) using `train_config` as the (repeated, per iteration) training episode.
   noisier/more exploratory rollouts. Defaults to the same `ENTROPY_COEF` used
   everywhere else in this module (`constants.jl`); exposed as its own
   parameter (rather than hardcoding `ENTROPY_COEF` at the `ppo_update!` call
-  site) purely so `scripts/train_trading_policy.jl` can expose an `--entropy`
+  site) purely so `scripts/game/train_trading_policy.jl` can expose an `--entropy`
   CLI flag for experimentation without editing source.
 - `stop_file`: `touch <stop_file>` for a clean stop (checkpoint saved) after
   the current iteration; `touch <stop_file with STOP replaced by STOP_NOW>`
@@ -293,7 +293,7 @@ end
 same convention as `StockSwingPredictor.save_training_log` — named
 differently (not `save_training_log`) because both packages export a
 function of that name; `using TradingGame, StockSwingPredictor` together
-(exactly the combo `scripts/train_trading_policy.jl` uses) makes the bare
+(exactly the combo `scripts/game/train_trading_policy.jl` uses) makes the bare
 name ambiguous otherwise, same reason `train!` is `train_policy!` here."""
 function save_policy_training_log(log::Dict, path::String)
     open(path, "w") do io; JSON3.pretty(io, _sanitize_json(log)); end

@@ -246,7 +246,7 @@
     <div id="content">
       <div class="placeholder" id="placeholder">
         Waiting for a training run…
-        <code>julia --project=packages/TradingGame scripts/train_trading_policy.jl</code>
+        <code>julia --project=packages/TradingGame scripts/game/train_trading_policy.jl</code>
       </div>
     </div>
   </div>
@@ -1541,7 +1541,7 @@ function paramItem(label, value) {
 }
 
 // run_config.json is written once per run (fresh start or --resume) and
-// barely changes mid-run — see save_run_config in scripts/train_trading_policy.jl.
+// barely changes mid-run — see save_run_config in scripts/game/train_trading_policy.jl.
 // resolved_device/resolved_minibatch/resolved_train_*/resolved_val_*/
 // n_candidates_*/n_max_holdings_*/rule_constants are all informational-only
 // fields added purely for this card; everything else here is the

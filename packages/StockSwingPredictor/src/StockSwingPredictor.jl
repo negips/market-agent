@@ -34,12 +34,12 @@ Label format: `label[h] = log(close_h / ref_close)` for h in 1…pred_hours.
 ## Pipeline
 
 ```
-scripts/collect_nse_ohlcv.jl    # download all NSE OHLCV (daily/hourly/5min/15min)
-scripts/update_ohlcv.jl         # daily incremental update (append new bars)
-scripts/build_cache.jl          # build inference_cache.bson from CSVs (run each morning)
-scripts/build_dataset.jl --pred-hours 35   # dataset for v1/v2  → dataset_35.bson
-scripts/build_dataset.jl --pred-hours 70   # dataset for v3     → dataset_70.bson
-scripts/train_model.jl --arch v3           # train; auto-selects dataset_70.bson
+scripts/ohlcv/collect_nse_ohlcv.jl    # download all NSE OHLCV (daily/hourly/5min/15min)
+scripts/ohlcv/update_ohlcv.jl         # daily incremental update (append new bars)
+scripts/ohlcv/build_cache.jl          # build inference_cache.bson from CSVs (run each morning)
+scripts/swing/build_dataset.jl --pred-hours 35   # dataset for v1/v2  → dataset_35.bson
+scripts/swing/build_dataset.jl --pred-hours 70   # dataset for v3     → dataset_70.bson
+scripts/swing/train_model.jl --arch v3           # train; auto-selects dataset_70.bson
 ```
 
 Note: `extract_llm_features.jl` exists for future architectures but is not used

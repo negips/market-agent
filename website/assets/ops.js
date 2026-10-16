@@ -1,5 +1,5 @@
-/* Client for scripts/ops_server.jl. Only works when the page is served by that server
-   (julia --project=packages/StockSwingPredictor scripts/ops_server.jl); under any other static server
+/* Client for scripts/tools/ops_server.jl. Only works when the page is served by that server
+   (julia --project=packages/StockSwingPredictor scripts/tools/ops_server.jl); under any other static server
    Ops.available() resolves false and callers hide their buttons. */
 window.Ops = (() => {
   let actions = null;

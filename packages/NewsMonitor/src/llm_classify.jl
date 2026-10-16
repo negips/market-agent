@@ -5,7 +5,7 @@ Uses tool-use (structured output) to guarantee a typed response. For each
 `NewsItem`, the model identifies the affected NSE symbol, event type,
 sentiment, and severity — producing a `NewsSignal` ready for storage and
 feature assembly. `classify_item` (Claude, live daemon) and
-`classify_item_ollama` (local, `scripts/backfill_news_signals.jl`) share the
+`classify_item_ollama` (local, `scripts/news/backfill_news_signals.jl`) share the
 exact same `CLASSIFY_TOOL`/`CLASSIFY_SYSTEM` definition, so a historically
 backfilled signal and a live one are calibrated identically — only the model
 and transport differ.
@@ -153,7 +153,7 @@ end
 Classify a `NewsItem` using a local Ollama model — same `CLASSIFY_TOOL`/
 `CLASSIFY_SYSTEM` definition as `classify_item`, so results are calibrated
 identically to the live Claude daemon's output. Zero marginal cost, used for
-historical backfill volume (`scripts/backfill_news_signals.jl`) where
+historical backfill volume (`scripts/news/backfill_news_signals.jl`) where
 classifying every item via a paid API would be prohibitively expensive.
 
 `think=false` is passed explicitly — measured ~8x faster per call on

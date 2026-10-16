@@ -1,9 +1,9 @@
 """
 Train/val date-window resolution — pulled out as a package function (rather
-than living inside `scripts/train_trading_policy.jl`) so any other script
+than living inside `scripts/game/train_trading_policy.jl`) so any other script
 that needs to know "what dates will this training run actually use" calls
 the exact same code, not a second hand-copied implementation that can
-silently drift from the real one. `scripts/prepare_training_data.jl` is the
+silently drift from the real one. `scripts/game/prepare_training_data.jl` is the
 other caller: it resolves these same windows to decide how to scope the
 news backfill and 1-minute snapshot fetch, so what gets prepared and what
 training actually trains on are guaranteed to match.

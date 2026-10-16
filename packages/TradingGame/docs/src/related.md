@@ -7,7 +7,7 @@ others and deliberately keeps the coupling light.
 
 Provides `InferenceCache` (aligned daily and intraday price matrices that every
 observation is sliced from in O(1) — for game v3 a 15-minute clock plus an hourly
-history axis resampled from it, built by `scripts/build_cache.jl --exchange bse
+history axis resampled from it, built by `scripts/ohlcv/build_cache.jl --exchange bse
 --granularity 15min`), the macro-series loaders, and the Kite data client. `TradingGame` depends on it as a package; see
 `packages/StockSwingPredictor/src/` — and `broker.jl` there for the read-only
 portfolio functions a future live-execution follow-up would extend (no order
@@ -23,5 +23,5 @@ matches the cache's exchange) to pre-filter the candidate universe
 ## NewsMonitor
 
 Not a package dependency either. `news_features.jl` reads the classified-signal
-database written by `scripts/backfill_news_signals.jl` directly through SQLite;
+database written by `scripts/news/backfill_news_signals.jl` directly through SQLite;
 see [`build_news_feature_cache`](@ref). News is NSE-only and game v3 does not use it.

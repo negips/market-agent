@@ -26,7 +26,7 @@ objective is to maximise the total value of the portfolio, evaluated every
 
 Everything above describes **v1**, the original game and the default. **v2**
 (`rules_v2`, selected per episode through `EpisodeConfig(...; rules=rules_v2())`
-or `--game-version 2` on `scripts/train_trading_policy.jl`) changes four things,
+or `--game-version 2` on `scripts/game/train_trading_policy.jl`) changes four things,
 all carried by a [`GameRules`](@ref):
 
 - cash is a pseudo-stock — an extra attention token (cash/value, reserved/value,
@@ -66,11 +66,11 @@ it was trained with.
 2. Observation assembly + actor-critic network (`observation.jl`, `policy.jl`) — done.
 3. Hand-rolled PPO + a small-universe training sanity check (`ppo.jl`, `train.jl`) — done.
 4. Full-scale training + historical backtest validation — in progress:
-   candidate universe (`universe.jl`, `scripts/build_market_universe_snapshot.jl`) done;
-   historical news-signal backfill (`scripts/backfill_news_signals.jl`,
+   candidate universe (`universe.jl`, `scripts/game/build_market_universe_snapshot.jl`) done;
+   historical news-signal backfill (`scripts/news/backfill_news_signals.jl`,
    `news_features.jl`) done (v1/v2 only); the BSE 15-minute pipeline and game v3 are built and
    tested in short real-data runs, a full multi-year v3 run is the open step; per-step validation
-   diagnostics (`step_log.jl`, `scripts/val_steps_summary.jl`) done.
+   diagnostics (`step_log.jl`, `scripts/game/val_steps_summary.jl`) done.
 5. Live execution — explicitly out of scope for this package; see
    `StockSwingPredictor.broker.jl` for the read-only Kite portfolio functions a
    future live-execution follow-up would extend (no order-placement function

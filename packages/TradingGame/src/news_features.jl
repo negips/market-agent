@@ -1,5 +1,5 @@
 """
-Historical news features: loads `scripts/backfill_news_signals.jl`'s output
+Historical news features: loads `scripts/news/backfill_news_signals.jl`'s output
 (`website/data/news_signals.db`) into a `NewsFeatureCache` and exposes it
 three ways, matching rule 8's "decisions happen at most every 15 minutes, or
 immediately on a news release":
@@ -69,7 +69,7 @@ candidate symbol at those same bars (see this file's module docstring,
 point 3).
 
 `decision_instants` is exposed (not just folded into `snapshots`) so
-`scripts/fetch_news_snapshot_ohlcv.jl` can call `build_news_feature_cache`
+`scripts/news/fetch_news_snapshot_ohlcv.jl` can call `build_news_feature_cache`
 with no `snapshot_symbols` (skipping snapshot building, which needs 1-minute
 data that doesn't exist yet) purely to get the exact same hour-bucketed,
 earliest-timestamp-per-bar targets training will later consume — guaranteeing
@@ -116,7 +116,7 @@ function build_news_feature_cache(cache::InferenceCache, db_path::String;
                                    ohlcv_1min_dir::Union{Nothing, String}=nothing)::NewsFeatureCache
     isfile(db_path) || error(
         "TradingGame.build_news_feature_cache: not found: $db_path\n" *
-        "Run: julia --project=packages/NewsMonitor scripts/backfill_news_signals.jl")
+        "Run: julia --project=packages/NewsMonitor scripts/news/backfill_news_signals.jl")
 
     db = SQLite.DB(db_path)
     own_events        = Dict{Int, Vector{NewsEvent}}()

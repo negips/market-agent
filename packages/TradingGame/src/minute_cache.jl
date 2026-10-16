@@ -334,7 +334,7 @@ end
 Read a cache written by [`save_minute_cache`](@ref).
 """
 function load_minute_cache(path::String)
-    isfile(path) || throw(MinuteCacheError("not found: $path — run scripts/build_forecaster_cache.jl"))
+    isfile(path) || throw(MinuteCacheError("not found: $path — run scripts/forecaster/build_forecaster_cache.jl"))
     d = BSON.load(path)
     return MinuteCache(Vector{String}(d[:symbols]), Vector{Date}(d[:dates]), Matrix{Float32}(d[:logret]), Matrix{Bool}(d[:traded]);
                        granularity=String(get(d, :granularity, "1min")))

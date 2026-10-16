@@ -8,7 +8,7 @@ splits, aimed at testing/improving generalization beyond a single fixed
 62-ish-company universe.
 
 This reads confidence scores already computed by
-`scripts/run_confidence_checks.jl` into `website/data/nse_companies_latest.json`
+`scripts/companies/run_confidence_checks.jl` into `website/data/nse_companies_latest.json`
 — a fast, offline JSON filter/sort — rather than calling
 `CompanyConfidence.analyze` directly. That call hits the Tijori sidecar at
 ~6–15s/company (per `CLAUDE.md`), which is far too slow to run inside (or even
@@ -73,8 +73,8 @@ function eligible_candidates(cache::InferenceCache, nse_companies_path::String;
                               min_market_cap_cr::Float64=0.0)::Vector{UniverseEntry}
     isfile(nse_companies_path) || error(
         "TradingGame.eligible_candidates: not found: $nse_companies_path\n" *
-        "Run: julia scripts/generate_nse_list.jl && " *
-        "julia --project=packages/CompanyConfidence scripts/run_confidence_checks.jl")
+        "Run: julia scripts/companies/generate_nse_list.jl && " *
+        "julia --project=packages/CompanyConfidence scripts/companies/run_confidence_checks.jl")
 
     raw = JSON3.read(read(nse_companies_path, String))
 
@@ -120,7 +120,7 @@ end
 # ── Strategies: train/val composition ────────────────────────────────────────────
 
 """
-How `scripts/build_market_universe_snapshot.jl` splits `eligible_candidates`'s pool
+How `scripts/game/build_market_universe_snapshot.jl` splits `eligible_candidates`'s pool
 into a training candidate list and a held-out validation candidate list.
 Every subtype implements `build_universes(strategy, pool) -> (train=.., val=..)`.
 
@@ -145,7 +145,7 @@ _rng_for(seed::Union{Nothing, Int}) = seed === nothing ? Random.default_rng() : 
 Today's default and the simplest case: both train and val draw from the
 identical top-`n` pool by market cap. Not a generalization test on its own —
 val overlaps train entirely in company identity, so only the train/val
-*date* split (see `scripts/train_trading_policy.jl`'s `--val-window`)
+*date* split (see `scripts/game/train_trading_policy.jl`'s `--val-window`)
 separates the two roles.
 """
 Base.@kwdef struct SharedTopMarketCap <: UniverseStrategy
@@ -318,7 +318,7 @@ _json_safe_bound(x::Float64) = isinf(x) ? (x > 0 ? "inf" : "-inf") : x
 """
 Save a built train/val universe pair (rank/draw order preserved) as JSON at
 `path`, tagged with the `strategy` that produced it — so
-`scripts/train_trading_policy.jl` (and any REPL session) can load a stable
+`scripts/game/train_trading_policy.jl` (and any REPL session) can load a stable
 pair of candidate lists without re-reading/re-filtering
 `nse_companies_latest.json`, and so the snapshot is self-documenting about how
 it was built.
@@ -356,7 +356,7 @@ which strategy actually built the snapshot.
 function load_universe_snapshot(path::String)
     isfile(path) || error(
         "TradingGame.load_universe_snapshot: not found: $path\n" *
-        "Run: julia --project=packages/TradingGame scripts/build_market_universe_snapshot.jl")
+        "Run: julia --project=packages/TradingGame scripts/game/build_market_universe_snapshot.jl")
     raw = JSON3.read(read(path, String))
     return (train = [String(c.symbol) for c in raw.train_candidates],
             val   = [String(c.symbol) for c in raw.val_candidates])

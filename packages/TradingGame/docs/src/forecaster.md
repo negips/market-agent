@@ -13,8 +13,8 @@ may `N`. The layers and their matrix-form equations are on `website/architecture
 (Forecaster v4 tab, "What every plotted variable means").
 
 ```bash
-julia -t auto --project=packages/TradingGame scripts/build_forecaster_cache.jl --config configs/bse_v3.toml
-julia --project=packages/TradingGame scripts/train_minute_forecaster.jl --config configs/bse_v3.toml --device gpu
+julia -t auto --project=packages/TradingGame scripts/forecaster/build_forecaster_cache.jl --config configs/bse_v3.toml
+julia --project=packages/TradingGame scripts/forecaster/train_minute_forecaster.jl --config configs/bse_v3.toml --device gpu
 ```
 
 Both scripts read the `[forecaster_cache]` (with `granularity = "1min" | "5min" | "15min" | "hourly" | "daily"`) and `[forecaster]` sections of the run's TOML file (`device` must be set in
@@ -61,14 +61,14 @@ Absolute NLL depends on the cache's return scale, so compare gains and skill, no
 
 ## Linear baseline
 
-`scripts/ar_baseline.jl` fits a linear autoregressive model (ridge regression of the next return on the last `k` returns of the same stock,
+`scripts/forecaster/ar_baseline.jl` fits a linear autoregressive model (ridge regression of the next return on the last `k` returns of the same stock,
 shared across stocks, and a scale regression on the time of day and recent absolute returns, scaled by each stock's level) on the training
 companies and dates, and scores it on exactly the evaluation sets of the run, with the same code ([`score_forecasts`](@ref)). It writes
 `ar_baseline.json` next to `val_report.json` and prints the two side by side, so the network's skill and likelihood gain can be read against
 what lagged returns alone already give.
 
 ```bash
-julia --project=packages/TradingGame scripts/ar_baseline.jl --config configs/bse_v3.toml [--lags 10]
+julia --project=packages/TradingGame scripts/forecaster/ar_baseline.jl --config configs/bse_v3.toml [--lags 10]
 ```
 
 ## Running and number types
@@ -79,7 +79,7 @@ Float32; the checkpoint is always Float32. Float8 is not supported. `--resume` (
 `train_trading_policy.jl`. `--init-from PATH` (or `init_from` in `[forecaster]`) starts a *fresh* run, epoch 1 with cleared logs, from the weights of
 another checkpoint ([`warm_start_forecaster`](@ref)): the architecture (`window`, `d`, `heads`, `blocks`) must match, everything else (dropout,
 learning rate, epochs) may differ, and it is exclusive with `--resume` and `--eval-only`. Outputs go to `website/data/forecaster/` (`--out-dir` changes it): `forecaster.bson` (best), `epoch_log.jsonl`,
-`timing.json`, `run_config.json`, `live_status.json` and `val_report.json`. `scripts/sweep_forecaster.jl` repeats a run over a list of widths `d`
+`timing.json`, `run_config.json`, `live_status.json` and `val_report.json`. `scripts/forecaster/sweep_forecaster.jl` repeats a run over a list of widths `d`
 with the same seed.
 
 ## Minute cache

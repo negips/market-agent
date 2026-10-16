@@ -437,7 +437,7 @@
         <b>next vector</b>: for every stock, the predicted next close and its 68% and 95% central intervals against the close that actually followed. The chart
         also draws the prediction the model made at every earlier minute of the section (each predicts the bar one step ahead; the model is causal, so none of
         them saw the bar it predicts). A stock that did not trade in the next minute keeps its last close, so a flat actual there is not a hit.
-        Run <code>scripts/predict_minute_forecaster.jl</code> (the command above) to change the section; the page reads <code>data/forecast_prediction.json</code> (1 min) or <code>data/forecast_prediction_15min.json</code> (15 min).
+        Run <code>scripts/forecaster/predict_minute_forecaster.jl</code> (the command above) to change the section; the page reads <code>data/forecast_prediction.json</code> (1 min) or <code>data/forecast_prediction_15min.json</code> (15 min).
       </div>
 
       <div class="fc-note" id="fc-step-box" style="display:none">
@@ -502,7 +502,7 @@
 
     const [y, m, d] = date.split('-');
     const fmtDate = `${d}-${m}-${y}`;
-    const cmd = `julia scripts/run_inference.jl --symbol ${symbol} --date ${fmtDate}`;
+    const cmd = `julia scripts/swing/run_inference.jl --symbol ${symbol} --date ${fmtDate}`;
     document.getElementById('cmd-text').textContent = cmd;
     document.getElementById('cmd-box').classList.remove('hidden');
   }
@@ -1081,7 +1081,7 @@ function fcGenerateCommand() {
     const time = document.getElementById('inp-time').value || '12:00';
     if (!date) { fcErr('Enter a date first.'); return; }
     fcErr('');
-    let cmd = `julia --project=packages/TradingGame scripts/predict_minute_forecaster.jl --date ${date} --time ${time}`;
+    let cmd = `julia --project=packages/TradingGame scripts/forecaster/predict_minute_forecaster.jl --date ${date} --time ${time}`;
     if (fcGran !== '1min') cmd += ` --granularity ${fcGran}`;
     if (syms.length) cmd += ` --symbols ${syms.join(',')}`;
     const hz = parseInt(document.getElementById('fc-horizon').value) || 1;

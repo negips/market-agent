@@ -379,8 +379,8 @@ existing infrastructure, is as follows:
 \begin{lstlisting}
 # Morning setup
 node sidecar/kite_login.js                    # fresh Kite session
-julia scripts/update_ohlcv.jl --include-bse  # append yesterday's bars
-julia scripts/build_cache.jl                 # rebuild InferenceCache
+julia scripts/ohlcv/update_ohlcv.jl --include-bse  # append yesterday's bars
+julia scripts/ohlcv/build_cache.jl                 # rebuild InferenceCache
 
 # Training (offline, run once / periodically)
 julia --project=packages/TradingGame scripts/train_rl_agent.jl

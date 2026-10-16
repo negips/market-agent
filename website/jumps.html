@@ -376,7 +376,7 @@ function updateCommand() {
   const K     = document.getElementById('lm-k').value;
   const alpha = document.getElementById('alpha-select').value;
   document.getElementById('cmd-box').textContent =
-    `julia --project=packages/StockSwingPredictor scripts/identify_jump_events.jl ${sym} --lm-K ${K} --alpha ${alpha}`;
+    `julia --project=packages/StockSwingPredictor scripts/swing/identify_jump_events.jl ${sym} --lm-K ${K} --alpha ${alpha}`;
 }
 
 function copyCommand() {

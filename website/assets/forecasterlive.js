@@ -1,4 +1,4 @@
-/* Live view of a v4 forecaster run (scripts/train_minute_forecaster.jl), used by tradinggamelive.html.
+/* Live view of a v4 forecaster run (scripts/forecaster/train_minute_forecaster.jl), used by tradinggamelive.html.
    Reads, from one run directory (default data/forecaster):
      live_status.json  rewritten every 10 steps: state, epoch, step, running loss, ETA
      epoch_log.jsonl   one row per epoch: train objective and every evaluation set's metrics
@@ -128,7 +128,7 @@
       </div>
       <div id="fcl-placeholder" class="placeholder" style="display:none">
         No v4 run found in <b id="fcl-ph-dir"></b>. Start one:
-        <code>julia --project=packages/TradingGame scripts/train_minute_forecaster.jl --config configs/bse_v3.toml --device gpu<span id="fcl-ph-flag"></span></code>
+        <code>julia --project=packages/TradingGame scripts/forecaster/train_minute_forecaster.jl --config configs/bse_v3.toml --device gpu<span id="fcl-ph-flag"></span></code>
       </div>
       <div id="fcl-body">
         <div class="chart-card" id="fcl-status"></div>

@@ -212,7 +212,7 @@ end
         @test log["best_iteration"] in 1:3
 
         # Simulated resume: same log path (append, as --resume does), offset by the
-        # prior run's length — mirrors what scripts/train_trading_policy.jl computes
+        # prior run's length — mirrors what scripts/game/train_trading_policy.jl computes
         # via _last_completed_iteration(episode_log.jsonl).
         policy, log2 = train_policy!(policy, env, train_config;
                                       iterations=2, k_epochs=1, minibatch_size=16,

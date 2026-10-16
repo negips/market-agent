@@ -94,41 +94,55 @@ market-agent/
 │   └── bse_v3.toml                 # BSE 15-minute game v3 run
 │
 ├── scripts/                        # standalone Julia scripts (not packages)
-│   ├── run_config.jl                     # shared TOML loader (module RunConfigs) included by the five run scripts
-│   ├── cli_flags.jl                      # reject_unknown_flags: the unknown-flag check for scripts that read flags with `in ARGS`
-│   ├── generate_nse_list.jl              # builds data/nse_companies_latest.json
-│   ├── run_confidence_checks.jl          # runs CompanyConfidence on top-N by market cap
-│   ├── enrich_earnings_dates.jl          # projects next earnings date via Tijori history (run every 2 weeks)
-│   ├── generate_earnings_watchlist.jl    # merges NSE calendar + projections → watchlist JSON
-│   ├── kite_relogin.jl                   # force a fresh Kite login from Julia (shells out to kite_login.js)
-│   ├── collect_nse_ohlcv.jl              # download all NSE OHLCV: daily/hourly/15min/5min/1min (Kite)
-│   ├── collect_bse_ohlcv.jl              # download all BSE OHLCV: daily/hourly/15min/5min/1min (Kite)
-│   ├── collect_macro_ohlcv.jl            # download macro instrument OHLCV (Yahoo + Kite CDS/NSE)
-│   ├── update_ohlcv.jl                   # incremental update: append only missing bars since last run
-│   ├── backfill_ohlcv.jl                 # extend existing OHLCV CSVs backward to an earlier --from date
-│   ├── quarantine_filtered_ohlcv.jl      # move OHLCV CSVs the current instrument filters exclude (ETF/INAV/debt…) to ohlcv/_filtered_out/
-│   ├── trim_corrupt_ohlcv.jl             # cut the NUL-byte tail an interrupted write leaves on OHLCV CSVs (dry run unless --apply)
-│   ├── scan_ohlcv_availability.jl        # first/last date, file count and size of every OHLCV CSV -> website/data/ohlcv_availability.json (dataavailability.html)
-│   ├── ops_server.jl                     # local server: serves website/ and runs a whitelist of actions from the pages (/api); see "Ops server"
-│   ├── extract_llm_features.jl           # Claude API → 14 scalar signals per company (resumable)
-│   ├── monitor_news.jl                   # real-time BSE + RSS news monitor daemon
-│   ├── backfill_news_signals.jl          # classify historical NSE announcements via local Ollama (resumable)
-│   ├── fetch_news_snapshot_ohlcv.jl      # fetch 1-min OHLCV from Kite for news-event days only (resumable)
-│   ├── fetch_bse_announcements.jl        # archive today's BSE RSS announcements for BSE-only companies -> bse_announcements.db (run daily)
-│   ├── build_cache.jl                    # build inference_cache.bson from OHLCV CSVs (--exchange nse|bse, --granularity hourly|15min)
-│   ├── build_dataset.jl                  # sliding-window dataset assembly; --pred-hours 35|70
-│   ├── train_model.jl                    # train SwingPredictor (v1/v2/v3); auto-selects dataset
-│   ├── build_market_universe_snapshot.jl # TradingGame candidate universe: confidence-filtered, pluggable train/val split
-│   ├── prepare_training_data.jl          # orchestrates universe + news backfill + 1-min snapshots, one date resolution
-│   ├── train_trading_policy.jl           # drives TradingGame.train_policy! (game v1/v2/v3) — see website/tradinggamelive.html
-│   ├── build_forecaster_cache.jl         # v4: return cache (--granularity 1min|5min|15min|hourly|daily) for the universe's train + val companies
-│   ├── train_minute_forecaster.jl        # v4: trains TradingGame.Forecaster (supervised next-minute forecaster)
-│   ├── ar_baseline.jl                    # v4: linear AR(k) baseline scored on the forecaster's own evaluation sets
-│   ├── predict_minute_forecaster.jl      # v4: forecast one section of the minute cache -> website/data/forecast_prediction.json (predict.html, Forecaster v4 tab)
-│   ├── val_steps_summary.jl              # summarise a validation run's per-step log (probabilities by held/slot/stock, critic)
-│   └── training_status.jl                # one-shot read-only snapshot of a running train_trading_policy.jl
-│
-│   ├── data/                           # generated artifacts (gitignored)
+│   ├── lib/         # shared helpers
+│   │   ├── cli_flags.jl                      # reject_unknown_flags: the unknown-flag check for scripts that read flags with `in ARGS`
+│   │   ├── run_config.jl                     # shared TOML loader (module RunConfigs) included by the five run scripts
+│   ├── companies/   # company lists, confidence, earnings, LLM features
+│   │   ├── enrich_earnings_dates.jl          # projects next earnings date via Tijori history (run every 2 weeks)
+│   │   ├── extract_llm_features.jl           # Claude API → 14 scalar signals per company (resumable)
+│   │   ├── generate_bse_list.jl              # builds website/data/bse_companies_latest.json (scripcode, NSE cross-listing)
+│   │   ├── generate_earnings_watchlist.jl    # merges NSE calendar + projections → watchlist JSON
+│   │   ├── generate_nse_list.jl              # builds data/nse_companies_latest.json
+│   │   ├── run_bse_confidence_checks.jl      # CompanyConfidence on the BSE company list
+│   │   ├── run_confidence_checks.jl          # runs CompanyConfidence on top-N by market cap
+│   ├── ohlcv/       # OHLCV collection, maintenance, inference cache
+│   │   ├── backfill_ohlcv.jl                 # extend existing OHLCV CSVs backward to an earlier --from date
+│   │   ├── build_cache.jl                    # build inference_cache.bson from OHLCV CSVs (--exchange nse|bse, --granularity hourly|15min)
+│   │   ├── collect_bse_ohlcv.jl              # download all BSE OHLCV: daily/hourly/15min/5min/1min (Kite)
+│   │   ├── collect_macro_ohlcv.jl            # download macro instrument OHLCV (Yahoo + Kite CDS/NSE)
+│   │   ├── collect_nse_ohlcv.jl              # download all NSE OHLCV: daily/hourly/15min/5min/1min (Kite)
+│   │   ├── kite_relogin.jl                   # force a fresh Kite login from Julia (shells out to kite_login.js)
+│   │   ├── quarantine_filtered_ohlcv.jl      # move OHLCV CSVs the current instrument filters exclude (ETF/INAV/debt…) to ohlcv/_filtered_out/
+│   │   ├── scan_ohlcv_availability.jl        # first/last date, file count and size of every OHLCV CSV -> website/data/ohlcv_availability.json (dataavailability.html)
+│   │   ├── trim_corrupt_ohlcv.jl             # cut the NUL-byte tail an interrupted write leaves on OHLCV CSVs (dry run unless --apply)
+│   │   ├── update_ohlcv.jl                   # incremental update: append only missing bars since last run
+│   ├── news/        # announcement fetch, classification, news daemon
+│   │   ├── backfill_news_signals.jl          # classify historical NSE announcements via local Ollama (resumable)
+│   │   ├── fetch_bse_announcements.jl        # archive today's BSE RSS announcements for BSE-only companies -> bse_announcements.db (run daily)
+│   │   ├── fetch_news_snapshot_ohlcv.jl      # fetch 1-min OHLCV from Kite for news-event days only (resumable)
+│   │   ├── fetch_nse_history.jl
+│   │   ├── monitor_news.jl                   # real-time BSE + RSS news monitor daemon
+│   ├── swing/       # StockSwingPredictor dataset, training, inference
+│   │   ├── build_dataset.jl                  # sliding-window dataset assembly; --pred-hours 35|70
+│   │   ├── identify_jump_events.jl           # find large-move events in OHLCV history (website/jumps.html)
+│   │   ├── run_inference.jl                  # run a trained SwingPredictor over the cache
+│   │   ├── train_model.jl                    # train SwingPredictor (v1/v2/v3); auto-selects dataset
+│   ├── game/        # TradingGame v1-v3 universe, data prep, PPO training
+│   │   ├── build_market_universe_snapshot.jl # TradingGame candidate universe: confidence-filtered, pluggable train/val split
+│   │   ├── prepare_training_data.jl          # orchestrates universe + news backfill + 1-min snapshots, one date resolution
+│   │   ├── split_val_runs.jl                 # convert an old val_runs.jsonl into per-run files
+│   │   ├── training_status.jl                # one-shot read-only snapshot of a running train_trading_policy.jl
+│   │   ├── train_trading_policy.jl           # drives TradingGame.train_policy! (game v1/v2/v3) — see website/tradinggamelive.html
+│   │   ├── val_steps_summary.jl              # summarise a validation run's per-step log (probabilities by held/slot/stock, critic)
+│   ├── forecaster/  # v4 minute forecaster
+│   │   ├── ar_baseline.jl                    # v4: linear AR(k) baseline scored on the forecaster's own evaluation sets
+│   │   ├── build_forecaster_cache.jl         # v4: return cache (--granularity 1min|5min|15min|hourly|daily) for the universe's train + val companies
+│   │   ├── predict_minute_forecaster.jl      # v4: forecast one section of the minute cache -> website/data/forecast_prediction.json (predict.html, Forecaster v4 tab)
+│   │   ├── sweep_forecaster.jl               # v4: train once per value of one hyperparameter and compare
+│   │   ├── train_minute_forecaster.jl        # v4: trains TradingGame.Forecaster (supervised next-minute forecaster)
+│   ├── tools/       # ops server, Kite smoke test
+│   │   ├── ops_server.jl                     # local server: serves website/ and runs a whitelist of actions from the pages (/api); see "Ops server"
+│   │   ├── test_kite_fetch.jl                # fetch daily OHLCV for one symbol to verify Kite credentials
 │   │   ├── nse_companies_latest.json   # latest snapshot (read by companies.html)
 │   │   ├── nse_companies_YYYYMMDD.json # dated snapshots
 │   │   └── earnings_watchlist_latest.json # read by watchlist.html
@@ -186,7 +200,7 @@ TradingGame             — depends on StockSwingPredictor (InferenceCache, macr
                           and CompanyConfidence (universe pre-filter, read as
                           precomputed JSON, not a package dependency — see
                           universe.jl). No package dependency on NewsMonitor:
-                          news_features.jl reads scripts/backfill_news_signals.jl's
+                          news_features.jl reads scripts/news/backfill_news_signals.jl's
                           news_signals.db directly via SQLite.jl, the same
                           light-coupling pattern. Simulator + RL training only — no
                           order placement (see StockSwingPredictor/broker.jl for
@@ -212,11 +226,11 @@ TOML file describing one whole run. Each script reads only its own sections:
 | `[train]` iterations, eval_every, lr, entropy, device, minibatch, seed, val_steps_every, live, init_from, resume, news_db | `train_trading_policy.jl` |
 
 ```bash
-julia --project=packages/StockSwingPredictor scripts/build_cache.jl --config configs/bse_v3.toml
-julia --project=packages/TradingGame scripts/build_market_universe_snapshot.jl --config configs/bse_v3.toml
-julia --project=packages/TradingGame scripts/prepare_training_data.jl --config configs/bse_v3.toml
-julia --project=packages/TradingGame scripts/train_trading_policy.jl --config configs/bse_v3.toml
-julia --project=packages/TradingGame scripts/train_trading_policy.jl --config configs/bse_v3.toml --print-config
+julia --project=packages/StockSwingPredictor scripts/ohlcv/build_cache.jl --config configs/bse_v3.toml
+julia --project=packages/TradingGame scripts/game/build_market_universe_snapshot.jl --config configs/bse_v3.toml
+julia --project=packages/TradingGame scripts/game/prepare_training_data.jl --config configs/bse_v3.toml
+julia --project=packages/TradingGame scripts/game/train_trading_policy.jl --config configs/bse_v3.toml
+julia --project=packages/TradingGame scripts/game/train_trading_policy.jl --config configs/bse_v3.toml --print-config
 ```
 
 Precedence is built-in default < config file < command-line flag, so `--iterations 5` overrides
@@ -226,7 +240,7 @@ section or key, or a value of the wrong type, is an error with a did-you-mean hi
 cannot be silently ignored. `train_trading_policy.jl` copies the file to
 `website/data/trading_game/config.toml`; on `--resume`, the saved `run_config.json` still beats the
 file (the same guarantee as before), and `[dates]` in the file beats `date_window.json`. Without
-`--config` every script behaves as before. The loader is `scripts/run_config.jl` (stdlib `TOML` only);
+`--config` every script behaves as before. The loader is `scripts/lib/run_config.jl` (stdlib `TOML` only);
 a new option means one line in its `SCHEMA` plus the script's own handling.
 
 ## Game v4: the minute forecaster
@@ -238,8 +252,8 @@ through the same weights, so the train and val companies may differ and so may N
 matrix-form equations are on `website/architecture.html` (Forecaster_v4 tab) and `website/mathematics.html`.
 
 ```bash
-julia -t auto --project=packages/TradingGame scripts/build_forecaster_cache.jl --config configs/bse_v3.toml
-julia --project=packages/TradingGame scripts/train_minute_forecaster.jl --config configs/bse_v3.toml --device gpu
+julia -t auto --project=packages/TradingGame scripts/forecaster/build_forecaster_cache.jl --config configs/bse_v3.toml
+julia --project=packages/TradingGame scripts/forecaster/train_minute_forecaster.jl --config configs/bse_v3.toml --device gpu
 ```
 
 - **Bar size:** `granularity` (`[forecaster_cache]` key or `--granularity`) is `1min` (default), `5min`, `15min`, `hourly` or `daily`, giving
@@ -282,12 +296,12 @@ julia --project=packages/TradingGame scripts/train_minute_forecaster.jl --config
   `skipped_steps`), computes the loss and the timestamp prior in Float32, and the checkpoint is always Float32.
   Float8 is not supported (no Julia type or Flux path).
 - **Width:** `d` is a hyperparameter; sweep it (32 / 64 / 128, same seed) and keep the smallest whose val skill matches the best.
-- **Baseline:** `julia --project=packages/TradingGame scripts/ar_baseline.jl --config configs/bse_v3.toml` fits a linear AR(k) location and a scaled
+- **Baseline:** `julia --project=packages/TradingGame scripts/forecaster/ar_baseline.jl --config configs/bse_v3.toml` fits a linear AR(k) location and a scaled
   time-of-day/recent-|r| scale model on the train companies and scores it on the same three evaluation sets (`ar_baseline.json` beside `val_report.json`),
   to show how much of the network's skill and likelihood gain lagged returns alone give.
-- **Predict page:** `julia --project=packages/TradingGame scripts/predict_minute_forecaster.jl --date 2025-06-12 --time 12:00 [--symbols A,B,...]` runs the checkpoint on the 96 bars ending there and writes
+- **Predict page:** `julia --project=packages/TradingGame scripts/forecaster/predict_minute_forecaster.jl --date 2025-06-12 --time 12:00 [--symbols A,B,...]` runs the checkpoint on the 96 bars ending there and writes
   `website/data/forecast_prediction.json` (`--granularity 15min` runs the 15-minute model and writes `forecast_prediction_15min.json`; the page's **Bar size** selector picks the file); the **Forecaster v4** tab of `website/predict.html` shows the next-minute vector (mean and 68% and 95% intervals per stock, each switchable, against the close that followed) and the model's prediction at every earlier minute of the section.
-  `--horizon Y` (the page's "Next Y minutes") also generates the next Y minutes iteratively: `--paths` (200) sample paths, each minute drawn from the predicted distribution, appended to the window and the model rerun; the mean and bands are path quantiles, and a slider shows the vector at any minute +k. It cannot reach past the day's close. From the REPL: `include("scripts/predict_minute_forecaster.jl"); s = load_session(); r = predict_section(s; date=Date(2025,6,12), horizon=30); show_next(r)`.
+  `--horizon Y` (the page's "Next Y minutes") also generates the next Y minutes iteratively: `--paths` (200) sample paths, each minute drawn from the predicted distribution, appended to the window and the model rerun; the mean and bands are path quantiles, and a slider shows the vector at any minute +k. It cannot reach past the day's close. From the REPL: `include("scripts/forecaster/predict_minute_forecaster.jl"); s = load_session(); r = predict_section(s; date=Date(2025,6,12), horizon=30); show_next(r)`.
 - **Tests:** `packages/TradingGame/test/test_forecaster.jl` (causality, stock symmetry, masking, no look-ahead in the
   context features, cache build, checkpoint, a learning check on a synthetic series).
 
@@ -385,11 +399,11 @@ sig.summary     # "Reliance Q2 PAT beats estimates by 12% — strong refining ma
 
 ```bash
 # Polls BSE every 60s + 3 RSS feeds every 5 min, classifies with Claude Haiku
-julia scripts/monitor_news.jl
+julia scripts/news/monitor_news.jl
 
 # Flags
-julia scripts/monitor_news.jl --all-hours   # don't restrict to 09:00–16:30 IST
-julia scripts/monitor_news.jl --bse-only    # skip RSS, BSE announcements only
+julia scripts/news/monitor_news.jl --all-hours   # don't restrict to 09:00–16:30 IST
+julia scripts/news/monitor_news.jl --bse-only    # skip RSS, BSE announcements only
 ```
 
 Output: `website/data/news_signals.jsonl` — one JSON line per classified item.
@@ -398,13 +412,13 @@ Output: `website/data/news_signals.jsonl` — one JSON line per classified item.
 
 ```bash
 # Fetch all NSE corporate announcements from 2010 to yesterday (~830 API calls, ~15 min)
-julia --project=packages/NewsMonitor scripts/fetch_nse_history.jl
+julia --project=packages/NewsMonitor scripts/news/fetch_nse_history.jl
 
 # Custom range or delay
-julia --project=packages/NewsMonitor scripts/fetch_nse_history.jl --from 2015-01-01 --delay 0.5
+julia --project=packages/NewsMonitor scripts/news/fetch_nse_history.jl --from 2015-01-01 --delay 0.5
 
 # Resumable — re-run after interruption to continue from last completed week
-julia --project=packages/NewsMonitor scripts/fetch_nse_history.jl
+julia --project=packages/NewsMonitor scripts/news/fetch_nse_history.jl
 ```
 
 Output: `website/data/nse_announcements.db` (SQLite)
@@ -464,7 +478,7 @@ session and works for all endpoints — no separate trading API key is needed.
 # 1. Acquire a fresh Kite Connect access token (valid for the trading day)
 node sidecar/kite_login.js              # reads .env, writes sidecar/kite_session.json
 # equivalently, from Julia:
-julia --project=packages/StockSwingPredictor scripts/kite_relogin.jl
+julia --project=packages/StockSwingPredictor scripts/ohlcv/kite_relogin.jl
 
 # 2. Start the sidecar (Julia will start it automatically via start!(), but you can also run it manually)
 node sidecar/server_http.js              # default port 3001
@@ -485,8 +499,8 @@ own automatic 403 relogin. Log in once per account per day:
 ```bash
 node sidecar/kite_login.js              # account 1
 node sidecar/kite_login.js --account 2  # account 2
-julia --project=packages/StockSwingPredictor scripts/collect_nse_ohlcv.jl --1min-only --account 1
-julia --project=packages/StockSwingPredictor scripts/collect_bse_ohlcv.jl --1min-only --account 2
+julia --project=packages/StockSwingPredictor scripts/ohlcv/collect_nse_ohlcv.jl --1min-only --account 1
+julia --project=packages/StockSwingPredictor scripts/ohlcv/collect_bse_ohlcv.jl --1min-only --account 2
 ```
 
 Run the two jobs on **different data** — different exchanges or granularities.
@@ -516,7 +530,7 @@ and pass it through every call. Requires a display (the relogin launches a
 real, visible browser) and `.env` credentials present, same as running
 `node sidecar/kite_login.js` directly. To force a refresh proactively
 instead of waiting for a 403 — e.g. right before starting a job you know
-will run long — use `scripts/kite_relogin.jl` (see below).
+will run long — use `scripts/ohlcv/kite_relogin.jl` (see below).
 
 Two failure modes this does NOT turn into a retry loop:
 - **Network actually down**: a connection failure throws straight out of
@@ -564,7 +578,7 @@ TIJORI_SIDECAR_DIR=/path/to/market-agent/sidecar julia --project=. test/runtests
 ## Scripts
 
 Scripts live in `scripts/` and are run directly with `julia` — they are not packages.
-All scripts accept `--help` / `-h`, and an unknown flag is an error (a typo such as `--bse--only` stops the script with a "did you mean" hint instead of being ignored). A script that reads flags with `"--x" in ARGS` lists its flags in a `reject_unknown_flags([...])` call (`scripts/cli_flags.jl`); add a new flag there too.
+All scripts accept `--help` / `-h`, and an unknown flag is an error (a typo such as `--bse--only` stops the script with a "did you mean" hint instead of being ignored). A script that reads flags with `"--x" in ARGS` lists its flags in a `reject_unknown_flags([...])` call (`scripts/lib/cli_flags.jl`); add a new flag there too.
 
 ### generate_nse_list.jl
 
@@ -573,8 +587,8 @@ and Tijori slug. Run once per trading day before `run_confidence_checks.jl`.
 
 ```bash
 # Sidecar must be running first
-julia scripts/generate_nse_list.jl              # uses today's date
-julia scripts/generate_nse_list.jl 2026-09-07  # explicit date (for past bhavcopy)
+julia scripts/companies/generate_nse_list.jl              # uses today's date
+julia scripts/companies/generate_nse_list.jl 2026-09-07  # explicit date (for past bhavcopy)
 ```
 
 Writes `website/data/nse_companies_YYYYMMDD.json` and updates `website/data/nse_companies_latest.json`.
@@ -587,9 +601,9 @@ No LLMs involved — purely arithmetic and Tijori data.
 
 ```bash
 # Sidecar must be running first; use CompanyConfidence project
-julia --project=packages/CompanyConfidence scripts/run_confidence_checks.jl        # top 100
-julia --project=packages/CompanyConfidence scripts/run_confidence_checks.jl 500   # top 500
-julia --project=packages/CompanyConfidence scripts/run_confidence_checks.jl 2305  # all with slugs
+julia --project=packages/CompanyConfidence scripts/companies/run_confidence_checks.jl        # top 100
+julia --project=packages/CompanyConfidence scripts/companies/run_confidence_checks.jl 500   # top 500
+julia --project=packages/CompanyConfidence scripts/companies/run_confidence_checks.jl 2305  # all with slugs
 ```
 
 Estimated time: ~6–15 seconds per company via the Tijori sidecar.
@@ -601,8 +615,8 @@ Fetches upcoming NSE earnings events and joins them with confidence data from
 Writes `data/earnings_watchlist_latest.json` consumed by `website/watchlist.html`.
 
 ```bash
-julia --project=packages/EarningsCalendar scripts/generate_earnings_watchlist.jl        # 30 days
-julia --project=packages/EarningsCalendar scripts/generate_earnings_watchlist.jl 60     # 60 days
+julia --project=packages/EarningsCalendar scripts/companies/generate_earnings_watchlist.jl        # 30 days
+julia --project=packages/EarningsCalendar scripts/companies/generate_earnings_watchlist.jl 60     # 60 days
 ```
 
 ### update_ohlcv.jl
@@ -633,17 +647,17 @@ granularity, especially `--1min-only`.
 
 ```bash
 # Run every trading day after kite_login.js (no arguments needed — updates NSE + BSE)
-julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl
+julia --project=packages/StockSwingPredictor scripts/ohlcv/update_ohlcv.jl
 
 # Restrict to a single exchange
-julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --nse-only
-julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --bse-only
+julia --project=packages/StockSwingPredictor scripts/ohlcv/update_ohlcv.jl --nse-only
+julia --project=packages/StockSwingPredictor scripts/ohlcv/update_ohlcv.jl --bse-only
 
 # Preview what would be fetched without hitting the API
-julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --dry-run
+julia --project=packages/StockSwingPredictor scripts/ohlcv/update_ohlcv.jl --dry-run
 
 # Update only daily bars (skip the slower hourly pass)
-julia --project=packages/StockSwingPredictor scripts/update_ohlcv.jl --daily-only
+julia --project=packages/StockSwingPredictor scripts/ohlcv/update_ohlcv.jl --daily-only
 ```
 
 Both `collect_nse_ohlcv.jl`/`collect_bse_ohlcv.jl` and `update_ohlcv.jl` also take
@@ -671,16 +685,16 @@ the skip check below permanently unsatisfiable).
 
 ```bash
 # Extend everything (both exchanges, all granularities) back to 2010-01-04
-julia --project=packages/StockSwingPredictor scripts/backfill_ohlcv.jl
+julia --project=packages/StockSwingPredictor scripts/ohlcv/backfill_ohlcv.jl
 
 # See the call-count estimate first — no API calls made
-julia --project=packages/StockSwingPredictor scripts/backfill_ohlcv.jl --dry-run
+julia --project=packages/StockSwingPredictor scripts/ohlcv/backfill_ohlcv.jl --dry-run
 
 # Scope a trial run
-julia --project=packages/StockSwingPredictor scripts/backfill_ohlcv.jl --symbol RELIANCE
-julia --project=packages/StockSwingPredictor scripts/backfill_ohlcv.jl --nse-only --hourly-only
-julia --project=packages/StockSwingPredictor scripts/backfill_ohlcv.jl --skip-1min
-julia --project=packages/StockSwingPredictor scripts/backfill_ohlcv.jl --from 2015-01-01 --log-file /tmp/custom.log
+julia --project=packages/StockSwingPredictor scripts/ohlcv/backfill_ohlcv.jl --symbol RELIANCE
+julia --project=packages/StockSwingPredictor scripts/ohlcv/backfill_ohlcv.jl --nse-only --hourly-only
+julia --project=packages/StockSwingPredictor scripts/ohlcv/backfill_ohlcv.jl --skip-1min
+julia --project=packages/StockSwingPredictor scripts/ohlcv/backfill_ohlcv.jl --from 2015-01-01 --log-file /tmp/custom.log
 ```
 
 Same `--nse-only`/`--bse-only`, `--daily-only`/`--hourly-only`/`--15min-only`/
@@ -740,13 +754,13 @@ macro history is stable — re-run yearly or with `--refresh` to extend.
 
 ```bash
 # One-time historical fetch (2010–yesterday)
-julia --project=packages/StockSwingPredictor scripts/collect_macro_ohlcv.jl
+julia --project=packages/StockSwingPredictor scripts/ohlcv/collect_macro_ohlcv.jl
 
 # Custom date range
-julia --project=packages/StockSwingPredictor scripts/collect_macro_ohlcv.jl --from 2015-01-01
+julia --project=packages/StockSwingPredictor scripts/ohlcv/collect_macro_ohlcv.jl --from 2015-01-01
 
 # Force re-fetch all (e.g. to extend history after updating --from)
-julia --project=packages/StockSwingPredictor scripts/collect_macro_ohlcv.jl --refresh
+julia --project=packages/StockSwingPredictor scripts/ohlcv/collect_macro_ohlcv.jl --refresh
 ```
 
 Output: `website/data/ohlcv/macro/{NAME}_daily.csv` — same schema as equity OHLCV.
@@ -762,11 +776,11 @@ coexist. `train_model.jl` automatically selects the right file based on the arch
 
 ```bash
 # Build 35-bar labels for v1 / v2 (5-day horizon)
-julia --project=packages/StockSwingPredictor scripts/build_dataset.jl --pred-hours 35
+julia --project=packages/StockSwingPredictor scripts/swing/build_dataset.jl --pred-hours 35
 
 # Build 70-bar labels for v3 (10-day horizon, default)
-julia --project=packages/StockSwingPredictor scripts/build_dataset.jl --pred-hours 70
-julia --project=packages/StockSwingPredictor scripts/build_dataset.jl  # same as above
+julia --project=packages/StockSwingPredictor scripts/swing/build_dataset.jl --pred-hours 70
+julia --project=packages/StockSwingPredictor scripts/swing/build_dataset.jl  # same as above
 ```
 
 Output: `website/data/training/dataset_{pred_hours}.bson` (~30 MB per file)
@@ -779,21 +793,21 @@ Saves checkpoint on every validation improvement; supports clean stop via sentin
 
 ```bash
 # Train v3 (10-day, LM weighting) — requires dataset_70.bson
-julia --project=packages/StockSwingPredictor scripts/train_model.jl --arch v3
+julia --project=packages/StockSwingPredictor scripts/swing/train_model.jl --arch v3
 
 # Common flags
-julia --project=packages/StockSwingPredictor scripts/train_model.jl \
+julia --project=packages/StockSwingPredictor scripts/swing/train_model.jl \
       --arch v3 --epochs 200 --lr 1e-4 --batch 128 --l2 1e-5
 
 # GPU training (falls back to cpu with a warning if CUDA.functional() is false)
-julia --project=packages/StockSwingPredictor scripts/train_model.jl --arch v3 --device gpu
+julia --project=packages/StockSwingPredictor scripts/swing/train_model.jl --arch v3 --device gpu
 
 # Resume from checkpoint
-julia --project=packages/StockSwingPredictor scripts/train_model.jl --arch v3 --resume
+julia --project=packages/StockSwingPredictor scripts/swing/train_model.jl --arch v3 --resume
 
 # Overfit diagnostic: train on N examples only — confirms gradients flow (default N=64)
-julia --project=packages/StockSwingPredictor scripts/train_model.jl --arch v3 --overfit
-julia --project=packages/StockSwingPredictor scripts/train_model.jl --arch v3 --overfit 128
+julia --project=packages/StockSwingPredictor scripts/swing/train_model.jl --arch v3 --overfit
+julia --project=packages/StockSwingPredictor scripts/swing/train_model.jl --arch v3 --overfit 128
 ```
 
 Outputs (under `website/data/models/{arch.name}/`):
@@ -821,10 +835,10 @@ instead of ~17. Most BSE small caps barely trade (their 15-minute bars are mostl
 build with `--min-mcap`, e.g.:
 
 ```bash
-julia --project=packages/StockSwingPredictor scripts/build_cache.jl --exchange bse --granularity 15min --min-mcap 500
-julia --project=packages/TradingGame scripts/build_market_universe_snapshot.jl --strategy random --n 40 --disjoint
-julia --project=packages/TradingGame scripts/prepare_training_data.jl --skip-universe
-julia --project=packages/TradingGame scripts/train_trading_policy.jl --game-version v2 --no-news
+julia --project=packages/StockSwingPredictor scripts/ohlcv/build_cache.jl --exchange bse --granularity 15min --min-mcap 500
+julia --project=packages/TradingGame scripts/game/build_market_universe_snapshot.jl --strategy random --n 40 --disjoint
+julia --project=packages/TradingGame scripts/game/prepare_training_data.jl --skip-universe
+julia --project=packages/TradingGame scripts/game/train_trading_policy.jl --game-version v2 --no-news
 ```
 
 Select it with `--game-version 3` — v2's rules, but the run errors out unless the cache is BSE 15-minute.
@@ -850,21 +864,21 @@ to change to support that; see the module docstring in `universe.jl` for why.
 
 ```bash
 # shared-topcap (default): top --n by market cap, identical list for train and val
-julia --project=packages/TradingGame scripts/build_market_universe_snapshot.jl        # top 60
-julia --project=packages/TradingGame scripts/build_market_universe_snapshot.jl --n 100
+julia --project=packages/TradingGame scripts/game/build_market_universe_snapshot.jl        # top 60
+julia --project=packages/TradingGame scripts/game/build_market_universe_snapshot.jl --n 100
 
 # disjoint-topcap: top (n_train+n_val) by market cap, split disjoint and
 # stratified by market-cap decile so neither side skews large/small-cap
-julia --project=packages/TradingGame scripts/build_market_universe_snapshot.jl \
+julia --project=packages/TradingGame scripts/game/build_market_universe_snapshot.jl \
     --strategy disjoint-topcap --n-train 60 --n-val 20 --seed 42
 
 # random: uniformly random --n from the WHOLE confidence-passing pool, not
 # restricted to top-market-cap; --disjoint draws independent train/val sets
-julia --project=packages/TradingGame scripts/build_market_universe_snapshot.jl \
+julia --project=packages/TradingGame scripts/game/build_market_universe_snapshot.jl \
     --strategy random --n 60 --disjoint --seed 42
 
 # random-bucketed: random selection from named market-cap bands (HI may be 'inf')
-julia --project=packages/TradingGame scripts/build_market_universe_snapshot.jl \
+julia --project=packages/TradingGame scripts/game/build_market_universe_snapshot.jl \
     --strategy random-bucketed --band 0:5000:15 --band 5000:inf:15
 ```
 
@@ -881,8 +895,8 @@ val=Vector{String})`, directly usable as `train_config`/`val_config`'s
 Archives BSE corporate announcements for companies with no NSE listing, which `nse_announcements.db` cannot cover. The source is BSE's RSS feed, which lists every filing since midnight today (about 10,000 items), keyed by scripcode and mapped to the BSE symbol through `bse_companies_latest.json`. BSE's history API (`api.bseindia.com`) returns 403 to scripted requests, so there is no backfill: the archive starts the day the script is first run, so run it once a day after the close. Re-runs are harmless.
 
 ```bash
-julia --project=packages/NewsMonitor scripts/fetch_bse_announcements.jl            # --scope bse-only (default) | all | universe
-julia --project=packages/NewsMonitor scripts/fetch_bse_announcements.jl --stats
+julia --project=packages/NewsMonitor scripts/news/fetch_bse_announcements.jl            # --scope bse-only (default) | all | universe
+julia --project=packages/NewsMonitor scripts/news/fetch_bse_announcements.jl --stats
 ```
 
 Output: `website/data/bse_announcements.db`, table `announcements(guid, symbol, scripcode, an_dt, company, desc, url, fetched_at)`. The classifier does not read it yet.
@@ -916,12 +930,12 @@ structured symbol at all and genuinely need the model's guess.
 
 ```bash
 # Requires Ollama running locally (qwen3:latest by default) — no API key needed
-julia --project=packages/NewsMonitor scripts/backfill_news_signals.jl
-julia --project=packages/NewsMonitor scripts/backfill_news_signals.jl --dry-run
-julia --project=packages/NewsMonitor scripts/backfill_news_signals.jl --symbol RELIANCE --symbol TCS
-julia --project=packages/NewsMonitor scripts/backfill_news_signals.jl --from 2021-01-01
-julia --project=packages/NewsMonitor scripts/backfill_news_signals.jl --ollama-model qwen3:latest
-julia --project=packages/NewsMonitor scripts/backfill_news_signals.jl --exchange bse   # BSE universe: look up by NSE listing, store under the BSE symbol
+julia --project=packages/NewsMonitor scripts/news/backfill_news_signals.jl
+julia --project=packages/NewsMonitor scripts/news/backfill_news_signals.jl --dry-run
+julia --project=packages/NewsMonitor scripts/news/backfill_news_signals.jl --symbol RELIANCE --symbol TCS
+julia --project=packages/NewsMonitor scripts/news/backfill_news_signals.jl --from 2021-01-01
+julia --project=packages/NewsMonitor scripts/news/backfill_news_signals.jl --ollama-model qwen3:latest
+julia --project=packages/NewsMonitor scripts/news/backfill_news_signals.jl --exchange bse   # BSE universe: look up by NSE listing, store under the BSE symbol
 ```
 
 Prerequisites: `nse_announcements.db` (`fetch_nse_history.jl`) and, for the
@@ -996,12 +1010,12 @@ bar looks identical to "not yet fetched" and is never treated as permanent.
 effort, not a guarantee every later date succeeds.
 
 ```bash
-julia --project=packages/TradingGame scripts/fetch_news_snapshot_ohlcv.jl
-julia --project=packages/TradingGame scripts/fetch_news_snapshot_ohlcv.jl --dry-run
-julia --project=packages/TradingGame scripts/fetch_news_snapshot_ohlcv.jl --symbol RELIANCE --symbol TCS
-julia --project=packages/TradingGame scripts/fetch_news_snapshot_ohlcv.jl --from 2017-01-01
-julia --project=packages/TradingGame scripts/fetch_news_snapshot_ohlcv.jl --role train --from 2021-09-09 --to 2026-05-11
-julia --project=packages/TradingGame scripts/fetch_news_snapshot_ohlcv.jl --role val   --from 2026-05-12
+julia --project=packages/TradingGame scripts/news/fetch_news_snapshot_ohlcv.jl
+julia --project=packages/TradingGame scripts/news/fetch_news_snapshot_ohlcv.jl --dry-run
+julia --project=packages/TradingGame scripts/news/fetch_news_snapshot_ohlcv.jl --symbol RELIANCE --symbol TCS
+julia --project=packages/TradingGame scripts/news/fetch_news_snapshot_ohlcv.jl --from 2017-01-01
+julia --project=packages/TradingGame scripts/news/fetch_news_snapshot_ohlcv.jl --role train --from 2021-09-09 --to 2026-05-11
+julia --project=packages/TradingGame scripts/news/fetch_news_snapshot_ohlcv.jl --role val   --from 2026-05-12
 ```
 
 Prerequisites: `news_signals.db` (`backfill_news_signals.jl`) and, for the
@@ -1045,13 +1059,13 @@ startup cost (Flux/CUDA for stage 3, a minute or so each call) on top of
 this script's own — small next to how long stages 2/3 themselves run.
 
 ```bash
-julia --project=packages/TradingGame scripts/prepare_training_data.jl
-julia --project=packages/TradingGame scripts/prepare_training_data.jl --dry-run
-julia --project=packages/TradingGame scripts/prepare_training_data.jl --val-days 120
-julia --project=packages/TradingGame scripts/prepare_training_data.jl --val-window same
-julia --project=packages/TradingGame scripts/prepare_training_data.jl --train-start 2021-09-09 --val-start 2026-05-12
-julia --project=packages/TradingGame scripts/prepare_training_data.jl --skip-universe --skip-news
-julia --project=packages/TradingGame scripts/prepare_training_data.jl --n 100 --rebuild-universe
+julia --project=packages/TradingGame scripts/game/prepare_training_data.jl
+julia --project=packages/TradingGame scripts/game/prepare_training_data.jl --dry-run
+julia --project=packages/TradingGame scripts/game/prepare_training_data.jl --val-days 120
+julia --project=packages/TradingGame scripts/game/prepare_training_data.jl --val-window same
+julia --project=packages/TradingGame scripts/game/prepare_training_data.jl --train-start 2021-09-09 --val-start 2026-05-12
+julia --project=packages/TradingGame scripts/game/prepare_training_data.jl --skip-universe --skip-news
+julia --project=packages/TradingGame scripts/game/prepare_training_data.jl --n 100 --rebuild-universe
 ```
 
 `--dry-run` prints the resolved windows and the exact commands it would
@@ -1093,10 +1107,10 @@ encoder, macro + news); **v2** same-bar fills, no forced exit (soft `--hold-pena
 sampling, illegal moves charged (`--illegal-penalty`), reward paid per window (`--reward-window-days`). A v3 run:
 
 ```bash
-julia --project=packages/StockSwingPredictor scripts/build_cache.jl --exchange bse --granularity 15min --min-mcap 500
-julia --project=packages/TradingGame scripts/build_market_universe_snapshot.jl --strategy random --n 40 --disjoint
-julia --project=packages/TradingGame scripts/prepare_training_data.jl --skip-news --skip-1min --train-start 2022-01-03 --train-end 2024-12-30 --val-start 2025-01-01 --val-end 2025-12-30
-julia --project=packages/TradingGame scripts/train_trading_policy.jl --game-version v3 --iterations 500 --entropy 0.01 --illegal-penalty 0.002 --reward-window-days 30
+julia --project=packages/StockSwingPredictor scripts/ohlcv/build_cache.jl --exchange bse --granularity 15min --min-mcap 500
+julia --project=packages/TradingGame scripts/game/build_market_universe_snapshot.jl --strategy random --n 40 --disjoint
+julia --project=packages/TradingGame scripts/game/prepare_training_data.jl --skip-news --skip-1min --train-start 2022-01-03 --train-end 2024-12-30 --val-start 2025-01-01 --val-end 2025-12-30
+julia --project=packages/TradingGame scripts/game/train_trading_policy.jl --game-version v3 --iterations 500 --entropy 0.01 --illegal-penalty 0.002 --reward-window-days 30
 ```
 
 (Games v1/v2 only — v3 loads neither macro nor news.) Builds a real `MacroCache` (`website/data/ohlcv/macro`) and `NewsFeatureCache`
@@ -1127,17 +1141,17 @@ degrades to "no override," which
 is why it's additive rather than required.
 
 ```bash
-julia --project=packages/TradingGame scripts/train_trading_policy.jl
-julia --project=packages/TradingGame scripts/train_trading_policy.jl --iterations 500 --val-days 40
-julia --project=packages/TradingGame scripts/train_trading_policy.jl --resume --iterations 100
-julia --project=packages/TradingGame scripts/train_trading_policy.jl --seed 42
-julia --project=packages/TradingGame scripts/train_trading_policy.jl --init-from other_run/policy.bson
-julia --project=packages/TradingGame scripts/train_trading_policy.jl --device gpu
-julia --project=packages/TradingGame scripts/train_trading_policy.jl --entropy 0.02
-julia --project=packages/TradingGame scripts/train_trading_policy.jl --val-window same
-julia --project=packages/TradingGame scripts/train_trading_policy.jl --val-start 2024-06-01 --val-end 2024-12-31
-julia --project=packages/TradingGame scripts/train_trading_policy.jl --no-macro --no-news
-julia --project=packages/TradingGame scripts/train_trading_policy.jl --game-version 2 --cash-penalty 0.02 --hold-penalty 0.02
+julia --project=packages/TradingGame scripts/game/train_trading_policy.jl
+julia --project=packages/TradingGame scripts/game/train_trading_policy.jl --iterations 500 --val-days 40
+julia --project=packages/TradingGame scripts/game/train_trading_policy.jl --resume --iterations 100
+julia --project=packages/TradingGame scripts/game/train_trading_policy.jl --seed 42
+julia --project=packages/TradingGame scripts/game/train_trading_policy.jl --init-from other_run/policy.bson
+julia --project=packages/TradingGame scripts/game/train_trading_policy.jl --device gpu
+julia --project=packages/TradingGame scripts/game/train_trading_policy.jl --entropy 0.02
+julia --project=packages/TradingGame scripts/game/train_trading_policy.jl --val-window same
+julia --project=packages/TradingGame scripts/game/train_trading_policy.jl --val-start 2024-06-01 --val-end 2024-12-31
+julia --project=packages/TradingGame scripts/game/train_trading_policy.jl --no-macro --no-news
+julia --project=packages/TradingGame scripts/game/train_trading_policy.jl --game-version 2 --cash-penalty 0.02 --hold-penalty 0.02
 ```
 
 `--game-version {1,2,3}` (default `1`) selects the rule set. **v3** is the v2 rules (same flags) restricted to a BSE 15-minute cache, with the **macro context and news features switched
@@ -1203,7 +1217,7 @@ Outputs (under `website/data/trading_game/`): `policy.bson`, `episode_log.jsonl`
 stock value/cash value curves, trades, and final holdings snapshot, written —
 never overwritten — once per evaluation, plus `index.json`, a small per-run summary with a
 downsampled curve; the page loads only the index and fetches a run's file on demand — the
-old append-only `val_runs.jsonl` reached 1.5 GB; `scripts/split_val_runs.jl` converts one;
+old append-only `val_runs.jsonl` reached 1.5 GB; `scripts/game/split_val_runs.jl` converts one;
 `tradinggamelive.html` plots each run as
 its own color with a show/hide toggle, portfolio value as a thick line and
 stock/cash as a separate linked sub-chart below it, plus a table of the latest
@@ -1285,7 +1299,7 @@ probabilities per stock after the sell mask (`probs`, `(3, N, T)`), the SELL pro
 weight, chosen action, `sell_ok`/`held` flags, the fill price, the critic's V(s), reward and its illegal-move part, and the
 book after the step (portfolio value, cash, stocks value, holdings, trades). Probabilities are `Float16`; a year of 15-minute
 bars for 40 stocks is about 5 MB per run. Load with `TradingGame.load_val_steps(path)`, or run
-`julia --project=packages/TradingGame scripts/val_steps_summary.jl [iteration | file ...]` for averages by held/not held, by
+`julia --project=packages/TradingGame scripts/game/val_steps_summary.jl [iteration | file ...]` for averages by held/not held, by
 15-minute slot of the day, per stock, and the critic against the reward that followed. Each run also gets a small `iter_NNNNN.json` per-bar summary (mean and top probabilities, picks, V(s), penalty, book — about 0.5 MB) that
 `tradinggamelive.html`'s "Held-out validation — trades" table reads to fill in the bars on which nothing was traded ("No action" rows, with the
 probabilities the policy had on that bar); runs without it show those rows with dashes. The validation rollout is greedy
@@ -1301,12 +1315,12 @@ arguments, no prompts; prints and exits. Meant for a quick check from outside
 a full session (e.g. Remote Control on the mobile app).
 
 ```bash
-julia --project=packages/TradingGame scripts/training_status.jl
+julia --project=packages/TradingGame scripts/game/training_status.jl
 ```
 
-### Ops server (`scripts/ops_server.jl`)
+### Ops server (`scripts/tools/ops_server.jl`)
 
-A drop-in for `serve.sh`'s python server that also lets pages run a fixed whitelist of actions. `julia --project=packages/StockSwingPredictor scripts/ops_server.jl [--port 8080] [--open website/dataavailability.html]`.
+A drop-in for `serve.sh`'s python server that also lets pages run a fixed whitelist of actions. `julia --project=packages/StockSwingPredictor scripts/tools/ops_server.jl [--port 8080] [--open website/dataavailability.html]`.
 The whitelist is the `ACTIONS` table at the top of the script: `job` entries run a command in the background (one at a time, log in `website/data/ops_logs/NAME.log`), `touch_file` entries create a file (the forecaster `STOP` / `STOP_NOW` sentinels). A page names an action (`POST /api/run/NAME`); it never sends a command. The server binds 127.0.0.1, refuses a Host other than its own localhost:PORT and a POST whose Origin is not its own. `website/assets/ops.js` is the page-side client (`Ops.available()`, `Ops.run(name)`, `Ops.runJob(name, onUpdate)`); under any other static server the buttons stay hidden. Used by the Rescan button on `dataavailability.html` and the Stop buttons on the Forecaster v4 tab. To add an action, add one line to `ACTIONS`.
 
 ### Website
