@@ -24,7 +24,7 @@ Options:
   --granularity G     1min (default), 5min, 15min, hourly or daily: picks the cache forecaster_cache_G.bson and the checkpoint
                       website/data/forecaster[_G]/forecaster.bson unless --cache/--checkpoint are given
   --checkpoint PATH   Forecaster checkpoint (default website/data/forecaster/forecaster.bson)
-  --out PATH          Result file (default website/data/forecast_prediction.json)
+  --out PATH          Result file (default website/data/forecast_prediction.json for 1min, forecast_prediction_{granularity}.json otherwise)
   --exchange nse|bse  Which ohlcv/{exchange} tree holds the CSVs (default bse)
   --cache PATH        Forecaster cache (default website/data/forecaster_cache_{granularity}.bson)
   --device cpu|gpu    Falls back to cpu when CUDA is not functional (default cpu)
@@ -77,12 +77,13 @@ Base.showerror(io::IO, e::PredictSectionError) = print(io, "PredictSectionError:
 
 """The settings every entry point starts from (the command line and the keyword arguments of [`predict_section`](@ref) override them)."""
 default_cache_path(g::String) = normpath(joinpath(DATA_DIR, "forecaster_cache_$g.bson"))
+default_out_path(g::String) = normpath(joinpath(DATA_DIR, g == "1min" ? "forecast_prediction.json" : "forecast_prediction_$g.json"))
 default_checkpoint_path(g::String) = normpath(joinpath(DATA_DIR, g == "1min" ? "forecaster" : "forecaster_$g", "forecaster.bson"))
 
 default_opts() = Dict{String, Any}(
     "exchange" => "bse", "granularity" => "1min", "cache" => nothing, "device" => "cpu",
     "checkpoint" => nothing,
-    "out" => joinpath(DATA_DIR, "forecast_prediction.json"),
+    "out" => nothing,
     "date" => nothing, "time" => DEFAULT_TIME, "symbols" => String[], "n" => DEFAULT_N, "levels" => [0.68, 0.95], "horizon" => 1, "paths" => DEFAULT_PATHS, "save_paths" => SAVED_PATHS, "seed" => nothing)
 
 function parse_args()
@@ -124,6 +125,7 @@ function parse_args()
     haskey(GRANULARITIES, opts["granularity"]) || error("--granularity must be one of $(join(sort(collect(keys(GRANULARITIES))), ", "))")
     opts["cache"] === nothing && (opts["cache"] = default_cache_path(opts["granularity"]))
     opts["checkpoint"] === nothing && (opts["checkpoint"] = default_checkpoint_path(opts["granularity"]))
+    opts["out"] === nothing && (opts["out"] = default_out_path(opts["granularity"]))
     opts["device"] in ("cpu", "gpu") || error("--device must be cpu or gpu")
     opts["horizon"] >= 1 || error("--horizon must be at least 1")
     opts["paths"] >= 2 || error("--paths must be at least 2")
@@ -369,7 +371,7 @@ function predict_section(session; date::Date, time::String=DEFAULT_TIME, symbols
         "model" => Dict("checkpoint" => session.checkpoint, "window" => M, "d" => mcfg.d, "blocks" => mcfg.blocks, "heads" => mcfg.heads,
                         "loss" => string(loss), "nu" => nu),
         "levels" => levels, "return_scale_percent" => _num(cache.scale),
-        "exchange" => exchange, "symbols" => symbols,
+        "exchange" => exchange, "symbols" => symbols, "granularity" => cache.granularity, "bar_minutes" => cache.bar_minutes,
         "first_input" => string(bar_datetime(cache, s)), "last_input" => string(bar_datetime(cache, t_end)),
         "next" => string(bar_datetime(cache, t_end + 1)),
         "datetimes" => [string(bar_datetime(cache, t)) for t in s:t_end + 1],
@@ -400,7 +402,7 @@ function show_next(r::Dict)
 end
 
 """Write a [`predict_section`](@ref) result to `path` (the file `website/predict.html` reads)."""
-function save_prediction(r::Dict, path::String=default_opts()["out"])
+function save_prediction(r::Dict, path::String=default_out_path("1min"))
     mkpath(dirname(path))
     open(io -> JSON3.pretty(io, r), path, "w")
     return path

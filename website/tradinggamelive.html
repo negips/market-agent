@@ -1877,19 +1877,25 @@ async function pollRunConfig() {
 }
 
 pollLive(); pollLog(); pollValRuns(); pollRunConfig(); pollValSummary();
-setInterval(pollLive, 3000);
-setInterval(pollLog, 8000);
+// Polls only while the tab is visible, and refreshes at once when it becomes visible again.
+function pollEvery(fn, ms) {
+  setInterval(() => { if (!document.hidden) fn(); }, ms);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) fn(); });
+}
+pollEvery(pollLive, 10000);   // live_status.json is rewritten every 10 steps (seconds apart at best)
+pollEvery(pollLog, 15000);
 // Held-out runs only land once every eval_every iterations (tens of minutes
 // apart in practice), and the file only grows (every run ever completed is
 // kept — see save_val_run!'s docstring), so there's no reason to poll it as
 // often as the live, per-bar status.
-setInterval(pollValRuns, 60000);
-setInterval(pollValSummary, 60000);   // both files grow once per iteration at most
+pollEvery(pollValRuns, 60000);
+pollEvery(pollValSummary, 60000);   // both files grow once per iteration at most
 // run_config.json is written once per run start/resume and otherwise static
 // — polled only so a --resume with changed flags (while this page stays
 // open) picks up the new values without a manual refresh.
-setInterval(pollRunConfig, 20000);
+pollEvery(pollRunConfig, 30000);
 </script>
+<script src="assets/ops.js"></script>
 <script src="assets/forecasterlive.js"></script>
 </body>
 </html>

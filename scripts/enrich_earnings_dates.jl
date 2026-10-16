@@ -233,4 +233,7 @@ function _save(projections::Dict)
     end
 end
 
+include(joinpath(@__DIR__, "cli_flags.jl"))
+reject_unknown_flags(["-h", "--help", "--refresh"])
+
 main()

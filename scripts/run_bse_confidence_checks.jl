@@ -63,7 +63,7 @@ Prerequisites: sidecar on port 3001; bse_companies_latest.json
         elseif a == "--limit" && i < length(ARGS);    args["limit"] = parse(Int, ARGS[i+1]); i += 2
         elseif a == "--save-every" && i < length(ARGS); args["save_every"] = parse(Int, ARGS[i+1]); i += 2
         elseif a == "--rescore";                      args["rescore"] = true; i += 1
-        else @warn "Unknown argument: $a"; i += 1
+        else error("Unknown argument: $a (see --help)")
         end
     end
     return args

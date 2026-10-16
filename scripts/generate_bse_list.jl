@@ -163,4 +163,7 @@ otherwise).
     write_json(df, today())
 end
 
+include(joinpath(@__DIR__, "cli_flags.jl"))
+reject_unknown_flags(["-h", "--help", "--refresh-instruments"])
+
 main()

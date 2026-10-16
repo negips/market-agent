@@ -82,7 +82,7 @@ Output:
         elseif a == "--alpha"      ; opts["alpha"]        = parse(Float64, ARGS[i+1]); i += 2
         elseif a == "--min-return" ; opts["min_return"]   = parse(Float64, ARGS[i+1]); i += 2
         elseif !startswith(a, "-") ; opts["symbol"] = uppercase(strip(a));             i += 1
-        else i += 1
+        else error("Unknown argument: $a (see --help)")
         end
     end
     isempty(opts["symbol"]) && error("Symbol required. Run with --help for usage.")

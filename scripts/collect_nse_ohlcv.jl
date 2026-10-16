@@ -133,7 +133,7 @@ Flags:
         elseif a == "--account" && i + 1 <= length(ARGS)
             args["account"] = parse(Int, ARGS[i+1]); i += 2
         else
-            @warn "Unknown argument: $a"; i += 1
+            error("Unknown argument: $a (see --help)")
         end
     end
     return args

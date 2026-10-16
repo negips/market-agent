@@ -74,7 +74,7 @@ Output: website/data/models/{arch.name}/swing_predictor.bson
             else
                 opts["overfit"] = 64; i += 1
             end
-        else i += 1
+        else error("Unknown argument: $a (see --help)")
         end
     end
     haskey(ARCH_REGISTRY, opts["arch"]) ||

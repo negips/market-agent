@@ -83,7 +83,7 @@ function _parse_bse_rss(xml::String)::Vector{NewsItem}
     return items
 end
 
-function _bse_tag(xml::String, name::String)::String
+function _bse_tag(xml::AbstractString, name::AbstractString)::String
     m = match(Regex("<$name[^>]*><!\\[CDATA\\[(.*?)\\]\\]></$name>", "s"), xml)
     !isnothing(m) && return strip(m[1])
     m = match(Regex("<$name[^>]*>(.*?)</$name>", "s"), xml)
@@ -91,7 +91,7 @@ function _bse_tag(xml::String, name::String)::String
     return ""
 end
 
-function _bse_decode(s::String)::String
+function _bse_decode(s::AbstractString)::String
     s = replace(s, "&amp;"  => "&")
     s = replace(s, "&lt;"   => "<")
     s = replace(s, "&gt;"   => ">")
@@ -101,7 +101,7 @@ function _bse_decode(s::String)::String
     return strip(s)
 end
 
-function _parse_bse_rss_dt(s::String)::DateTime
+function _parse_bse_rss_dt(s::AbstractString)::DateTime
     isempty(s) && return now(UTC)
     # BSE RSS date format: "23-Sep-2026 22:31:38" (IST, no TZ offset)
     m = match(r"(\d{1,2})-([A-Za-z]{3})-(\d{4})\s+(\d{2}):(\d{2}):(\d{2})", s)

@@ -29,4 +29,7 @@ function main(args)
     println("Converted $n runs into $out")
 end
 
+include(joinpath(@__DIR__, "cli_flags.jl"))
+reject_unknown_flags(["-h", "--help", "--src", "--out"])
+
 main(ARGS)

@@ -153,7 +153,7 @@ Flags:
         elseif a == "--dry-run"
             args["dry_run"] = true; i += 1
         else
-            @warn "Unknown argument: $a"; i += 1
+            error("Unknown argument: $a (see --help)")
         end
     end
     args["role"] in ("train", "val", "both") ||

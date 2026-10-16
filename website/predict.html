@@ -288,7 +288,7 @@
       <div class="page-subtitle" id="page-sub">Run the trained model on a symbol + date and compare against actual prices.</div>
       <div class="mode-tabs">
         <button class="mode-tab active" id="tab-swing" onclick="setMode('swing')">Swing predictor (daily)</button>
-        <button class="mode-tab" id="tab-fc" onclick="setMode('fc')">Forecaster v4 (1-minute)</button>
+        <button class="mode-tab" id="tab-fc" onclick="setMode('fc')">Forecaster v4</button>
       </div>
     </div>
 
@@ -404,13 +404,17 @@
         <button class="small" onclick="fcFillUniverse('val')">val companies</button>
         <button class="small" onclick="fcFillUniverse('train')">train companies</button>
         <button class="small" onclick="fcFillUniverse('both')" title="draw from the train and val companies together">train + val</button>
-        <label for="fc-date">Date</label>
+        <label for="fc-gran">Bar size</label>
+<select id="fc-gran" class="fc-sel" onchange="fcSetGran(this.value)" title="which trained forecaster to run: its bar size, cache and checkpoint">
+  <option value="1min">1 min</option><option value="15min">15 min</option>
+</select>
+<label for="fc-date">Date</label>
         <input id="fc-date" type="date" value="2025-06-12">
         <label for="inp-time">Last bar</label>
         <input id="inp-time" type="time" value="12:00" min="09:15" max="15:29">
         <label for="fc-horizon">Next</label>
-        <input id="fc-horizon" type="number" min="1" max="2880" value="1" style="width:80px" title="1 to 2880 session minutes (48 hours); 375 minutes = one trading day">
-        <label for="fc-horizon">minutes</label>
+        <input id="fc-horizon" type="number" min="1" max="2880" value="1" style="width:80px" title="">
+        <label for="fc-horizon" id="fc-hz-unit">minutes</label>
         <button onclick="fcGenerateCommand()">Generate command</button>
         <button class="load-btn" onclick="fcLoad()">Load result</button>
       </div>
@@ -433,13 +437,13 @@
         <b>next vector</b>: for every stock, the predicted next close and its 68% and 95% central intervals against the close that actually followed. The chart
         also draws the prediction the model made at every earlier minute of the section (each predicts the bar one step ahead; the model is causal, so none of
         them saw the bar it predicts). A stock that did not trade in the next minute keeps its last close, so a flat actual there is not a hit.
-        Run <code>scripts/predict_minute_forecaster.jl</code> (the command above) to change the section; the page reads <code>data/forecast_prediction.json</code>.
+        Run <code>scripts/predict_minute_forecaster.jl</code> (the command above) to change the section; the page reads <code>data/forecast_prediction.json</code> (1 min) or <code>data/forecast_prediction_15min.json</code> (15 min).
       </div>
 
       <div class="fc-note" id="fc-step-box" style="display:none">
         <b>Iterated forecast.</b> Each minute is generated from the one before: a return is drawn from the model's predicted distribution, appended to the window,
         and the model runs again, for <span id="fc-paths"></span> independent paths. The model has no target for the overnight move, so when a forecast crosses into a new day its first minute is drawn from that stock's own past overnight gaps, and the bands widen accordingly. The mean and the intervals are taken over the paths.
-        Show the vector at minute +<input type="range" id="fc-step" min="1" max="1" value="1" oninput="fcStepChange()" style="vertical-align:middle;width:260px">
+        Show the vector at bar +<input type="range" id="fc-step" min="1" max="1" value="1" oninput="fcStepChange()" style="vertical-align:middle;width:260px">
         <b id="fc-step-lbl"></b>
       </div>
 
@@ -477,6 +481,7 @@
 
   // ── Init ──────────────────────────────────────────────────────────────────
   document.addEventListener('DOMContentLoaded', () => {
+    fcApplyGranUi();
     if (new URLSearchParams(location.search).get('mode') === 'fc') setMode('fc');
     // Default date to yesterday (most recent likely trading day)
     const inp = document.getElementById('inp-date');
@@ -1009,7 +1014,7 @@
     document.getElementById('tab-swing').classList.toggle('active', !fc);
     document.getElementById('tab-fc').classList.toggle('active', fc);
     document.getElementById('page-sub').textContent = fc
-      ? 'Load a section of minute prices, predict the next minute of every stock with the v4 forecaster, and compare with what happened.'
+      ? 'Load a section of prices, predict the next bar (1 or 15 minutes) of every stock with the v4 forecaster, and compare with what happened.'
       : 'Run the trained model on a symbol + date and compare against actual prices.';
     if (fc && !fcData) fcLoad(true);
     try { history.replaceState(null, '', fc ? '?mode=fc' : location.pathname); } catch {}
@@ -1041,13 +1046,43 @@
     } catch (e) { fcErr('Could not read data/trading_game/universe_latest.json: ' + e.message); }
   }
 
-  function fcGenerateCommand() {
+  const FC_GRANS = { '1min': { minutes: 1, file: 'forecast_prediction.json', unit: 'minutes' }, '15min': { minutes: 15, file: 'forecast_prediction_15min.json', unit: '15-minute bars' } };
+let fcGran = '1min';
+try { const g = new URLSearchParams(location.search).get('gran') || localStorage.getItem('fc_gran'); if (g in FC_GRANS) fcGran = g; } catch {}
+
+function fcBarLabel(d, n) {
+  const bm = d.bar_minutes || 1;
+  return bm === 1 ? `${n} min` : `${n} bar${n === 1 ? '' : 's'} (${n * bm} min)`;
+}
+
+function fcApplyGranUi() {
+  const g = FC_GRANS[fcGran], max = Math.floor(2880 / g.minutes);
+  document.getElementById('fc-gran').value = fcGran;
+  const h = document.getElementById('fc-horizon');
+  h.max = max; if (+h.value > max) h.value = max;
+  h.title = `1 to ${max} ${g.unit} (48 hours of bar time); ${375 / g.minutes} ${g.unit === 'minutes' ? 'minutes' : 'bars'} = one trading day`;
+  document.getElementById('fc-hz-unit').textContent = g.unit;
+  document.getElementById('inp-time').title = g.minutes === 1 ? '' : `the ${g.minutes}-minute bar that contains this time is the last input bar`;
+  document.getElementById('fc-cmd-box').classList.add('hidden');
+}
+
+function fcSetGran(g) {
+  fcGran = g;
+  try { localStorage.setItem('fc_gran', g); } catch {}
+  try { const u = new URL(location.href); u.searchParams.set('gran', g); history.replaceState(null, '', u); } catch {}
+  fcApplyGranUi();
+  fcData = null;
+  fcLoad(false);
+}
+
+function fcGenerateCommand() {
     const syms = document.getElementById('fc-symbols').value.split(/[\s,]+/).filter(Boolean).map(s => s.toUpperCase());
     const date = document.getElementById('fc-date').value;
     const time = document.getElementById('inp-time').value || '12:00';
     if (!date) { fcErr('Enter a date first.'); return; }
     fcErr('');
     let cmd = `julia --project=packages/TradingGame scripts/predict_minute_forecaster.jl --date ${date} --time ${time}`;
+    if (fcGran !== '1min') cmd += ` --granularity ${fcGran}`;
     if (syms.length) cmd += ` --symbols ${syms.join(',')}`;
     const hz = parseInt(document.getElementById('fc-horizon').value) || 1;
     if (hz > 1) cmd += ` --horizon ${hz}`;
@@ -1065,13 +1100,14 @@
 
   async function fcLoad(silent = false) {
     try {
-      const res = await fetch('data/forecast_prediction.json?t=' + Date.now());
-      if (!res.ok) { if (!silent) fcErr('forecast_prediction.json not found. Run the command above first.'); return; }
+      const file = FC_GRANS[fcGran].file;
+      const res = await fetch('data/' + file + '?t=' + Date.now());
+      if (!res.ok) { if (!silent) fcErr(file + ' not found. Generate the command above and run it first.'); return; }
       fcData = await res.json();
       fcErr('');
       fcRender();
     } catch (e) {
-      if (!silent) fcErr('Failed to load forecast_prediction.json: ' + e.message);
+      if (!silent) fcErr('Failed to load ' + FC_GRANS[fcGran].file + ': ' + e.message);
     }
   }
 
@@ -1129,7 +1165,7 @@
     const step = fcStep();
     const dt = d.rollout ? d.rollout.datetimes[step - 1] : d.next;
     const e = document.getElementById('fc-st-next'); e.textContent = `${dt.slice(0, 10)}  ${fcTime(dt)}`; e.classList.remove('muted');
-    document.getElementById('fc-st-next-sub').textContent = (d.rollout ? `+${step} min · ` : '') + `${d.model.loss} (ν=${d.model.nu}), d=${d.model.d}, ${d.model.blocks} blocks`;
+    document.getElementById('fc-st-next-sub').textContent = (d.rollout ? `+${fcBarLabel(d, step)} · ` : '') + `${d.model.loss} (ν=${d.model.nu}), d=${d.model.d}, ${d.model.blocks} blocks`;
     document.getElementById('fc-step-lbl').textContent = d.rollout ? `${step}  (${fcTime(dt)})` : '';
   }
 
@@ -1196,7 +1232,7 @@
       if (subId) document.getElementById(subId).textContent = sub;
     };
     setStat('fc-st-section', `${d.first_input.slice(0, 10)}  ${fcTime(d.first_input)} → ${fcTime(d.last_input)}`,
-            `${d.stocks.length} stocks, ${d.model.window} minutes`, 'fc-st-section-sub');
+            `${d.stocks.length} stocks, ${d.model.window} bars of ${d.bar_minutes || 1} min`, 'fc-st-section-sub');
     const box = document.getElementById('fc-step-box');
     const slider = document.getElementById('fc-step');
     if (d.rollout) {

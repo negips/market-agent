@@ -333,7 +333,7 @@ Options:
         elseif a == "--history-encoder"; opts["history_encoder"] = Symbol(lowercase(ARGS[i+1])); push!(explicit, "history_encoder"); i += 2
         elseif a == "--illegal-penalty"; opts["illegal_penalty"] = parse(Float64, ARGS[i+1]); push!(explicit, "illegal_penalty"); i += 2
         elseif a == "--hold-penalty"; opts["hold_penalty"] = parse(Float64, ARGS[i+1]); push!(explicit, "hold_penalty"); i += 2
-        else; i += 1
+        else; error("Unknown argument: $a (see --help)")
         end
     end
     opts["resume"] && !isempty(opts["init_from"]) &&

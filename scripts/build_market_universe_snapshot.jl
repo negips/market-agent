@@ -117,7 +117,7 @@ Output: $OUTPUT_FILE
         elseif a == "--min-mcap"; MIN_MARKET_CAP_CR[] = parse(Float64, ARGS[i+1]); i += 2
         elseif a == "--seed";     seed = parse(Int, ARGS[i+1]); i += 2
         elseif a == "--band";     push!(bands, ARGS[i+1]); i += 2
-        else; @warn "Unknown argument: $a"; i += 1
+        else; error("Unknown argument: $a (see --help)")
         end
     end
 

@@ -42,7 +42,7 @@ skip_news = true              # news and 1-minute snapshots are NSE-only
 # rebuild_universe = false
 
 [forecaster_cache]            # build_forecaster_cache.jl; the cache covers [dates] (plus 10 days of margin) unless from/to are given
-granularity 	= "1min"          # 1min | 5min | 15min | hourly | daily: the bar size the forecaster reads and predicts
+granularity 	= "15min"          # 1min | 5min | 15min | hourly | daily: the bar size the forecaster reads and predicts
 exchange 	= "bse"              # reads website/data/ohlcv/{exchange}/{1min,5min,15min,hourly,daily}
 # out              = "website/data/forecaster_cache_1min.bson"   # default: forecaster_cache_{granularity}.bson
 # from             = 2021-12-24
@@ -55,8 +55,8 @@ d       	= 32          # model width; must be a multiple of heads. Sweep 32 / 64
 heads   	= 4
 blocks  	= 4           # L: causal time-attention blocks
 dropout 	= 0.1
-epochs          = 80
-steps_per_epoch = 500         # an "epoch" is this many random batches
+epochs          = 100
+steps_per_epoch = 250         # an "epoch" is this many random batches
 batch           = 32          # windows per batch; memory is dominated by the M x M attention scores
 # lr              = 0.0003
 # weight_decay    = 0.01
@@ -68,7 +68,7 @@ nu              = 4.0         # Student-t degrees of freedom (above 2)
 # nll_beta        = 0.5       # beta-NLL exponent: weight each term by sigma^(2*beta), held constant; 0 = plain NLL
 # dtype           = "float32" # "float32" | "float16" | "float64": number type of the forward/backward pass
 # seed            = 42
-init_from       = "website/data/forecaster/forecaster.bson"   # fresh run (epoch 1, logs cleared) with weights warm-started from this checkpoint; the architecture must match
+#init_from       = "website/data/forecaster/forecaster.bson"   # fresh run (epoch 1, logs cleared) with weights warm-started from this checkpoint; the architecture must match
 resume          = false     # true = load forecaster.bson and continue the epoch numbering; exclusive with init_from; --no-resume overrides it
 
 [game]                        # train_trading_policy.jl

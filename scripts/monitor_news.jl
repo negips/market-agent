@@ -80,4 +80,7 @@ Output:
     run_poller(config)
 end
 
+include(joinpath(@__DIR__, "cli_flags.jl"))
+reject_unknown_flags(["-h", "--help", "--all-hours", "--bse-only"])
+
 main()

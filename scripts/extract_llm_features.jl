@@ -145,4 +145,7 @@ Output:
     @printf("  Extracted: %d\n  Skipped:   %d\n  Failed:    %d\n", ok, skipped, failed)
 end
 
+include(joinpath(@__DIR__, "cli_flags.jl"))
+reject_unknown_flags(["-h", "--help", "--refresh"])
+
 main()

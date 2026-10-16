@@ -52,7 +52,7 @@ Flags:
         elseif ARGS[i] == "--db" && i+1 <= length(ARGS)
             args["db"] = ARGS[i+1]; i += 2
         else
-            @warn "Unknown argument: $(ARGS[i])"; i += 1
+            error("Unknown argument: $(ARGS[i]) (see --help)")
         end
     end
     return args

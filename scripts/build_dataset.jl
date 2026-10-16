@@ -66,7 +66,7 @@ Output:  website/data/training/dataset_{N}.bson
         elseif a == "--pred-hours"
             pred_hours = parse(Int, ARGS[i+1]); i += 2
         else
-            i += 1
+            error("Unknown argument: $a (see --help)")
         end
     end
     pred_hours % N_HOURS_PER_DAY == 0 ||

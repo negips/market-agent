@@ -7,7 +7,8 @@
      val_report.json   written at the end: per-stock / per-slot results of the best checkpoint */
 (() => {
   const DEFAULT_RUN = 'data/forecaster';
-  const RUN_CHOICES = ['data/forecaster', 'data/forecaster_sweep/d_32', 'data/forecaster_sweep/d_64', 'data/forecaster_sweep/d_128'];
+  const RUN_TABS = [['1 min', 'data/forecaster', ''], ['15 min', 'data/forecaster_15min', ' --granularity 15min']];
+  const STOP_ACTIONS = { 'data/forecaster': ['stop_forecaster_1min', 'stop_forecaster_1min_now'], 'data/forecaster_15min': ['stop_forecaster_15min', 'stop_forecaster_15min_now'] };
   const COL = { val: '#4f8ef7', val_train_companies: '#3dd68c', train: '#f5c842', objective: '#f76f6f', dim: '#6b7599', white: '#e6e9f5' };
   const SET_LABEL = { val: 'val companies, val dates', val_train_companies: 'train companies, val dates', train: 'train companies, train dates' };
   const charts = {};
@@ -57,21 +58,77 @@
     });
   }
 
+  // ── epoch window ─────────────────────────────────────────────────────────
+  const WIN_PRESETS = [10, 25, 50, 100];
+  let win = { from: null, to: null, last: null };
+
+  function winBounds() {
+    const nums = epochs.map(r => r.epoch);
+    const lo = Math.min(...nums), hi = Math.max(...nums);
+    let from = win.from ?? lo, to = win.to ?? hi;
+    if (win.last) { to = hi; from = Math.max(lo, hi - win.last + 1); }
+    return { lo, hi, from, to };
+  }
+  function windowed(rows, key) {
+    if (!epochs.length) return rows;
+    const { from, to } = winBounds();
+    return rows.filter(r => key(r) >= from && key(r) <= to);
+  }
+  function renderWindowUi() {
+    const box = $('fcl-win'); if (!box || !epochs.length) return;
+    const { lo, hi, from, to } = winBounds();
+    for (const [id, v] of [['fcl-win-from', from], ['fcl-win-to', to]]) {
+      const el = $(id); el.min = lo; el.max = hi;
+      if (document.activeElement !== el) el.value = v;
+    }
+    box.querySelectorAll('[data-last]').forEach(b => b.classList.toggle('active', win.last === (+b.dataset.last || null) && (win.last !== null || (win.from === null && win.to === null))));
+    $('fcl-win-note').textContent = `showing epochs ${from}–${to} of ${lo}–${hi}`;
+  }
+  function wireWindowUi() {
+    const apply = () => {
+      const a = parseInt($('fcl-win-from').value, 10), b = parseInt($('fcl-win-to').value, 10);
+      win = { from: isFinite(a) ? a : null, to: isFinite(b) ? b : null, last: null };
+      if (win.from !== null && win.to !== null && win.from > win.to) [win.from, win.to] = [win.to, win.from];
+      renderCharts();
+    };
+    $('fcl-win-from').addEventListener('change', apply);
+    $('fcl-win-to').addEventListener('change', apply);
+    $('fcl-win').querySelectorAll('[data-last]').forEach(b => b.addEventListener('click', () => {
+      const n = +b.dataset.last;
+      win = { from: null, to: null, last: n || null };
+      renderCharts();
+    }));
+  }
+
   // ── skeleton ─────────────────────────────────────────────────────────────
   function build() {
     if (built) return; built = true;
     $('fc-root').innerHTML = `
       <div class="chart-card" style="padding:12px 16px">
         <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-          <label style="font-size:12px;color:var(--text-dim)">Run directory</label>
-          <input id="fcl-run" list="fcl-runs" style="min-width:300px;background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px 10px;font-family:var(--mono);font-size:12.5px">
-          <datalist id="fcl-runs">${RUN_CHOICES.map(r => `<option value="${r}">`).join('')}</datalist>
-          <span id="fcl-run-note" style="font-size:12px;color:var(--text-dim)"></span>
+          <div class="mode-tabs" id="fcl-run-tabs" style="margin:0"></div>
+          <span id="fcl-stop" style="display:none;margin-left:auto;gap:8px;align-items:center">
+  <span id="fcl-run-note" style="font-size:12px;color:var(--text-dim)"></span>
+  <button class="mode-tab" id="fcl-stop-epoch">Stop after this epoch</button>
+  <button class="mode-tab" id="fcl-stop-now" style="color:var(--red)">Stop now</button>
+</span>
+        </div>
+      </div>
+      <div class="chart-card" id="fcl-win" style="padding:10px 16px">
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:13px">
+          <span class="chart-title" style="font-size:14px">Epoch window</span>
+          <label>from <input type="number" id="fcl-win-from" step="1" style="width:76px;background:#12162a;color:#e6e9f5;border:1px solid #2a314f;border-radius:6px;padding:3px 6px"></label>
+          <label>to <input type="number" id="fcl-win-to" step="1" style="width:76px;background:#12162a;color:#e6e9f5;border:1px solid #2a314f;border-radius:6px;padding:3px 6px"></label>
+          <span class="mode-tabs" style="margin:0">
+            <button class="mode-tab" data-last="0">All</button>
+            ${WIN_PRESETS.map(n => `<button class="mode-tab" data-last="${n}">Last ${n}</button>`).join('')}
+          </span>
+          <span id="fcl-win-note" style="font-size:12px;color:var(--text-dim)"></span>
         </div>
       </div>
       <div id="fcl-placeholder" class="placeholder" style="display:none">
         No v4 run found in <b id="fcl-ph-dir"></b>. Start one:
-        <code>julia --project=packages/TradingGame scripts/train_minute_forecaster.jl --config configs/bse_v3.toml --device gpu</code>
+        <code>julia --project=packages/TradingGame scripts/train_minute_forecaster.jl --config configs/bse_v3.toml --device gpu<span id="fcl-ph-flag"></span></code>
       </div>
       <div id="fcl-body">
         <div class="chart-card" id="fcl-status"></div>
@@ -99,16 +156,40 @@
 <div class="met-h">Timing chart ("Where the time goes")</div><table class="met-tbl"><tr><th>Shown as</th><th>Definition and how to read it</th></tr><tr><td>batch</td><td>Building a batch of windows from the cache (indexing and feature assembly on the CPU).</td></tr><tr><td>forward_backward</td><td>The model forward pass and gradient computation. It dominates, because attention scores grow as M² per stock and N² per minute.</td></tr><tr><td>optimizer</td><td>The AdamW update, including gradient clipping.</td></tr><tr><td>eval</td><td>Scoring the three evaluation sets once at the end of the epoch.</td></tr></table>
 <div class="met-h">Final report (appears when the run ends; best checkpoint, val set)</div><table class="met-tbl"><tr><th>Shown as</th><th>Definition and how to read it</th></tr><tr><td>Predicted vs realised volatility by time of day</td><td>For each 15-minute slot of the session, the mean predicted standard deviation (<code>σ·√(ν/(ν−2))</code>, the t's own std) against the realised RMS of the returns. The shape (high at the open, low mid-session, a rise into the close) should match. The predicted line sits below the realised one because heavy tails put a few very large moves into the RMS, so a typical-scale σ is smaller than an RMS.</td></tr><tr><td>Forecast skill by time of day</td><td>The skill formula above, computed separately within each 15-minute slot. It shows whether the edge is concentrated at the open or close or spread through the session.</td></tr><tr><td>Forecast skill by stock</td><td>The same skill per validation company, sorted. Bars below zero are stocks where the model does worse than predicting no move. A stock with too few traded targets has no value. High skill on thinly traded names usually reflects microstructure effects (bounce, stale quotes), so check the traded fraction before trusting it.</td></tr></table>
         </details>
-      </div>`;
-    const inp = $('fcl-run'); inp.value = runDir;
-    inp.addEventListener('change', () => { setRun(inp.value.trim().replace(/\/+$/, '') || DEFAULT_RUN); });
+       </div>`;
+    wireWindowUi();
   }
+
+  function renderRunTabs() {
+    const tabs = RUN_TABS.some(t => t[1] === runDir) ? RUN_TABS : [...RUN_TABS, [runDir.replace(/^data\//, ''), runDir, '']];
+    $('fcl-run-tabs').innerHTML = tabs.map(t => `<button class="mode-tab${t[1] === runDir ? ' active' : ''}" data-run="${t[1]}" title="${t[1]}">${t[0]}</button>`).join('');
+    $('fcl-run-tabs').querySelectorAll('button').forEach(b => b.addEventListener('click', () => setRun(b.dataset.run)));
+  renderStopButtons();
+}
+
+async function renderStopButtons() {
+  const box = $('fcl-stop'), names = STOP_ACTIONS[runDir];
+  const ready = names && window.Ops && await Ops.available();
+  box.style.display = ready ? 'flex' : 'none';
+  if (!ready) return;
+  const note = $('fcl-run-note');
+  const pending = (await Ops.refresh() || {});
+  note.textContent = pending[names[1]]?.exists ? 'STOP_NOW file is set' : pending[names[0]]?.exists ? 'STOP file is set: stops after this epoch' : '';
+  [[$('fcl-stop-epoch'), names[0], 'Stop this run after the current epoch? The best checkpoint is kept.'],
+   [$('fcl-stop-now'), names[1], 'Stop this run immediately? The best checkpoint is already saved, the current epoch is lost.']].forEach(([btn, name, msg]) => {
+    btn.onclick = async () => {
+      if (!confirm(msg)) return;
+      const r = await Ops.run(name);
+      note.textContent = r.ok ? (name.endsWith('_now') ? 'STOP_NOW file written' : 'STOP file written: stops after this epoch') : 'failed: ' + (r.body.error || r.status);
+    };
+  });
+}
 
   function setRun(dir) {
     runDir = dir; store.set('fcl_run', dir);
     Object.values(charts).forEach(c => c.destroy()); for (const k in charts) delete charts[k];
-    epochs = []; timing = []; live = null; config = null; report = null;
-    $('fcl-run').value = dir; renderAll(); pollSlow(); pollLive();
+    epochs = []; timing = []; live = null; config = null; report = null; win = { from: null, to: null, last: null };
+    renderRunTabs(); renderAll(); pollSlow(); pollLive();
   }
 
   // ── renderers ────────────────────────────────────────────────────────────
@@ -182,32 +263,34 @@
 
   function renderCharts() {
     if (!epochs.length) return;
-    const labels = epochs.map(r => r.epoch);
+    const E = windowed(epochs, r => r.epoch), T = windowed(timing, r => r.iteration);
+    renderWindowUi();
+    const labels = E.map(r => r.epoch);
     const sets = ['val', 'val_train_companies', 'train'];
     const ev = (r, s, k) => ((r.eval || {})[s] || {})[k] ?? null;
-    const setLine = (s, k, extra = {}) => ({ label: SET_LABEL[s], data: epochs.map(r => ev(r, s, k)), borderColor: COL[s], backgroundColor: COL[s], ...extra });
+    const setLine = (s, k, extra = {}) => ({ label: SET_LABEL[s], data: E.map(r => ev(r, s, k)), borderColor: COL[s], backgroundColor: COL[s], ...extra });
     lineChart('fcl-c-nll', labels, [
       ...sets.map(s => setLine(s, 'nll')),
-      { label: 'training objective (β-weighted)', data: epochs.map(r => r.train_return_loss ?? null), borderColor: COL.objective, backgroundColor: COL.objective, borderDash: [5, 4] },
+      { label: 'training objective (β-weighted)', data: E.map(r => r.train_return_loss ?? null), borderColor: COL.objective, backgroundColor: COL.objective, borderDash: [5, 4] },
     ], { xTitle: 'epoch', y: { beginAtZero: false } });
     lineChart('fcl-c-skill', labels, sets.map(s => setLine(s, 'skill')), { xTitle: 'epoch', tooltip: c => `${c.dataset.label}: ${(100 * c.parsed.y).toFixed(2)}%`, y: { ticks: { callback: v => (100 * v).toFixed(1) + '%' } } });
     lineChart('fcl-c-gain', labels, [
-      { label: 'over constant σ per stock', data: epochs.map(r => { const v = (r.eval || {}).val || {}; return v.nll != null && v.nll_const != null ? v.nll_const - v.nll : null; }), borderColor: COL.val, backgroundColor: COL.val },
-      { label: 'over EWMA σ', data: epochs.map(r => { const v = (r.eval || {}).val || {}; return v.nll != null && v.nll_ewma != null ? v.nll_ewma - v.nll : null; }), borderColor: COL.val_train_companies, backgroundColor: COL.val_train_companies },
+      { label: 'over constant σ per stock', data: E.map(r => { const v = (r.eval || {}).val || {}; return v.nll != null && v.nll_const != null ? v.nll_const - v.nll : null; }), borderColor: COL.val, backgroundColor: COL.val },
+      { label: 'over EWMA σ', data: E.map(r => { const v = (r.eval || {}).val || {}; return v.nll != null && v.nll_ewma != null ? v.nll_ewma - v.nll : null; }), borderColor: COL.val_train_companies, backgroundColor: COL.val_train_companies },
     ], { xTitle: 'epoch' });
-    const nominal = (v, c) => ({ label: `nominal ${v}`, data: epochs.map(() => v), borderColor: c, borderDash: [4, 4], pointRadius: 0, borderWidth: 1 });
+    const nominal = (v, c) => ({ label: `nominal ${v}`, data: E.map(() => v), borderColor: c, borderDash: [4, 4], pointRadius: 0, borderWidth: 1 });
     lineChart('fcl-c-cov', labels, [
-      { label: '68% interval', data: epochs.map(r => ev(r, 'val', 'cov68')), borderColor: COL.val, backgroundColor: COL.val },
+      { label: '68% interval', data: E.map(r => ev(r, 'val', 'cov68')), borderColor: COL.val, backgroundColor: COL.val },
       nominal(0.68, COL.dim),
-      { label: '95% interval', data: epochs.map(r => ev(r, 'val', 'cov95')), borderColor: COL.train, backgroundColor: COL.train },
+      { label: '95% interval', data: E.map(r => ev(r, 'val', 'cov95')), borderColor: COL.train, backgroundColor: COL.train },
       nominal(0.95, COL.dim),
     ], { xTitle: 'epoch', y: { suggestedMin: 0.6, suggestedMax: 1 } });
     lineChart('fcl-c-hit', labels, [...sets.map(s => setLine(s, 'hit_rate')), nominal(0.5, COL.dim)], { xTitle: 'epoch', y: { ticks: { callback: v => (100 * v).toFixed(0) + '%' } } });
-    if (timing.length) {
-      const names = [...new Set(timing.flatMap(r => (r.phases || []).map(p => p.name)))];
+    if (T.length) {
+      const names = [...new Set(T.flatMap(r => (r.phases || []).map(p => p.name)))];
       const pal = { batch: '#f5c842', forward_backward: '#4f8ef7', optimizer: '#3dd68c', eval: '#f76f6f' };
-      lineChart('fcl-c-time', timing.map(r => r.iteration), names.map(n => ({
-        label: n, data: timing.map(r => ((r.phases || []).find(p => p.name === n) || {}).secs ?? 0), backgroundColor: pal[n] || '#9aa3c7', borderColor: pal[n] || '#9aa3c7', borderWidth: 0,
+      lineChart('fcl-c-time', T.map(r => r.iteration), names.map(n => ({
+        label: n, data: T.map(r => ((r.phases || []).find(p => p.name === n) || {}).secs ?? 0), backgroundColor: pal[n] || '#9aa3c7', borderColor: pal[n] || '#9aa3c7', borderWidth: 0,
       })), { type: 'bar', stacked: true, xTitle: 'epoch', yTitle: 'seconds' });
     }
   }
@@ -243,7 +326,7 @@
 
   function renderAll() {
     const none = !live && !epochs.length && !config;
-    $('fcl-placeholder').style.display = none ? '' : 'none'; $('fcl-ph-dir').textContent = runDir;
+    $('fcl-placeholder').style.display = none ? '' : 'none'; $('fcl-ph-dir').textContent = runDir; $('fcl-ph-flag').textContent = (RUN_TABS.find(t => t[1] === runDir) || [0, 0, ''])[2];
     $('fcl-body').style.display = none ? 'none' : '';
     renderStatus(); renderConfig(); renderTiles(); renderCharts(); renderReport();
   }
@@ -283,8 +366,12 @@
     runDir = q.get('run') || store.get('fcl_run') || DEFAULT_RUN;
     document.querySelectorAll('.mode-tab').forEach(b => b.addEventListener('click', () => setMode(b.dataset.mode)));
     setMode(q.get('mode') || store.get('live_mode') || 'game');
-    setInterval(pollLive, 3000);
-    setInterval(pollSlow, 10000);
+    const every = (fn, ms) => {
+      setInterval(() => { if (!document.hidden) fn(); }, ms);
+      document.addEventListener('visibilitychange', () => { if (!document.hidden) fn(); });
+    };
+    every(pollLive, 10000);
+    every(pollSlow, 20000);
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 })();

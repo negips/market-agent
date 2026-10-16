@@ -45,7 +45,7 @@ Output: website/data/ohlcv/macro/{NAME}_daily.csv
         elseif a == "--refresh"
             args["refresh"] = true; i += 1
         else
-            @warn "Unknown argument: $a"; i += 1
+            error("Unknown argument: $a (see --help)")
         end
     end
     return args

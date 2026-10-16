@@ -919,4 +919,7 @@ estimate before committing to a full run.
     close_script_log(slog, "exit normally")
 end
 
+include(joinpath(@__DIR__, "cli_flags.jl"))
+reject_unknown_flags(["-h", "--help", "--15min-only", "--1min-only", "--5min-only", "--account", "--bse-only", "--daily-only", "--dry-run", "--from", "--hourly-only", "--log-file", "--nse-only", "--skip-15min", "--skip-1min", "--skip-5min", "--skip-daily", "--skip-hourly", "--symbol"])
+
 main()

@@ -170,7 +170,7 @@ Config:
         elseif a == "--skip-1min";        args["skip_1min"] = true; i += 1
         elseif a == "--dry-run";          args["dry_run"] = true; i += 1
         else
-            @warn "Unknown argument: $a"; i += 1
+            error("Unknown argument: $a (see --help)")
         end
     end
     args["val_window"] in ("trailing", "same") ||

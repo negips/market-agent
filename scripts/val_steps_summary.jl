@@ -94,6 +94,9 @@ function summarize(path::String)
     end
 end
 
+include(joinpath(@__DIR__, "cli_flags.jl"))
+reject_unknown_flags(["-h", "--help"])
+
 for path in resolve_paths(ARGS)
     isfile(path) || error("Not found: $path")
     summarize(path)

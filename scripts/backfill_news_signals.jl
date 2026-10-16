@@ -41,6 +41,13 @@ Usage:
   julia --project=packages/NewsMonitor scripts/backfill_news_signals.jl --from 2021-01-01
   julia --project=packages/NewsMonitor scripts/backfill_news_signals.jl --ollama-model qwen3:latest
 
+Exchange of the universe (`--exchange nse|bse`, default nse): the announcements are NSE's, keyed by NSE symbol. With
+`--exchange bse` the universe's symbols are BSE symbols; each is mapped to its NSE symbol through
+`website/data/bse_companies_latest.json` (`symbol` -> `nse_symbol`, set for dual-listed companies), the announcements are
+read under the NSE symbol, and every signal is stored under the BSE symbol, which is what a BSE training cache looks up.
+A BSE symbol with no NSE listing has no announcements here and is reported and skipped; its news has to come from a BSE
+source. A guid already stored under the NSE symbol is re-keyed to the BSE symbol when the two differ.
+
 Output: website/data/news_signals.db
 Schema: news_signals(guid, symbol, event_type, sentiment, severity, summary,
                       source, headline, url, published_at, classified_at)
@@ -61,6 +68,8 @@ function parse_args()
         "ollama_host"     => NewsMonitor.OLLAMA_BASE,
         "ollama_model"    => NewsMonitor.OLLAMA_MODEL,
         "dry_run"         => false,
+        "exchange"        => "nse",
+        "companies"       => joinpath(REPO_ROOT, "website", "data", "bse_companies_latest.json"),
     )
     i = 1
     while i <= length(ARGS)
@@ -79,6 +88,9 @@ Flags:
   --to DATE             Only classify announcements on/before this date
   --ollama-host URL    Ollama server base URL (default: $(args["ollama_host"]))
   --ollama-model NAME   Ollama model name (default: $(args["ollama_model"]))
+  --exchange nse|bse    Exchange of the universe's symbols (default nse). bse maps each BSE symbol to its NSE symbol
+                        for the lookup and stores the signals under the BSE symbol
+  --companies PATH      BSE companies JSON with the nse_symbol mapping (default: $(args["companies"]))
   --dry-run             Print the row count that would be classified, no API/DB writes
   -h, --help            Show this message
 """)
@@ -99,10 +111,15 @@ Flags:
             args["ollama_host"] = ARGS[i+1]; i += 2
         elseif a == "--ollama-model" && i + 1 <= length(ARGS)
             args["ollama_model"] = ARGS[i+1]; i += 2
+        elseif a == "--exchange" && i + 1 <= length(ARGS)
+            ARGS[i+1] in ("nse", "bse") || error("--exchange must be nse or bse, got $(ARGS[i+1])")
+            args["exchange"] = ARGS[i+1]; i += 2
+        elseif a == "--companies" && i + 1 <= length(ARGS)
+            args["companies"] = ARGS[i+1]; i += 2
         elseif a == "--dry-run"
             args["dry_run"] = true; i += 1
         else
-            @warn "Unknown argument: $a"; i += 1
+            error("Unknown argument: $a (see --help)")
         end
     end
     return args
@@ -132,6 +149,32 @@ function resolve_symbols(path::String, explicit::Vector{String})::Vector{String}
         error("backfill_news_signals.jl: $path has neither train_candidates/val_candidates nor candidates — unrecognised format")
     end
     return sort(collect(syms))
+end
+
+"""Map each symbol to the NSE symbol its announcements are filed under: itself for `exchange == "nse"`, the BSE
+companies file's `nse_symbol` for `"bse"`. Returns `(nse_to_target, unmapped)`: NSE symbol => the symbol signals are
+stored under, and the symbols with no NSE listing (skipped)."""
+function map_to_nse(symbols::Vector{String}, exchange::String, companies_path::String)
+    exchange == "nse" && return Dict(s => s for s in symbols), String[]
+    isfile(companies_path) || error("backfill_news_signals.jl: --exchange bse needs $companies_path (scripts/generate_bse_list.jl)")
+    nse_of = Dict{String,String}()
+    for c in JSON3.read(read(companies_path, String)).companies
+        n = get(c, :nse_symbol, nothing)
+        n === nothing || (nse_of[String(c.symbol)] = String(n))
+    end
+    nse_to_target = Dict{String,String}()
+    unmapped = String[]
+    for s in symbols
+        n = get(nse_of, s, nothing)
+        if n === nothing
+            push!(unmapped, s)
+        elseif haskey(nse_to_target, n)
+            @warn "NSE symbol $n is the listing of both $(nse_to_target[n]) and $s; signals go to $(nse_to_target[n]) only"
+        else
+            nse_to_target[n] = s
+        end
+    end
+    return nse_to_target, unmapped
 end
 
 # ── Historical announcement date parsing ("01-Apr-2011 09:06:00") ──────────────
@@ -170,8 +213,11 @@ function init_out_db(path::String)::SQLite.DB
     return db
 end
 
-already_classified(db::SQLite.DB, guid::String)::Bool =
-    !isempty(collect(DBInterface.execute(db, "SELECT 1 FROM news_signals WHERE guid = ?", [guid])))
+"""The symbol a classified guid is stored under, or `nothing` when it has not been classified."""
+function stored_symbol(db::SQLite.DB, guid::String)::Union{String,Nothing}
+    rows = [NamedTuple(r) for r in DBInterface.execute(db, "SELECT symbol FROM news_signals WHERE guid = ?", [guid])]
+    return isempty(rows) ? nothing : String(rows[1].symbol)
+end
 
 function insert_signal!(db::SQLite.DB, sig::NewsSignal)
     DBInterface.execute(db, """
@@ -186,8 +232,12 @@ end
 
 function main()
     args = parse_args()
-    symbols = resolve_symbols(args["universe"], args["symbols"])
-    isempty(symbols) && error("backfill_news_signals.jl: no symbols to classify")
+    universe_symbols = resolve_symbols(args["universe"], args["symbols"])
+    isempty(universe_symbols) && error("backfill_news_signals.jl: no symbols to classify")
+    nse_to_target, unmapped = map_to_nse(universe_symbols, args["exchange"], args["companies"])
+    isempty(unmapped) || @warn "$(length(unmapped)) $(args["exchange"]) symbols have no NSE listing, so no NSE announcements (skipped): $(join(unmapped, ", "))"
+    symbols = sort(collect(keys(nse_to_target)))
+    isempty(symbols) && error("backfill_news_signals.jl: none of the symbols has NSE announcements")
 
     isfile(args["announcements"]) || error("Not found: $(args["announcements"])\nRun fetch_nse_history.jl first.")
     src_db = SQLite.DB(args["announcements"])
@@ -221,11 +271,18 @@ function main()
     n_skipped = 0
     n_classified = 0
     n_failed = 0
+    n_rekeyed = 0
     t0 = time()
 
     for (i, r) in enumerate(rows)
         guid = String(r.guid)
-        if already_classified(out_db, guid)
+        target = nse_to_target[String(r.symbol)]
+        stored = stored_symbol(out_db, guid)
+        if stored !== nothing
+            if stored != target
+                DBInterface.execute(out_db, "UPDATE news_signals SET symbol = ? WHERE guid = ?", [target, guid])
+                n_rekeyed += 1
+            end
             n_skipped += 1
             continue
         end
@@ -247,6 +304,7 @@ function main()
             continue
         end
 
+        # `target` is the NSE symbol itself for an NSE universe, the mapped BSE symbol for a BSE one.
         # NSE's own `symbol` column is authoritative (unlike the live
         # RSS/BSE path, which often has no structured symbol at all and
         # genuinely needs the LLM's guess) — observed the model occasionally
@@ -255,7 +313,7 @@ function main()
         # DB's symbol rather than trusting the model's guess here.
         sig = NewsSignal(guid=sig.guid, source=sig.source, headline=sig.headline, url=sig.url,
                           published_at=sig.published_at, classified_at=sig.classified_at,
-                          symbol=item.nse_symbol, event_type=sig.event_type,
+                          symbol=target, event_type=sig.event_type,
                           sentiment=sig.sentiment, severity=sig.severity, summary=sig.summary)
 
         insert_signal!(out_db, sig)
@@ -270,7 +328,7 @@ function main()
         end
     end
 
-    @info "Done. classified=$n_classified skipped(already done)=$n_skipped failed=$n_failed  → $(args["out"])"
+    @info "Done. classified=$n_classified skipped(already done)=$n_skipped re-keyed=$n_rekeyed failed=$n_failed  → $(args["out"])"
 end
 
 main()

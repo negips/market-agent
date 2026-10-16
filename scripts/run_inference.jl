@@ -75,7 +75,7 @@ Output: JSON file readable by website/predict.html
         elseif a == "--arch";   opts["arch"]   = ARGS[i+1];                   i += 2
         elseif a == "--model";  opts["model"]  = ARGS[i+1];                   i += 2
         elseif a == "--output"; opts["output"] = ARGS[i+1];                   i += 2
-        else i += 1
+        else error("Unknown argument: $a (see --help)")
         end
     end
     isnothing(opts["symbol"]) && error("--symbol is required")
