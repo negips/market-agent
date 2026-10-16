@@ -65,6 +65,50 @@ _readdir_safe(dir::String) = isdir(dir) ? readdir(dir) : String[]
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+"""Whether `_last_value` may repair an unfinished last line; `--dry-run` turns it off so a dry run never writes."""
+const REPAIR_TAILS = Ref(true)
+const TAIL_PROBE_BYTES = 4096
+
+"""
+    _repair_tail!(path) -> Symbol
+
+Make a CSV safe to append to. A write cut off mid-row leaves a last line with no newline; the next append would then
+glue its first row onto it (`2026-10-14,2026-10-15,14.26,…`). Looks only at the file's last `TAIL_PROBE_BYTES`:
+
+- ends in a newline, or no such line: unchanged (`:ok`)
+- last line has no newline but all the columns: a newline is added (`:newline_added`)
+- last line has no newline and too few columns (a cut-off row): that line is removed and a warning names it
+  (`:partial_dropped`), so the next fetch starts at the date the row was meant to hold.
+"""
+function _repair_tail!(path::String)::Symbol
+    isfile(path) || return :missing
+    sz = filesize(path)
+    sz == 0 && return :ok
+    return open(path, "r+") do io
+        n_fields = count(==(','), readline(io)) + 1
+        start = max(0, sz - TAIL_PROBE_BYTES)
+        seek(io, start)
+        tail = read(io)
+        tail[end] == UInt8('\n') && return :ok
+        nl = findlast(==(UInt8('\n')), tail)
+        nl === nothing && return :ok
+        last_line = tail[nl+1:end]
+        if count(==(UInt8(',')), last_line) + 1 == n_fields
+            seekend(io); write(io, '\n')
+            return :newline_added
+        end
+        truncate(io, start + nl)
+        @warn "$path: removed an unfinished last line ($(repr(String(copy(last_line))))) left by an interrupted write; its bar will be fetched again"
+        return :partial_dropped
+    end
+end
+
+"""Append `df`'s rows to the CSV at `path` (header written only for a new file), repairing an unfinished last line first."""
+function _append_rows(path::String, df::DataFrame)
+    _repair_tail!(path)
+    CSV.write(path, df; append=true)
+end
+
 """
 Read only the date/datetime column from a CSV and return the maximum value.
 Uses `select` so it never loads OHLCV columns for large files.
@@ -83,6 +127,7 @@ the corruption is visible rather than surfacing later as an unrelated
 """
 function _last_value(path::String, col::Symbol, T::Type)
     isfile(path) || return nothing
+    REPAIR_TAILS[] && _repair_tail!(path)
     df = try
         CSV.read(path, DataFrame; select=[col], types=Dict(col => T))
     catch e
@@ -183,7 +228,7 @@ function update_daily!(symbols, token_map, session, yest::Date, slog::ScriptLog;
         end
 
         path = joinpath(out_dir, "$sym.csv")
-        CSV.write(path, new_df; append=true)
+        _append_rows(path, new_df)
         updated += 1
         logf(slog, "[$i/$total] $sym daily +$(nrow(new_df)) bars ($from → $yest)")
         sleep(0.35)
@@ -254,7 +299,7 @@ function update_hourly!(symbols, token_map, session, yest::Date, slog::ScriptLog
         end
 
         path = joinpath(out_dir, "$sym.csv")
-        CSV.write(path, new_df; append=true)
+        _append_rows(path, new_df)
         updated += 1
         logf(slog, "[$i/$total] $sym hourly +$(nrow(new_df)) bars (from $(new_df.datetime[1]) → $(new_df.datetime[end]))")
     end
@@ -312,7 +357,7 @@ function update_5min!(symbols, token_map, session, yest::Date, slog::ScriptLog;
         end
 
         path = joinpath(out_dir, "$sym.csv")
-        CSV.write(path, new_df; append=true)
+        _append_rows(path, new_df)
         updated += 1
         logf(slog, "[$i/$total] $sym 5min +$(nrow(new_df)) bars ($(new_df.datetime[1]) → $(new_df.datetime[end]))")
     end
@@ -371,7 +416,7 @@ function update_macro_5min!(session, yest::Date; dry_run::Bool)
         end
 
         path = joinpath(macro_dir, "$(inst.name)_5min.csv")
-        CSV.write(path, new_df; append=true)
+        _append_rows(path, new_df)
         updated += 1
         @info "  $(inst.name) 5min +$(nrow(new_df)) bars ($(new_df.datetime[1]) → $(new_df.datetime[end]))"
     end
@@ -430,7 +475,7 @@ function update_15min!(symbols, token_map, session, yest::Date, slog::ScriptLog;
         end
 
         path = joinpath(out_dir, "$sym.csv")
-        CSV.write(path, new_df; append=true)
+        _append_rows(path, new_df)
         updated += 1
         logf(slog, "[$i/$total] $sym 15min +$(nrow(new_df)) bars ($(new_df.datetime[1]) → $(new_df.datetime[end]))")
     end
@@ -492,7 +537,7 @@ function update_1min!(symbols, token_map, session, yest::Date, slog::ScriptLog;
         end
 
         path = joinpath(out_dir, "$sym.csv")
-        CSV.write(path, new_df; append=true)
+        _append_rows(path, new_df)
         updated += 1
         logf(slog, "[$i/$total] $sym 1min +$(nrow(new_df)) bars ($(new_df.datetime[1]) → $(new_df.datetime[end]))")
     end
@@ -550,7 +595,7 @@ function update_macro_15min!(session, yest::Date; dry_run::Bool)
         end
 
         path = joinpath(macro_dir, "$(inst.name)_15min.csv")
-        CSV.write(path, new_df; append=true)
+        _append_rows(path, new_df)
         updated += 1
         @info "  $(inst.name) 15min +$(nrow(new_df)) bars ($(new_df.datetime[1]) → $(new_df.datetime[end]))"
     end
@@ -619,6 +664,7 @@ a big gap in one go, not a race against data disappearing.
     nse_only        = "--nse-only"     in ARGS
     bse_only        = "--bse-only"     in ARGS
     dry_run         = "--dry-run"      in ARGS
+    REPAIR_TAILS[]  = !dry_run
 
     nse_only && bse_only && error("--nse-only and --bse-only are mutually exclusive.")
     run_nse = !bse_only   # both exchanges run by default
