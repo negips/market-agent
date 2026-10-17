@@ -28,10 +28,10 @@ bands    = ["2000:inf:80"]   # random-bucketed only: "LO:HI:QUOTA"
 pred_hours = 70               # label length in hourly bars; 35 for v1/v2, 70 for v3
 
 [dates]                       # prepare_training_data.jl and train_trading_policy.jl share these
-train_start = 2020-01-02      # dates are written without quotes
-train_end   = 2020-12-30
-val_start   = 2021-01-04
-val_end     = 2021-12-30
+train_start = 2023-05-01      # dates are written without quotes
+train_end   = 2024-04-30
+val_start   = 2024-07-01
+val_end     = 2025-06-30
 # val_window = "trailing"     # "trailing" | "same", used for any bound left out above
 # val_days   = 60
 
@@ -56,7 +56,7 @@ heads   	= 4
 blocks  	= 4           # L: causal time-attention blocks
 dropout 	= 0.1
 epochs          = 15
-steps_per_epoch = 500         # an "epoch" is this many random batches
+steps_per_epoch = 250         # an "epoch" is this many random batches
 batch           = 32          # windows per batch; memory is dominated by the M x M attention scores
 # lr              = 0.0003
 # weight_decay    = 0.01
