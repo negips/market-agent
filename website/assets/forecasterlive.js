@@ -133,6 +133,18 @@
       <div id="fcl-body">
         <div class="chart-card" id="fcl-status"></div>
         <div class="chart-card" id="fcl-config"></div>
+        <div class="section-title">Latest evaluation <span id="fcl-latest-epoch" style="font-weight:400;color:var(--text-dim);font-size:12px"></span></div>
+        <div class="fcl-tiles" id="fcl-tiles"></div>
+        <div class="section-title">Training progress</div>
+        <div class="fcl-grid">
+          <div class="chart-card"><div class="chart-header"><div class="chart-title">Negative log-likelihood per epoch</div><div class="chart-sub">lower is better · the training objective is weighted, so it sits apart</div></div><div class="canvas-wrap"><canvas id="fcl-c-nll"></canvas></div></div>
+          <div class="chart-card"><div class="chart-header"><div class="chart-title">Forecast skill over predicting zero</div><div class="chart-sub">1 − MSE(μ)/MSE(0) · 0 = no better than no move</div></div><div class="canvas-wrap"><canvas id="fcl-c-skill"></canvas></div></div>
+          <div class="chart-card"><div class="chart-header"><div class="chart-title">Likelihood gain of the predicted scale (val)</div><div class="chart-sub">nats per target over each baseline σ · above 0 = the scale head adds information</div></div><div class="canvas-wrap"><canvas id="fcl-c-gain"></canvas></div></div>
+          <div class="chart-card"><div class="chart-header"><div class="chart-title">Calibration of the predicted intervals (val)</div><div class="chart-sub">share of targets inside the model's own 68% / 95% interval · dashed = nominal</div></div><div class="canvas-wrap"><canvas id="fcl-c-cov"></canvas></div></div>
+          <div class="chart-card"><div class="chart-header"><div class="chart-title">Sign hit rate</div><div class="chart-sub">direction of μ against the next return, over targets that moved · 50% = coin</div></div><div class="canvas-wrap"><canvas id="fcl-c-hit"></canvas></div></div>
+          <div class="chart-card"><div class="chart-header"><div class="chart-title">Where the time goes</div><div class="chart-sub">seconds per epoch by phase</div></div><div class="canvas-wrap"><canvas id="fcl-c-time"></canvas></div></div>
+        </div>
+        <div id="fcl-report"></div>
         <div class="chart-card" id="fcl-series">
           <div class="chart-header"><div class="chart-title">Company series</div>
             <div class="chart-sub">one train or val company of this run, read from the forecaster cache (the log-returns the model sees) through the ops server · line colour = period (train / val)</div></div>
@@ -152,18 +164,6 @@
           </div>
           <div class="canvas-wrap" style="height:300px"><canvas id="fcl-c-series"></canvas></div>
         </div>
-        <div class="section-title">Latest evaluation <span id="fcl-latest-epoch" style="font-weight:400;color:var(--text-dim);font-size:12px"></span></div>
-        <div class="fcl-tiles" id="fcl-tiles"></div>
-        <div class="section-title">Training progress</div>
-        <div class="fcl-grid">
-          <div class="chart-card"><div class="chart-header"><div class="chart-title">Negative log-likelihood per epoch</div><div class="chart-sub">lower is better · the training objective is weighted, so it sits apart</div></div><div class="canvas-wrap"><canvas id="fcl-c-nll"></canvas></div></div>
-          <div class="chart-card"><div class="chart-header"><div class="chart-title">Forecast skill over predicting zero</div><div class="chart-sub">1 − MSE(μ)/MSE(0) · 0 = no better than no move</div></div><div class="canvas-wrap"><canvas id="fcl-c-skill"></canvas></div></div>
-          <div class="chart-card"><div class="chart-header"><div class="chart-title">Likelihood gain of the predicted scale (val)</div><div class="chart-sub">nats per target over each baseline σ · above 0 = the scale head adds information</div></div><div class="canvas-wrap"><canvas id="fcl-c-gain"></canvas></div></div>
-          <div class="chart-card"><div class="chart-header"><div class="chart-title">Calibration of the predicted intervals (val)</div><div class="chart-sub">share of targets inside the model's own 68% / 95% interval · dashed = nominal</div></div><div class="canvas-wrap"><canvas id="fcl-c-cov"></canvas></div></div>
-          <div class="chart-card"><div class="chart-header"><div class="chart-title">Sign hit rate</div><div class="chart-sub">direction of μ against the next return, over targets that moved · 50% = coin</div></div><div class="canvas-wrap"><canvas id="fcl-c-hit"></canvas></div></div>
-          <div class="chart-card"><div class="chart-header"><div class="chart-title">Where the time goes</div><div class="chart-sub">seconds per epoch by phase</div></div><div class="canvas-wrap"><canvas id="fcl-c-time"></canvas></div></div>
-        </div>
-        <div id="fcl-report"></div>
         <details class="fcl-gloss"><summary>What every plotted variable means</summary>
 <div class="section-note" style="margin-top:0">
         These are the quantities on this tab, in the order it shows them.
@@ -217,7 +217,7 @@
     if (sig === seriesCompanies) return;
     seriesCompanies = sig;
     const sel = $('fcl-s-sym'), keep = sel.value;
-    const opts = (list, role) => list.map(s => `<option value="${s}" data-role="${role}">${s}</option>`).join('');
+    const opts = (list, role) => [...list].sort((a, b) => a.localeCompare(b)).map(s => `<option value="${s}" data-role="${role}">${s}</option>`).join('');
     sel.innerHTML = `<optgroup label="Val companies (${val.length})">${opts(val, 'val')}</optgroup><optgroup label="Train companies (${train.length})">${opts(train, 'train')}</optgroup>`;
     if (keep && [...sel.options].some(o => o.value === keep)) sel.value = keep;
     setSeriesSpan('val');
