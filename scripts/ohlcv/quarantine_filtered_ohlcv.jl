@@ -38,7 +38,7 @@ function main()
     total_files = 0; total_bytes = 0
     for (exchange, cache_file) in INSTRUMENT_CACHES
         path = joinpath(OHLCV_DIR, cache_file)
-        isfile(path) || error("Instrument list not found: $path\nRun collect_nse_ohlcv.jl / update_ohlcv.jl once to download it.")
+        isfile(path) || error("Instrument list not found: $path\nRun collect_ohlcv.jl / update_ohlcv.jl once to download it.")
         instruments = CSV.read(path, DataFrame)
         token_map = build_token_map(instruments; exchange=exchange)
         listed = Set(string(r.tradingsymbol) for r in eachrow(instruments) if r.exchange == exchange)

@@ -61,8 +61,8 @@ scores for dual-listed companies and analyses the rest.
 First-time download, one per exchange and granularity (daily / hourly / 5min / 15min / 1min):
 
 ```bash
-julia --project=packages/StockSwingPredictor scripts/ohlcv/collect_nse_ohlcv.jl
-julia --project=packages/StockSwingPredictor scripts/ohlcv/collect_bse_ohlcv.jl
+julia --project=packages/StockSwingPredictor scripts/ohlcv/collect_ohlcv.jl              # NSE, then BSE
+julia --project=packages/StockSwingPredictor scripts/ohlcv/collect_ohlcv.jl --bse-only   # or --nse-only
 ```
 Downloads bars from Kite into `website/data/ohlcv/{nse,bse}/{granularity}/{SYMBOL}.csv`.
 Use `--daily-only`, `--hourly-only`, `--15min-only`, `--1min-only`, etc. to restrict, `--refresh` to
@@ -213,7 +213,7 @@ A fresh (non-`--resume`) run clears the previous run's `episode_log.jsonl`, `val
 
 1. Kite login + sidecar (only if the data or lists need refreshing)
 2. `generate_bse_list.jl` and `run_bse_confidence_checks.jl`
-3. `collect_bse_ohlcv.jl` (daily + 15-minute)
+3. `collect_ohlcv.jl --bse-only --skip-hourly --skip-5min --skip-1min` (daily + 15-minute)
 4. `build_cache.jl --exchange bse --granularity 15min --min-mcap 500`
 5. `build_market_universe_snapshot.jl --strategy random --n 40 --disjoint`
 6. `prepare_training_data.jl --skip-news --skip-1min ...`
@@ -223,7 +223,7 @@ Each morning before a new run: login → `update_ohlcv.jl` → `build_cache.jl`.
 
 ## Minimum path (v1/v2, NSE)
 
-Kite login + sidecar → `generate_nse_list.jl` → `run_confidence_checks.jl` → `collect_nse_ohlcv.jl`
+Kite login + sidecar → `generate_nse_list.jl` → `run_confidence_checks.jl` → `collect_ohlcv.jl --nse-only`
 (daily + hourly) and `collect_macro_ohlcv.jl` → `build_cache.jl` → `build_market_universe_snapshot.jl` →
 `prepare_training_data.jl --skip-news --skip-1min ...` → `train_trading_policy.jl --no-news ...`
 

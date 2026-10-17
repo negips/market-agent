@@ -8,7 +8,7 @@ Every `collect_ohlcv*`/`load_cached_ohlcv*` function here takes an `out_dir`
 that's expected to already be a single granularity's directory (e.g.
 `website/data/ohlcv/nse/hourly/`) and reads/writes `{SYMBOL}.csv` directly
 inside it — not the exchange root with a `_hourly`/`_5min`/etc. filename
-suffix. Callers (`collect_nse_ohlcv.jl`, `collect_bse_ohlcv.jl`,
+suffix. Callers (`collect_ohlcv.jl`,
 `update_ohlcv.jl`) own the `{exchange}/{granularity}/` directory layout;
 this file has no opinion about exchange or granularity beyond what `out_dir`
 it's handed.
@@ -174,7 +174,7 @@ end
 """Minimum gap between relogin ATTEMPTS (successful or not), shared across
 every `_kite_get` call regardless of which symbol/chunk/function triggered
 it. Without this, a script with hundreds of chunks across many symbols
-(`collect_nse_ohlcv.jl`, a multi-year backfill, …) would launch one browser
+(`collect_ohlcv.jl`, a multi-year backfill, …) would launch one browser
 login per 403 it sees — if the underlying problem isn't a one-off (network
 drops mid-relogin, Zerodha's login page changes, TOTP drifts), every one of
 those chunks hits 403 independently and `_kite_get` had no memory between

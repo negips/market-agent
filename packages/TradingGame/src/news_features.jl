@@ -107,7 +107,7 @@ channel but still counted in the market-wide pool.
   building entirely — `price_overrides` then stays empty and every price
   read falls back to the hourly close, same as before this mechanism existed.
 - `ohlcv_1min_dir`: directory of `{SYMBOL}.csv` 1-minute OHLCV files (e.g.
-  `website/data/ohlcv/nse/1min`, from `collect_nse_ohlcv.jl --1min-only` /
+  `website/data/ohlcv/nse/1min`, from `collect_ohlcv.jl --1min-only` /
   `backfill_ohlcv.jl`). Required if `snapshot_symbols` is non-empty.
 """
 function build_news_feature_cache(cache::InferenceCache, db_path::String;

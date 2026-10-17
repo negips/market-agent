@@ -108,9 +108,8 @@ market-agent/
 │   ├── ohlcv/       # OHLCV collection, maintenance, inference cache
 │   │   ├── backfill_ohlcv.jl                 # extend existing OHLCV CSVs backward to an earlier --from date
 │   │   ├── build_cache.jl                    # build inference_cache.bson from OHLCV CSVs (--exchange nse|bse, --granularity hourly|15min)
-│   │   ├── collect_bse_ohlcv.jl              # download all BSE OHLCV: daily/hourly/15min/5min/1min (Kite)
 │   │   ├── collect_macro_ohlcv.jl            # download macro instrument OHLCV (Yahoo + Kite CDS/NSE)
-│   │   ├── collect_nse_ohlcv.jl              # download all NSE OHLCV: daily/hourly/15min/5min/1min (Kite)
+│   │   ├── collect_ohlcv.jl                  # download all NSE + BSE OHLCV: daily/hourly/15min/5min/1min (Kite); --nse-only / --bse-only
 │   │   ├── kite_relogin.jl                   # force a fresh Kite login from Julia (shells out to kite_login.js)
 │   │   ├── quarantine_filtered_ohlcv.jl      # move OHLCV CSVs the current instrument filters exclude (ETF/INAV/debt…) to ohlcv/_filtered_out/
 │   │   ├── scan_ohlcv_availability.jl        # first/last date, file count and size of every OHLCV CSV -> website/data/ohlcv_availability.json (dataavailability.html)
@@ -500,8 +499,8 @@ PORT=3002 node sidecar/server_http.js   # custom port
 
 Kite's rate limits are per API key. `.env` can hold a second Kite Connect app
 (`KITE_HISTORICAL2_API_KEY`/`_SECRET`; a third would be `KITE_HISTORICAL3_*`),
-selected with `--account N` (default 1) on `collect_nse_ohlcv.jl`,
-`collect_bse_ohlcv.jl`, `update_ohlcv.jl`, `backfill_ohlcv.jl`,
+selected with `--account N` (default 1) on `collect_ohlcv.jl`,
+`update_ohlcv.jl`, `backfill_ohlcv.jl`,
 `fetch_news_snapshot_ohlcv.jl` and `kite_relogin.jl`. Same trading user
 (id/password/TOTP); each account has its own session file
 (`sidecar/kite_session.json`, `kite_session2.json`, …, all gitignored) and its
@@ -510,8 +509,8 @@ own automatic 403 relogin. Log in once per account per day:
 ```bash
 node sidecar/kite_login.js              # account 1
 node sidecar/kite_login.js --account 2  # account 2
-julia --project=packages/StockSwingPredictor scripts/ohlcv/collect_nse_ohlcv.jl --1min-only --account 1
-julia --project=packages/StockSwingPredictor scripts/ohlcv/collect_bse_ohlcv.jl --1min-only --account 2
+julia --project=packages/StockSwingPredictor scripts/ohlcv/collect_ohlcv.jl --nse-only --1min-only --account 1
+julia --project=packages/StockSwingPredictor scripts/ohlcv/collect_ohlcv.jl --bse-only --1min-only --account 2
 ```
 
 Run the two jobs on **different data** — different exchanges or granularities.
@@ -533,7 +532,7 @@ no plain REST endpoint) and mutates the session's `api_key`/`access_token`
 object is mutable and shared, every other call anywhere in the same script
 immediately sees the refreshed token too, not just the retried one.
 
-This means an overnight job (`collect_nse_ohlcv.jl`, `update_ohlcv.jl`,
+This means an overnight job (`collect_ohlcv.jl`, `update_ohlcv.jl`,
 `backfill_ohlcv.jl`, `fetch_news_snapshot_ohlcv.jl`, …) that spans the daily
 expiry boundary recovers on its own, mid-run — **no script-level changes
 are needed anywhere**; they all already just load one `session` at startup
@@ -637,24 +636,23 @@ julia --project=packages/EarningsCalendar scripts/companies/generate_earnings_wa
 
 Incrementally updates all existing OHLCV CSVs with bars added since the last run.
 Reads the last date from each CSV and fetches only the gap to yesterday — much
-faster than `collect_nse_ohlcv.jl` / `collect_bse_ohlcv.jl` for routine maintenance. Appends rows in-place.
+faster than `collect_ohlcv.jl` for routine maintenance. Appends rows in-place.
 Updates both NSE and BSE by default; pass `--nse-only` or `--bse-only` to restrict
 to one exchange (mutually exclusive). Macro instrument CSVs update once regardless
 of exchange selection.
 
 OHLCV data lives one subfolder per granularity under each exchange:
 `website/data/ohlcv/{nse,bse}/{daily,hourly,15min,5min,1min}/{SYMBOL}.csv`
-(`collect_nse_ohlcv.jl`/`collect_bse_ohlcv.jl` write this layout; `--daily-only`,
-`--hourly-only`, `--15min-only`, `--5min-only`, and `--1min-only` on either script
-restrict to one granularity). Macro instrument CSVs are the one exception — too
+(`collect_ohlcv.jl` writes this layout, NSE then BSE; `--nse-only` / `--bse-only` pick one exchange, and `--daily-only`,
+`--hourly-only`, `--15min-only`, `--5min-only`, and `--1min-only` restrict it to one granularity). Macro instrument CSVs are the one exception — too
 few files to need subfolders, so they stay flat and suffixed at
 `website/data/ohlcv/macro/{NAME}_{5min,15min,daily}.csv`.
 
 Kite's per-interval day limits (60/100/200/400/2000 days for
 1min/5min/15min/60min/day) are a single-request span cap, not a retention
 cliff — verified live against the real API, every intraday interval still
-returns genuine multi-year-old data today. `collect_nse_ohlcv.jl`/
-`collect_bse_ohlcv.jl`'s `--from` flag applies to every granularity, not
+returns genuine multi-year-old data today. `collect_ohlcv.jl`'s
+`--from` flag applies to every granularity, not
 just daily, and a deep `--from` (e.g. 2010-01-01) works for all of them —
 it just means far more chunked API calls and disk the finer the
 granularity, especially `--1min-only`.
@@ -676,9 +674,9 @@ julia --project=packages/StockSwingPredictor scripts/ohlcv/update_ohlcv.jl --dai
 
 Before reading a CSV's last date or appending to it, `update_ohlcv.jl` checks the last line (`_repair_tail!`): a missing newline is added, and a last line with the wrong number of columns (a cut-off row, or two rows glued together) is deleted with a warning, so the previous line is the latest record and the next fetch re-downloads from there. `--dry-run` never repairs.
 
-Both `collect_nse_ohlcv.jl`/`collect_bse_ohlcv.jl` and `update_ohlcv.jl` also take
+Both `collect_ohlcv.jl` and `update_ohlcv.jl` also take
 `--skip-daily`/`--skip-hourly`/`--skip-15min`/`--skip-5min`/`--skip-1min` (the
-collect scripts added `--skip-daily`/`--skip-hourly` later than the others, for
+collect script added `--skip-daily`/`--skip-hourly` later than the others, for
 symmetry — `update_ohlcv.jl` only ever needed `--skip-15min`/`--skip-5min`/
 `--skip-1min` since its daily/hourly passes were never worth skipping on their own).
 
@@ -688,9 +686,9 @@ The mirror image of `update_ohlcv.jl`: extends existing OHLCV CSVs *backward* to
 an earlier `--from` date, instead of forward to yesterday. For each existing
 `{SYMBOL}.csv`, reads the earliest date/datetime already on disk and fetches only
 the older gap down to `--from`, merging it in (de-duplicated, re-sorted) rather
-than overwriting the whole file the way `collect_nse_ohlcv.jl --refresh` would.
+than overwriting the whole file the way `collect_ohlcv.jl --refresh` would.
 A symbol with no existing CSV is skipped — this tool only extends, it doesn't do
-initial collection (use `collect_nse_ohlcv.jl`/`collect_bse_ohlcv.jl` for a
+initial collection (use `collect_ohlcv.jl` for a
 brand-new granularity, e.g. NSE `15min`, which has zero files today).
 
 This exists because most of the real archive was collected back when the
@@ -753,7 +751,7 @@ cheap:
 ### collect_macro_ohlcv.jl
 
 Downloads historical daily OHLCV for macro instruments (global indices, commodities,
-FX, volatility). Run once after `collect_nse_ohlcv.jl`; no incremental update needed as
+FX, volatility). Run once after `collect_ohlcv.jl`; no incremental update needed as
 macro history is stable — re-run yearly or with `--refresh` to extend.
 
 | Instrument   | Source | Ticker  | Description                   |
@@ -1337,7 +1335,7 @@ julia --project=packages/TradingGame scripts/game/training_status.jl
 ### Ops server (`scripts/tools/ops_server.jl`)
 
 What `serve.sh` runs: a static server for `website/` that also lets pages run a fixed whitelist of actions. `julia --project=packages/StockSwingPredictor scripts/tools/ops_server.jl [--port 8080] [--open website/dataavailability.html]`.
-The whitelist is the `ACTIONS` table at the top of the script: `job` entries run a command in the background (one at a time, log in `website/data/ops_logs/NAME.log`), `touch_file` entries create a file (the forecaster `STOP` / `STOP_NOW` sentinels). A page names an action (`POST /api/run/NAME`); it never sends a command. The server binds 127.0.0.1, refuses a Host other than its own localhost:PORT and a POST whose Origin is not its own. `website/assets/ops.js` is the page-side client (`Ops.available()`, `Ops.run(name)`, `Ops.runJob(name, onUpdate)`); under any other static server the buttons stay hidden. Used by the Rescan button on `dataavailability.html` and the Stop buttons on the Forecaster v4 tab. It also serves `GET /api/series?granularity=G&symbol=S` (read-only, not an action): one company's return series, read as plain BSON from `website/data/forecaster_cache_G.bson` (kept in memory, re-read when the file changes). The **Company series** card on the Forecaster v4 tab uses it: a drop-down of the run's val and train companies, cumulative return / return per bar / traded share, a date range, and the line coloured by train or val period; without the ops server the card says so. To add an action, add one line to `ACTIONS`.
+The whitelist is the `ACTIONS` table at the top of the script: `job` entries run a command in the background (one at a time, log in `website/data/ops_logs/NAME.log`), `touch_file` entries create a file (the forecaster `STOP` / `STOP_NOW` sentinels). A page names an action (`POST /api/run/NAME`); it never sends a command. The server binds 127.0.0.1, refuses a Host other than its own localhost:PORT and a POST whose Origin is not its own. It binds every interface, so other machines can open it (`http://THIS-IP:8080/...`); `--local` (`./serve.sh --local`) binds 127.0.0.1 only and `--host ADDR` binds one address. There is no login. Any Host on the port is accepted, but a POST action is refused unless the page was opened as `localhost:PORT` or `--allow-remote-actions` (`./serve.sh --allow-actions`) is given; this guards against accidental clicks, not against a client that sends its own Host header, so use `--local` on a network you do not trust. `website/assets/ops.js` is the page-side client (`Ops.available()`, `Ops.run(name)`, `Ops.runJob(name, onUpdate)`); under any other static server the buttons stay hidden. Used by the Rescan button on `dataavailability.html` and the Stop buttons on the Forecaster v4 tab. It also serves `GET /api/series?granularity=G&symbol=S` (read-only, not an action): one company's return series, read as plain BSON from `website/data/forecaster_cache_G.bson` (kept in memory, re-read when the file changes). The **Company series** card on the Forecaster v4 tab uses it: a drop-down of the run's val and train companies, cumulative return / return per bar / traded share, a date range, and the line coloured by train or val period; without the ops server the card says so. To add an action, add one line to `ACTIONS`.
 
 ### Website
 

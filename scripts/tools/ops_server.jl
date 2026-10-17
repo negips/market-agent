@@ -6,13 +6,18 @@ whitelist of actions through /api. A page can never send a command: it names an 
 action's own command runs. Edit ACTIONS to add or remove what the pages may do.
 
 Safety:
-  - binds to 127.0.0.1 only (--host to change it, which you should not);
-  - a request whose Host is not this server's own localhost:PORT is refused (DNS rebinding);
-  - a POST whose Origin is not this server's own origin is refused (another website cannot trigger actions);
+  - binds to every interface (reachable from other machines) unless `--local` is given, which binds 127.0.0.1 only; `--host ADDR`
+    binds one address. There is no login: anyone who can reach the port can read everything under website/data. Pages opened
+    as localhost can use the actions, but a request addressed to any other name (the machine's IP or hostname) gets every POST
+    action refused unless `--allow-remote-actions` is also given. That is a guard against accidental clicks, not a boundary: a
+    client can send any Host header, so use this on a network you trust (or `--local`);
+  - with `--local`, a request whose Host is not this server's own localhost:PORT is refused (DNS rebinding); otherwise any Host
+    on this port is accepted;
+  - a POST whose Origin is not the page's own origin (http://HOST) is refused (another website cannot trigger actions);
   - a job action runs at most once at a time; a second start returns 409.
 
 Usage:
-  julia --project=packages/StockSwingPredictor scripts/tools/ops_server.jl [--port 8080] [--open website/dataavailability.html]
+  julia --project=packages/StockSwingPredictor scripts/tools/ops_server.jl [--port 8080] [--local | --host ADDR] [--allow-remote-actions] [--open website/dataavailability.html]
 
 API (all JSON):
   GET  /api/actions          every action with its current state
@@ -23,13 +28,16 @@ API (all JSON):
 Job logs go to website/data/ops_logs/NAME.log.
 """
 
-using HTTP, JSON3, Dates, BSON
+using HTTP, JSON3, Dates, BSON, Sockets
 
 const REPO_ROOT = abspath(joinpath(@__DIR__, "..", ".."))
 const WEB_ROOT = joinpath(REPO_ROOT, "website")
 const LOG_DIR = joinpath(WEB_ROOT, "data", "ops_logs")
 const LOG_TAIL_LINES = 40
 const DEFAULT_PORT = 8080
+const LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+const EXPOSED = Ref(false)
+const ALLOW_REMOTE_ACTIONS = Ref(false)
 
 """
     OpsAction
@@ -197,8 +205,9 @@ function api(req::HTTP.Request, path::AbstractString, port::Int)
         i === nothing && return json_response(404, Dict("error" => "no such job: $name"))
         return json_response(200, merge(action_state(ACTIONS[i]), Dict("log" => job_log(name))))
     elseif req.method == "POST" && startswith(path, "/api/run/")
-        origin = HTTP.header(req, "Origin")
-        origin in ("http://localhost:$port", "http://127.0.0.1:$port") || return json_response(403, Dict("error" => "bad origin"))
+        addressed_locally = HTTP.header(req, "Host") in ("localhost:$port", "127.0.0.1:$port")
+        addressed_locally || ALLOW_REMOTE_ACTIONS[] || return json_response(403, Dict("error" => "actions only work from a page opened as localhost:$port (or start the server with --allow-remote-actions)"))
+        HTTP.header(req, "Origin") == "http://" * HTTP.header(req, "Host") || return json_response(403, Dict("error" => "bad origin"))
         name = path[length("/api/run/") + 1:end]
         i = findfirst(a -> a.name == name, ACTIONS)
         i === nothing && return json_response(404, Dict("error" => "not a whitelisted action: $name"))
@@ -226,7 +235,8 @@ end
 function make_handler(port::Int)
     own_hosts = ("localhost:$port", "127.0.0.1:$port")
     return function (req::HTTP.Request)
-        HTTP.header(req, "Host") in own_hosts || return HTTP.Response(403, "bad host")
+        host_header = HTTP.header(req, "Host")
+        (EXPOSED[] ? endswith(host_header, ":$port") : host_header in own_hosts) || return HTTP.Response(403, "bad host")
         path = String(HTTP.URI(req.target).path)
         try
             startswith(path, "/api/") && return api(req, path, port)
@@ -240,18 +250,25 @@ function make_handler(port::Int)
 end
 
 function main()
-    port = DEFAULT_PORT; host = "127.0.0.1"; open_page = ""
+    port = DEFAULT_PORT; host = "0.0.0.0"; open_page = ""
     i = 1
     while i <= length(ARGS)
         a = ARGS[i]
         if a in ("-h", "--help"); println(match(r"\"\"\"\n(.*?)\"\"\""s, read(@__FILE__, String)).captures[1]); return
         elseif a == "--port"; port = parse(Int, ARGS[i+1]); i += 2
+        elseif a == "--local"; host = "127.0.0.1"; i += 1
         elseif a == "--host"; host = ARGS[i+1]; i += 2
+        elseif a == "--allow-remote-actions"; ALLOW_REMOTE_ACTIONS[] = true; i += 1
         elseif a == "--open"; open_page = ARGS[i+1]; i += 2
         else error("Unknown argument: $a (see --help)") end
     end
+    EXPOSED[] = !(host in LOOPBACK_HOSTS)
     url = "http://localhost:$port/" * replace(open_page, r"^website/" => "")
     println("Serving website/ and /api on http://localhost:$port  (Ctrl+C to stop)")
+    if EXPOSED[]
+        println("Reachable from other machines: ", join(("http://$ip:$port/" for ip in Sockets.getipaddrs() if ip isa Sockets.IPv4), "  "))
+        println("Actions (Stop, Rescan): ", ALLOW_REMOTE_ACTIONS[] ? "enabled for every client" : "only from a page opened as localhost:$port", ". Use --local to serve this machine only.")
+    end
     println("Whitelisted actions: ", join((a.name for a in ACTIONS), ", "))
     isempty(open_page) || (try run(pipeline(`xdg-open $url`; stderr=devnull)) catch; println("Open $url in your browser") end)
     HTTP.serve(make_handler(port), host, port)

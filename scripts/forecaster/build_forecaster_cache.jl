@@ -26,7 +26,7 @@ Options:
   --min-day-fraction X  A day joins the axis when this fraction of symbols were active (default: 0.2)
 
 Prerequisites: website/data/trading_game/universe_latest.json (build_market_universe_snapshot.jl)
-and the CSVs of that bar size for every symbol in it (collect_bse_ohlcv.jl --1min-only, --5min-only, ...).
+and the CSVs of that bar size for every symbol in it (collect_ohlcv.jl --1min-only, --5min-only, ...).
 A symbol with no CSV of that bar size is an error naming it (BSE hourly files cover only part of the universe).
 Run Julia with `-t auto`: the CSVs are read in parallel.
 """

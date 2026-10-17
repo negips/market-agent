@@ -691,7 +691,7 @@ function main()
             ohlcv_1min_dir   = isdir(OHLCV_1MIN_DIR) ? OHLCV_1MIN_DIR : nothing
             isnothing(ohlcv_1min_dir) && @warn "No 1-minute OHLCV dir at $OHLCV_1MIN_DIR — " *
                   "news-instant snapshots will be skipped (every news bar falls back to the hourly close). " *
-                  "Collect it with collect_nse_ohlcv.jl --1min-only / backfill_ohlcv.jl for the candidate universe."
+                  "Collect it with collect_ohlcv.jl --1min-only / backfill_ohlcv.jl for the candidate universe."
             news_cache = build_news_feature_cache(cache, opts["news_db"];
                 snapshot_symbols=ohlcv_1min_dir === nothing ? String[] : snapshot_symbols,
                 ohlcv_1min_dir=ohlcv_1min_dir)

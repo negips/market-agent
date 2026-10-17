@@ -23,9 +23,9 @@ longer it's left.
 Prerequisites:
   - sidecar/kite_session.json present         (node sidecar/kite_login.js)
   - website/data/ohlcv/nse/{daily,hourly,15min,5min,1min}/ populated
-    (run collect_nse_ohlcv.jl first, unless --bse-only)
+    (run collect_ohlcv.jl first, unless --bse-only)
   - website/data/ohlcv/bse/{daily,hourly,15min,5min,1min}/ populated
-    (run collect_bse_ohlcv.jl first, unless --nse-only)
+    (run collect_ohlcv.jl first, unless --nse-only)
 
 Usage:
   julia --project=packages/StockSwingPredictor scripts/ohlcv/update_ohlcv.jl
@@ -333,7 +333,7 @@ function update_5min!(symbols, token_map, session, yest::Date, slog::ScriptLog;
 
         last_dt = _last_5min_datetime(sym, out_dir)
         if isnothing(last_dt)
-            @warn "[$i/$total] $sym 5min — no existing CSV, skipping (run collect_nse_ohlcv.jl first)"
+            @warn "[$i/$total] $sym 5min — no existing CSV, skipping (run collect_ohlcv.jl first)"
             failed += 1; continue
         end
 
@@ -391,7 +391,7 @@ function update_macro_5min!(session, yest::Date; dry_run::Bool)
     for inst in KITE_MACRO_INSTRUMENTS
         last_dt = _last_macro_5min_datetime(inst.name)
         if isnothing(last_dt)
-            @warn "  $(inst.name) 5min — no existing CSV, skipping (run collect_nse_ohlcv.jl first)"
+            @warn "  $(inst.name) 5min — no existing CSV, skipping (run collect_ohlcv.jl first)"
             failed += 1; continue
         end
 
@@ -451,7 +451,7 @@ function update_15min!(symbols, token_map, session, yest::Date, slog::ScriptLog;
 
         last_dt = _last_15min_datetime(sym, out_dir)
         if isnothing(last_dt)
-            @warn "[$i/$total] $sym 15min — no existing CSV, skipping (run collect_nse_ohlcv.jl first)"
+            @warn "[$i/$total] $sym 15min — no existing CSV, skipping (run collect_ohlcv.jl first)"
             failed += 1; continue
         end
 
@@ -509,7 +509,7 @@ function update_1min!(symbols, token_map, session, yest::Date, slog::ScriptLog;
 
         last_dt = _last_1min_datetime(sym, out_dir)
         if isnothing(last_dt)
-            @warn "[$i/$total] $sym 1min — no existing CSV, skipping (run collect_nse_ohlcv.jl first)"
+            @warn "[$i/$total] $sym 1min — no existing CSV, skipping (run collect_ohlcv.jl first)"
             failed += 1; continue
         end
 
@@ -571,7 +571,7 @@ function update_macro_15min!(session, yest::Date; dry_run::Bool)
     for inst in KITE_MACRO_INSTRUMENTS
         last_dt = _last_macro_15min_datetime(inst.name)
         if isnothing(last_dt)
-            @warn "  $(inst.name) 15min — no existing CSV, skipping (run collect_nse_ohlcv.jl first)"
+            @warn "  $(inst.name) 15min — no existing CSV, skipping (run collect_ohlcv.jl first)"
             failed += 1; continue
         end
 
@@ -744,7 +744,7 @@ a big gap in one go, not a race against data disappearing.
     # ── NSE update ────────────────────────────────────────────────────────────
     if run_nse
         isdir(NSE_OHLCV_DIR) || error("NSE OHLCV directory not found: $NSE_OHLCV_DIR\n" *
-                                       "Run collect_nse_ohlcv.jl first (or pass --bse-only).")
+                                       "Run collect_ohlcv.jl first (or pass --bse-only).")
 
         daily_syms      = [replace(f, ".csv" => "") for f in _readdir_safe(nse_gran_dir("daily"))]
         hourly_syms     = [replace(f, ".csv" => "") for f in _readdir_safe(nse_gran_dir("hourly"))]
@@ -860,7 +860,7 @@ a big gap in one go, not a race against data disappearing.
                              dry_run, out_dir=bse_gran_dir("1min"))
             end
         else
-            @warn "BSE directory not found ($BSE_OHLCV_DIR) — run collect_bse_ohlcv.jl first (or pass --nse-only)."
+            @warn "BSE directory not found ($BSE_OHLCV_DIR) — run collect_ohlcv.jl first (or pass --nse-only)."
         end
     end
 

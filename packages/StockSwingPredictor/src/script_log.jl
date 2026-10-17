@@ -1,6 +1,6 @@
 """
-Dual-output logging for the long-running OHLCV scripts (`collect_nse_ohlcv.jl`,
-`collect_bse_ohlcv.jl`, `update_ohlcv.jl`, `backfill_ohlcv.jl`): every event —
+Dual-output logging for the long-running OHLCV scripts (`collect_ohlcv.jl`,
+`update_ohlcv.jl`, `backfill_ohlcv.jl`): every event —
 including routine per-symbol detail that would otherwise flood a terminal —
 goes to a FILE immediately, flushed after every single line. The terminal
 only receives a much sparser stream (stage headers, periodic progress
@@ -39,8 +39,8 @@ active_script_log() = _ACTIVE_SCRIPT_LOG[]
 
 """
 Default log path for a Kite `account` slot: account 1 keeps `path` unchanged;
-account N ≥ 2 inserts `.accountN` before the extension (`collect_bse_ohlcv.log`
-→ `collect_bse_ohlcv.account2.log`). Two parallel jobs of the same script on
+account N ≥ 2 inserts `.accountN` before the extension (`collect_ohlcv.log`
+→ `collect_ohlcv.account2.log`). Two parallel jobs of the same script on
 different accounts therefore never interleave lines in one file. Only for
 DEFAULT paths — an explicit `--log-file` is always used as given.
 

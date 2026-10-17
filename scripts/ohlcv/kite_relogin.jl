@@ -14,7 +14,7 @@ call that gets a 403 (expired token) triggers exactly one re-authenticate-
 and-retry, in place, via `KiteSession` being mutable (see `_kite_get` in
 `kite_data.jl`) — so a long-running overnight job that spans the token's
 daily expiry boundary recovers on its own mid-run, with no script-level
-changes needed anywhere (`collect_nse_ohlcv.jl`, `update_ohlcv.jl`,
+changes needed anywhere (`collect_ohlcv.jl`, `update_ohlcv.jl`,
 `backfill_ohlcv.jl`, `fetch_news_snapshot_ohlcv.jl`, etc. — they all just
 pass the same `session` object through every call, same as before).
 

@@ -10,10 +10,10 @@ For each existing CSV, reads the EARLIEST date/datetime in the file and, if
 that's later than `--from`, fetches only the older gap — `--from` through
 the day before the earliest bar already on disk — then merges it into the
 file (de-duplicated, re-sorted), not a full re-fetch-and-overwrite the way
-collect_nse_ohlcv.jl's `--refresh` would be. A symbol already extending back
+collect_ohlcv.jl's `--refresh` would be. A symbol already extending back
 to `--from` or earlier is left untouched. A symbol with no existing CSV at
-all is skipped (there's nothing to extend) — run collect_nse_ohlcv.jl /
-collect_bse_ohlcv.jl first for a brand-new granularity.
+all is skipped (there's nothing to extend) — run collect_ohlcv.jl first
+for a brand-new granularity.
 
 This exists because Kite's per-interval day limits (60/100/200/400/2000
 days for 1min/5min/15min/60min/day) are a single-request span cap, not a
@@ -53,9 +53,9 @@ as a second floor term alongside `earliest_trading_day.json` from then on.
 Prerequisites:
   - sidecar/kite_session.json present         (node sidecar/kite_login.js)
   - website/data/ohlcv/nse/{daily,hourly,15min,5min,1min}/ populated
-    (run collect_nse_ohlcv.jl first, unless --bse-only)
+    (run collect_ohlcv.jl first, unless --bse-only)
   - website/data/ohlcv/bse/{daily,hourly,15min,5min,1min}/ populated
-    (run collect_bse_ohlcv.jl first, unless --nse-only)
+    (run collect_ohlcv.jl first, unless --nse-only)
 
 Usage:
   julia --project=packages/StockSwingPredictor scripts/ohlcv/backfill_ohlcv.jl              # --from defaults to 2010-01-04
@@ -78,7 +78,7 @@ const OHLCV_ROOT    = joinpath(REPO_ROOT, "website", "data", "ohlcv")
 const NSE_OHLCV_DIR = joinpath(OHLCV_ROOT, "nse")
 const BSE_OHLCV_DIR = joinpath(OHLCV_ROOT, "bse")
 
-# Deliberately NOT 2010-01-01 like collect_nse_ohlcv.jl/collect_bse_ohlcv.jl's
+# Deliberately NOT 2010-01-01 like collect_ohlcv.jl's
 # --from default (where it's harmless — those are one-shot full collections).
 # Here it's compared every run via `first_date <= from_target` to decide
 # whether a symbol needs anything at all, and 2010-01-01 was a Friday NSE
@@ -322,7 +322,7 @@ function backfill_daily!(symbols, token_map, session, from_target::Date, earlies
         path = joinpath(out_dir, "$sym.csv")
         first_date = _first_daily_date(sym, out_dir)
         if isnothing(first_date)
-            @warn "[$i/$total] $sym daily — no existing CSV, skipping (run collect_nse_ohlcv.jl first)"
+            @warn "[$i/$total] $sym daily — no existing CSV, skipping (run collect_ohlcv.jl first)"
             failed += 1; continue
         end
 
@@ -379,7 +379,7 @@ function backfill_hourly!(symbols, token_map, session, from_target::Date, earlie
         path = joinpath(out_dir, "$sym.csv")
         first_dt = _first_hourly_datetime(sym, out_dir)
         if isnothing(first_dt)
-            @warn "[$i/$total] $sym hourly — no existing CSV, skipping (run collect_nse_ohlcv.jl first)"
+            @warn "[$i/$total] $sym hourly — no existing CSV, skipping (run collect_ohlcv.jl first)"
             failed += 1; continue
         end
         first_date = Date(first_dt)
@@ -448,7 +448,7 @@ function backfill_5min!(symbols, token_map, session, from_target::Date, earliest
         path = joinpath(out_dir, "$sym.csv")
         first_dt = _first_5min_datetime(sym, out_dir)
         if isnothing(first_dt)
-            @warn "[$i/$total] $sym 5min — no existing CSV, skipping (run collect_nse_ohlcv.jl first)"
+            @warn "[$i/$total] $sym 5min — no existing CSV, skipping (run collect_ohlcv.jl first)"
             failed += 1; continue
         end
         first_date = Date(first_dt)
@@ -514,7 +514,7 @@ function backfill_15min!(symbols, token_map, session, from_target::Date, earlies
         path = joinpath(out_dir, "$sym.csv")
         first_dt = _first_15min_datetime(sym, out_dir)
         if isnothing(first_dt)
-            @warn "[$i/$total] $sym 15min — no existing CSV, skipping (run collect_nse_ohlcv.jl first)"
+            @warn "[$i/$total] $sym 15min — no existing CSV, skipping (run collect_ohlcv.jl first)"
             failed += 1; continue
         end
         first_date = Date(first_dt)
@@ -580,7 +580,7 @@ function backfill_1min!(symbols, token_map, session, from_target::Date, earliest
         path = joinpath(out_dir, "$sym.csv")
         first_dt = _first_1min_datetime(sym, out_dir)
         if isnothing(first_dt)
-            @warn "[$i/$total] $sym 1min — no existing CSV, skipping (run collect_nse_ohlcv.jl first)"
+            @warn "[$i/$total] $sym 1min — no existing CSV, skipping (run collect_ohlcv.jl first)"
             failed += 1; continue
         end
         first_date = Date(first_dt)
@@ -666,7 +666,7 @@ For each existing {SYMBOL}.csv in website/data/ohlcv/{nse,bse}/{daily,
 hourly,15min,5min,1min}/, reads the earliest date/datetime already on disk
 and fetches only the older gap down to --from, merging it into the file. A
 symbol with no existing CSV is skipped — this tool only EXTENDS, it doesn't
-do the initial collection (see collect_nse_ohlcv.jl/collect_bse_ohlcv.jl for
+do the initial collection (see collect_ohlcv.jl for
 that, including brand-new granularities like NSE 15-min that have zero
 files today).
 
@@ -782,7 +782,7 @@ estimate before committing to a full run.
     # ── NSE backfill ──────────────────────────────────────────────────────────
     if run_nse
         isdir(NSE_OHLCV_DIR) || error("NSE OHLCV directory not found: $NSE_OHLCV_DIR\n" *
-                                       "Run collect_nse_ohlcv.jl first (or pass --bse-only).")
+                                       "Run collect_ohlcv.jl first (or pass --bse-only).")
 
         daily_syms      = [replace(f, ".csv" => "") for f in _readdir_safe(nse_gran_dir("daily"))]
         hourly_syms     = [replace(f, ".csv" => "") for f in _readdir_safe(nse_gran_dir("hourly"))]
@@ -912,7 +912,7 @@ estimate before committing to a full run.
                                dry_run, out_dir=bse_gran_dir("1min"))
             end
         else
-            @warn "BSE directory not found ($BSE_OHLCV_DIR) — run collect_bse_ohlcv.jl first (or pass --nse-only)."
+            @warn "BSE directory not found ($BSE_OHLCV_DIR) — run collect_ohlcv.jl first (or pass --nse-only)."
         end
     end
 
