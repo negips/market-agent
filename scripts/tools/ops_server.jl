@@ -18,11 +18,12 @@ API (all JSON):
   GET  /api/actions          every action with its current state
   POST /api/run/NAME         start the job / perform the action NAME
   GET  /api/job/NAME         state of NAME plus the last lines of its log (jobs only)
+  GET  /api/series?granularity=G&symbol=S   one company's return series from website/data/forecaster_cache_G.bson (read-only)
 
 Job logs go to website/data/ops_logs/NAME.log.
 """
 
-using HTTP, JSON3, Dates
+using HTTP, JSON3, Dates, BSON
 
 const REPO_ROOT = abspath(joinpath(@__DIR__, "..", ".."))
 const WEB_ROOT = joinpath(REPO_ROOT, "website")
@@ -137,9 +138,59 @@ function start_job(a::OpsAction)
     return true
 end
 
+const CACHE_GRANULARITIES = ("1min", "5min", "15min", "hourly", "daily")
+const SERIES_DECIMALS = 4
+
+"""One forecaster cache read from disk: its file's modification time and the arrays the series endpoint serves."""
+struct LoadedCache
+    mtime::Float64
+    symbols::Vector{String}
+    dates::Vector{Date}
+    logret::Matrix{Float32}
+    traded::Matrix{Bool}
+end
+
+const CACHE_LOCK = ReentrantLock()
+const LOADED = Ref{Union{Nothing,Tuple{String,LoadedCache}}}(nothing)
+
+"""
+    loaded_cache(granularity) -> LoadedCache
+
+The arrays of `forecaster_cache_{granularity}.bson`, read as plain BSON (no TradingGame needed). One cache is kept in memory; it is
+read again when another bar size is asked for or the file has changed (the pipeline rewrites it every round).
+"""
+function loaded_cache(granularity::AbstractString)
+    path = joinpath(WEB_ROOT, "data", "forecaster_cache_$(granularity).bson")
+    isfile(path) || error("no forecaster cache for $granularity: $path")
+    lock(CACHE_LOCK) do
+        held = LOADED[]
+        if held !== nothing && held[1] == granularity && held[2].mtime == mtime(path)
+            return held[2]
+        end
+        d = BSON.load(path)
+        c = LoadedCache(mtime(path), Vector{String}(d[:symbols]), Vector{Date}(d[:dates]), Matrix{Float32}(d[:logret]), Matrix{Bool}(d[:traded]))
+        LOADED[] = (String(granularity), c)
+        return c
+    end
+end
+
+"""A symbol's `logret` (percent) and `traded` columns from the cache of `granularity`, with the dates and bars per day."""
+function series_payload(granularity::AbstractString, symbol::AbstractString)
+    granularity in CACHE_GRANULARITIES || return nothing, "unknown granularity: $granularity"
+    c = loaded_cache(granularity)
+    k = findfirst(==(symbol), c.symbols)
+    k === nothing && return nothing, "$symbol is not in the $granularity cache"
+    return Dict("granularity" => granularity, "symbol" => symbol, "bars_per_day" => size(c.logret, 1) ÷ length(c.dates),
+                "dates" => string.(c.dates), "logret" => round.(c.logret[:, k]; digits=SERIES_DECIMALS), "traded" => Int.(c.traded[:, k])), ""
+end
+
 function api(req::HTTP.Request, path::AbstractString, port::Int)
     if req.method == "GET" && path == "/api/actions"
         return json_response(200, [action_state(a) for a in ACTIONS])
+    elseif req.method == "GET" && path == "/api/series"
+        q = HTTP.queryparams(HTTP.URI(req.target))
+        payload, why = series_payload(get(q, "granularity", ""), get(q, "symbol", ""))
+        return payload === nothing ? json_response(404, Dict("error" => why)) : json_response(200, payload)
     elseif req.method == "GET" && startswith(path, "/api/job/")
         name = path[length("/api/job/") + 1:end]
         i = findfirst(a -> a.name == name && a.kind === :job, ACTIONS)

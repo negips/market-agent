@@ -149,7 +149,7 @@ market-agent/
 │   │   └── earnings_watchlist_latest.json # read by watchlist.html
 │
 ├── nse_companies.html              # browser viewer — search, sort, confidence badges
-├── serve.sh                        # start local HTTP server and open browser
+├── serve.sh                        # start the ops server (serves website/ + /api) and open a page
 └── CLAUDE.md                       # this file
 ```
 
@@ -1336,8 +1336,8 @@ julia --project=packages/TradingGame scripts/game/training_status.jl
 
 ### Ops server (`scripts/tools/ops_server.jl`)
 
-A drop-in for `serve.sh`'s python server that also lets pages run a fixed whitelist of actions. `julia --project=packages/StockSwingPredictor scripts/tools/ops_server.jl [--port 8080] [--open website/dataavailability.html]`.
-The whitelist is the `ACTIONS` table at the top of the script: `job` entries run a command in the background (one at a time, log in `website/data/ops_logs/NAME.log`), `touch_file` entries create a file (the forecaster `STOP` / `STOP_NOW` sentinels). A page names an action (`POST /api/run/NAME`); it never sends a command. The server binds 127.0.0.1, refuses a Host other than its own localhost:PORT and a POST whose Origin is not its own. `website/assets/ops.js` is the page-side client (`Ops.available()`, `Ops.run(name)`, `Ops.runJob(name, onUpdate)`); under any other static server the buttons stay hidden. Used by the Rescan button on `dataavailability.html` and the Stop buttons on the Forecaster v4 tab. To add an action, add one line to `ACTIONS`.
+What `serve.sh` runs: a static server for `website/` that also lets pages run a fixed whitelist of actions. `julia --project=packages/StockSwingPredictor scripts/tools/ops_server.jl [--port 8080] [--open website/dataavailability.html]`.
+The whitelist is the `ACTIONS` table at the top of the script: `job` entries run a command in the background (one at a time, log in `website/data/ops_logs/NAME.log`), `touch_file` entries create a file (the forecaster `STOP` / `STOP_NOW` sentinels). A page names an action (`POST /api/run/NAME`); it never sends a command. The server binds 127.0.0.1, refuses a Host other than its own localhost:PORT and a POST whose Origin is not its own. `website/assets/ops.js` is the page-side client (`Ops.available()`, `Ops.run(name)`, `Ops.runJob(name, onUpdate)`); under any other static server the buttons stay hidden. Used by the Rescan button on `dataavailability.html` and the Stop buttons on the Forecaster v4 tab. It also serves `GET /api/series?granularity=G&symbol=S` (read-only, not an action): one company's return series, read as plain BSON from `website/data/forecaster_cache_G.bson` (kept in memory, re-read when the file changes). The **Company series** card on the Forecaster v4 tab uses it: a drop-down of the run's val and train companies, cumulative return / return per bar / traded share, a date range, and the line coloured by train or val period; without the ops server the card says so. To add an action, add one line to `ACTIONS`.
 
 ### Website
 

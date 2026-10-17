@@ -1,17 +1,14 @@
 #!/usr/bin/env bash
-# Start a local HTTP server and open a page in the browser.
+# Serve website/ with the ops server (scripts/tools/ops_server.jl) and open a page in the browser.
+# Besides the static pages it provides /api: the Stop and Rescan buttons and the Company series plot read from it.
 # Run from the repo root.
 #
 # Usage:
-#   ./serve.sh                              # opens website/ on port 8080
+#   ./serve.sh                              # opens website/index.html on port 8080
 #   ./serve.sh website/setup.html           # open a specific page
 #   ./serve.sh website/companies.html 9000  # custom port
 
 FILE=${1:-website/index.html}
 PORT=${2:-8080}
-URL="http://localhost:$PORT/$FILE"
 
-echo "Serving on $URL  (Ctrl+C to stop)"
-xdg-open "$URL" 2>/dev/null || open "$URL" 2>/dev/null || echo "Open $URL in your browser"
-
-python3 -m http.server "$PORT"
+exec julia --project=packages/StockSwingPredictor scripts/tools/ops_server.jl --port "$PORT" --open "$FILE"

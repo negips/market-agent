@@ -133,6 +133,25 @@
       <div id="fcl-body">
         <div class="chart-card" id="fcl-status"></div>
         <div class="chart-card" id="fcl-config"></div>
+        <div class="chart-card" id="fcl-series">
+          <div class="chart-header"><div class="chart-title">Company series</div>
+            <div class="chart-sub">one train or val company of this run, read from the forecaster cache (the log-returns the model sees) through the ops server · line colour = period (train / val)</div></div>
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:13px;margin-bottom:8px">
+            <select id="fcl-s-sym" class="fcl-input" style="min-width:190px"></select>
+            <select id="fcl-s-kind" class="fcl-input">
+              <option value="cum">Cumulative return, 100·Σ ln(c/c₋₁) %</option><option value="ret">Return per bar, 100·ln(c/c₋₁) %</option><option value="traded">Traded share of bars</option>
+            </select>
+            <label>from <input type="date" id="fcl-s-from" class="fcl-input"></label>
+            <label>to <input type="date" id="fcl-s-to" class="fcl-input"></label>
+            <span class="mode-tabs" style="margin:0">
+              <button class="mode-tab" data-span="train">Train period</button>
+              <button class="mode-tab" data-span="val">Val period</button>
+              <button class="mode-tab" data-span="all">All</button>
+            </span>
+            <span id="fcl-s-note" style="font-size:12px;color:var(--text-dim)"></span>
+          </div>
+          <div class="canvas-wrap" style="height:300px"><canvas id="fcl-c-series"></canvas></div>
+        </div>
         <div class="section-title">Latest evaluation <span id="fcl-latest-epoch" style="font-weight:400;color:var(--text-dim);font-size:12px"></span></div>
         <div class="fcl-tiles" id="fcl-tiles"></div>
         <div class="section-title">Training progress</div>
@@ -158,6 +177,107 @@
         </details>
        </div>`;
     wireWindowUi();
+    wireSeriesUi();
+  }
+
+  // ── company series (read from the forecaster cache by the ops server, /api/series) ──
+  const SERIES_CACHE_SIZE = 3, SERIES_MAX_POINTS = 1500;
+  const BAR_MINUTES = { 375: 1, 75: 5, 25: 15, 7: 60, 1: 375 };
+  const seriesData = new Map();
+  let seriesCompanies = '', seriesToken = 0;
+
+  async function loadSeries(sym, gran) {
+    const key = `${gran}/${sym}`;
+    if (seriesData.has(key)) return seriesData.get(key);
+    const r = await fetch(`/api/series?granularity=${encodeURIComponent(gran)}&symbol=${encodeURIComponent(sym)}`);
+    const d = await r.json().catch(() => null);
+    if (!r.ok || !d) throw new Error((d && d.error) || 'the cache is read by the ops server: start scripts/tools/ops_server.jl');
+    const bpd = d.bars_per_day, step = BAR_MINUTES[bpd] || 1, t = [];
+    d.dates.forEach(day => {
+      for (let b = 0; b < bpd; b++) {
+        const m = 555 + b * step;
+        t.push(bpd === 1 ? day : `${day} ${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`);
+      }
+    });
+    const out = { t, bpd, logret: d.logret, traded: d.traded };
+    seriesData.set(key, out);
+    if (seriesData.size > SERIES_CACHE_SIZE) seriesData.delete(seriesData.keys().next().value);
+    return out;
+  }
+
+  const periodOf = label => {
+    const d = label.slice(0, 10), p = config?.dates || {};
+    return d >= p.train_start && d <= p.train_end ? 'train' : d >= p.val_start && d <= p.val_end ? 'val' : 'other';
+  };
+  const PERIOD_COL = { train: COL.train, val: COL.val, other: COL.dim };
+
+  function fillSeriesCompanies() {
+    const train = config?.train_companies || [], val = config?.val_companies || [];
+    const sig = train.join() + '|' + val.join();
+    if (sig === seriesCompanies) return;
+    seriesCompanies = sig;
+    const sel = $('fcl-s-sym'), keep = sel.value;
+    const opts = (list, role) => list.map(s => `<option value="${s}" data-role="${role}">${s}</option>`).join('');
+    sel.innerHTML = `<optgroup label="Val companies (${val.length})">${opts(val, 'val')}</optgroup><optgroup label="Train companies (${train.length})">${opts(train, 'train')}</optgroup>`;
+    if (keep && [...sel.options].some(o => o.value === keep)) sel.value = keep;
+    setSeriesSpan('val');
+  }
+
+  function setSeriesSpan(span) {
+    const p = config?.dates || {};
+    const [a, b] = span === 'train' ? [p.train_start, p.train_end] : span === 'val' ? [p.val_start, p.val_end] : ['', ''];
+    $('fcl-s-from').value = a || ''; $('fcl-s-to').value = b || '';
+    renderSeries();
+  }
+
+  async function renderSeries() {
+    const sym = $('fcl-s-sym').value, note = $('fcl-s-note'), token = ++seriesToken;
+    if (charts.series) { charts.series.destroy(); delete charts.series; }
+    if (!sym || !config) { note.textContent = ''; return; }
+    const kind = $('fcl-s-kind').value, gran = config.model?.granularity || '1min';
+    note.textContent = 'loading…';
+    let s;
+    try { s = await loadSeries(sym, gran); } catch (e) { if (token === seriesToken) note.textContent = e.message; return; }
+    if (token !== seriesToken) return;
+    const from = $('fcl-s-from').value, to = $('fcl-s-to').value;
+    let lo = from ? s.t.findIndex(x => x.slice(0, 10) >= from) : 0, hi = s.t.length - 1;
+    if (to) while (hi >= 0 && s.t[hi].slice(0, 10) > to) hi--;
+    if (lo < 0 || hi < lo) { note.textContent = 'no bars in this range'; return; }
+    let cum = 0;
+    for (let i = 0; i < lo; i++) cum += s.logret[i];
+    const n = hi - lo + 1, step = Math.ceil(n / SERIES_MAX_POINTS), labels = [], data = [];
+    for (let i = lo; i <= hi; i += step) {
+      const end = Math.min(i + step - 1, hi);
+      let ret = 0, traded = 0;
+      for (let j = i; j <= end; j++) {
+        cum += s.logret[j]; traded += s.traded[j];
+        if (j % s.bpd !== 0 || s.bpd === 1) ret += s.logret[j];
+      }
+      labels.push(s.t[end]);
+      data.push(kind === 'cum' ? cum : kind === 'ret' ? ret : traded / (end - i + 1));
+    }
+    const role = $('fcl-s-sym').selectedOptions[0]?.dataset.role || '';
+    const how = { cum: 'cumulative from the start of the range', ret: 'overnight bars left out, as in the targets', traded: 'share of bars traded' }[kind];
+    note.textContent = `${role} company · ${gran} · ${n.toLocaleString()} bars${step > 1 ? `, ${step} per point` : ''} · ${how}`;
+    const colors = labels.map(l => PERIOD_COL[periodOf(l)]), bar = kind !== 'cum';
+    charts.series = new Chart($('fcl-c-series'), {
+      type: bar ? 'bar' : 'line',
+      data: { labels, datasets: [{
+        label: { cum: 'cumulative return %', ret: 'return %', traded: 'traded share' }[kind], data, borderWidth: bar ? 0 : 1.5, pointRadius: 0, tension: 0,
+        backgroundColor: colors, borderColor: COL.dim, segment: { borderColor: c => colors[c.p1DataIndex] } }] },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { display: false } },
+        scales: { x: { ticks: { maxTicksLimit: 10, callback(v) { return this.getLabelForValue(v).slice(0, 10); } }, grid: { color: '#2a314f' } },
+                  y: { grid: { color: '#2a314f' } } },
+      },
+    });
+  }
+
+  function wireSeriesUi() {
+    ['fcl-s-sym', 'fcl-s-kind', 'fcl-s-from', 'fcl-s-to'].forEach(id => $(id).addEventListener('change', renderSeries));
+    $('fcl-series').querySelectorAll('[data-span]').forEach(b => b.addEventListener('click', () => setSeriesSpan(b.dataset.span)));
   }
 
   function renderRunTabs() {
@@ -188,6 +308,7 @@ async function renderStopButtons() {
   function setRun(dir) {
     runDir = dir; store.set('fcl_run', dir);
     Object.values(charts).forEach(c => c.destroy()); for (const k in charts) delete charts[k];
+    seriesCompanies = '';
     epochs = []; timing = []; live = null; config = null; report = null; win = { from: null, to: null, last: null };
     renderRunTabs(); renderAll(); pollSlow(); pollLive();
   }
@@ -328,7 +449,7 @@ async function renderStopButtons() {
     const none = !live && !epochs.length && !config;
     $('fcl-placeholder').style.display = none ? '' : 'none'; $('fcl-ph-dir').textContent = runDir; $('fcl-ph-flag').textContent = (RUN_TABS.find(t => t[1] === runDir) || [0, 0, ''])[2];
     $('fcl-body').style.display = none ? 'none' : '';
-    renderStatus(); renderConfig(); renderTiles(); renderCharts(); renderReport();
+    renderStatus(); renderConfig(); fillSeriesCompanies(); renderTiles(); renderCharts(); renderReport();
   }
 
   // ── polling ──────────────────────────────────────────────────────────────
