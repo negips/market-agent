@@ -335,7 +335,10 @@ of exchange:
    e.g. `EMBASSY-RR` → `"EMBASSY OFFICE PARKS REIT"`), `-IV` (InvIT units,
    e.g. `PGINVIT-IV` → `"POWERGRID INFRA INVESTMENT TRUST - INVIT"`) — both
    trust units, not a company's own shares — `-E1` (partly-paid-up shares,
-   e.g. `ROCKPP-E1` → `"ROCKINGDCE RS.5 PPD UP"`), and `-BE`/`-BZ`/`-BL`/
+   e.g. `ROCKPP-E1` → `"ROCKINGDCE RS.5 PPD UP"`), `-RE` (rights entitlements,
+   e.g. `INDRA-RE`: a short-lived tradable right to subscribe, not the
+   company\x27s shares; five such CSVs were found on disk from before this
+   rule), and `-BE`/`-BZ`/`-BL`/
    `-ST` (surveillance/trade-to-trade settlement series — still ordinary
    equity, just excluded anyway per explicit request). Only observed on
    NSE (`-BL` currently has zero matches but is kept in the list in case a
@@ -431,6 +434,17 @@ carry cryptic, non-descriptive names (e.g. `773CG2034` named just
    them. Verified against the full dump: 347 matches, none a company
    (real `GS…` tickers like `GSFC`/`GSPL` have no digit right after `GS`).
 
+10. `_BSE_DEBT_ISSUER_SYM_RE` — symbol shapes of debt issues and fixed-maturity
+   fund units whose names are no longer on Kite\x27s list, so rules 2 and 6-9 could
+   not be tested on them: `772SBIPER`/`960EFSLA` (3 digits + 5+ letters),
+   `MFL26B`/`MFL26D`/`MFL26Z` (3-5 letters, 2 digits, 1 letter), `EFSLZC26C`/
+   `IIFLZC26`/`KFLZC26D` (zero-coupon `ZC` + 2 digits), `EFSL241024`/`KFL150425`
+   (3-5 letters + a 6-digit date), `D60MS264DG`/`D60MS264DP`, and the MF plans
+   `IPRU3533`/`SFMP51GR`. Verified against the full cached NSE and BSE instrument
+   dumps: it matches none of the 7,932 symbols kept today, so it changes no
+   current instrument and only guards against these appearing again.
+   `360ONE` (3 digits + 3 letters) does not match.
+
 Neither of the two BSE-only checks before this one is needed for NSE:
 verified NSE has zero `EQ` rows with `tick_size == 0`, and every NSE debt
 instrument with a non-empty name already matches `_DEBT_NAME_RE`.
@@ -440,13 +454,46 @@ const _BSE_DEBT_CODE_SYM_RE   = r"^\d{2,}[A-Za-z]+\d+[A-Za-z]?$"
 const _BSE_DEBT_CODE_NAME_RE  = r"^[\d.]+[A-Za-z].*\d$"
 const _BSE_GSEC_SYM_RE        = r"^(?:GS|CS)\d|^FRBGOI|^GSEC\d"
 const _DEBT_NAME_RE      = r"\bSDL\b|\bGOI\b|TBILL|GOLD\s?BONDS?|\bNCD\b|DEBENTURE|\bBOND\b"i
-const _EXCLUDED_SUFFIXES = ("-RR", "-IV", "-E1", "-BE", "-BZ", "-BL", "-ST")
+const _BSE_DEBT_ISSUER_SYM_RE = r"^\d{3}[A-Za-z]{5,}$|^[A-Z]{3,5}\d{2}[A-Z]$|[A-Z]ZC\d{2}[A-Z]?$|^[A-Z]{3,5}\d{6}$|^D\d{2}[A-Z]{2}\d{3}[A-Z]{2}$|^(?:IPRU|SFMP)\d"
+const _EXCLUDED_SUFFIXES = ("-RR", "-IV", "-E1", "-BE", "-BZ", "-BL", "-ST", "-RE")
 const _TRUST_NAME_RE     = r"\bREIT\b|\bINVIT\b"i
 const _FUND_NAME_RE      = r"\bFUND\b"i
 const _ETF_NAME_RE       = r"ETF\b"i
 const _NAV_NAME_RE       = r"\bI?NAV\b"i
 const _AMC_NAME_RE       = r"AMC\s*-"i
 const _BHARATBOND_SYM_RE = r"^BHARATBOND"
+
+"""
+    excluded_symbol(sym; exchange="NSE") -> Bool
+
+Whether the `tradingsymbol` alone says the instrument is not an operating company: the checks of [`build_token_map`](@ref) that
+need no `name` (rules 3, 5, 6, 8, 9 and 10 of its docstring: excluded suffixes, `INAV`, `BHARATBOND`, and the BSE debt, G-Sec and
+debt-issuer symbol codes). Exists so a CSV left on disk for a symbol Kite no longer lists can still be recognised as debt or a
+rights entitlement (`quarantine_filtered_ohlcv.jl`).
+
+# Arguments
+- `sym`: the tradingsymbol
+- `exchange`: `"NSE"` or `"BSE"` (the debt-code rules are BSE-only)
+
+# Example
+```julia
+excluded_symbol("INDRA-RE")                    # true  (rights entitlement)
+excluded_symbol("MFL26B"; exchange="BSE")      # true  (debt issue)
+excluded_symbol("RELIANCE")                    # false
+```
+"""
+function excluded_symbol(sym::AbstractString; exchange::String="NSE")::Bool
+    endswith(sym, "INAV")                           && return true
+    !isnothing(match(_BHARATBOND_SYM_RE, sym))      && return true
+    any(endswith(sym, s) for s in _EXCLUDED_SUFFIXES) && return true
+    if exchange == "BSE"
+        !isnothing(match(_BSE_DEBT_RE, sym))             && return true
+        !isnothing(match(_BSE_DEBT_CODE_SYM_RE, sym))    && return true
+        !isnothing(match(_BSE_GSEC_SYM_RE, sym))         && return true
+        !isnothing(match(_BSE_DEBT_ISSUER_SYM_RE, sym))  && return true
+    end
+    return false
+end
 
 function build_token_map(instruments::DataFrame; exchange::String="NSE")::Dict{String, Int}
     map = Dict{String, Int}()
@@ -465,15 +512,10 @@ function build_token_map(instruments::DataFrame; exchange::String="NSE")::Dict{S
                 !isnothing(match(_ETF_NAME_RE, name))   && continue
                 !isnothing(match(_NAV_NAME_RE, name))   && continue
                 !isnothing(match(_AMC_NAME_RE, name))   && continue
-                endswith(sym, "INAV")                   && continue
-                !isnothing(match(_BHARATBOND_SYM_RE, sym)) && continue
-                any(endswith(sym, s) for s in _EXCLUDED_SUFFIXES) && continue
+                excluded_symbol(sym; exchange=exchange) && continue
                 if exchange == "BSE"
-                    !isnothing(match(_BSE_DEBT_RE, sym))           && continue
                     get(row, :tick_size, 1.0) == 0.0               && continue
-                    !isnothing(match(_BSE_DEBT_CODE_SYM_RE, sym))  && continue
                     !isnothing(match(_BSE_DEBT_CODE_NAME_RE, name)) && continue
-                    !isnothing(match(_BSE_GSEC_SYM_RE, sym))       && continue
                 end
             end
             map[sym] = Int(row.instrument_token)

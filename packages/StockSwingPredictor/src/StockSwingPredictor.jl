@@ -84,7 +84,7 @@ export
     ScriptLog, open_script_log, close_script_log, logf, logboth, active_script_log, account_log_path,
 
     # kite_data
-    load_kite_session, load_instruments, build_token_map, KiteSession, relogin_kite!,
+    load_kite_session, load_instruments, build_token_map, excluded_symbol, KiteSession, relogin_kite!,
     kite_account_from_args, kite_session_path,
     fetch_ohlcv, collect_ohlcv, load_cached_ohlcv,
     fetch_ohlcv_hourly, collect_ohlcv_hourly, load_cached_ohlcv_hourly,

@@ -14,3 +14,15 @@
     tm = build_token_map(rows([kept; dropped]); exchange="NSE")
     @test Set(keys(tm)) == Set(first.(kept))
 end
+
+@testset "excluded_symbol: symbol-only rules" begin
+    junk = ["772SBIPER", "960EFSLA", "D60MS264DG", "D60MS264DP", "EFSL241024", "EFSLZC26C", "IIFLZC26", "IPRU3533",
+            "KFL150425", "KFLZC26D", "MFL26B", "MFL26D", "MFL26Z", "SFMP51GR"]
+    @test all(s -> excluded_symbol(s; exchange="BSE"), junk)
+    @test all(excluded_symbol, ["CENTEXT-RE", "INDRA-RE", "MANOJ-RE", "NATCO-RE", "SALEM-RE"])
+    @test all(s -> excluded_symbol(s; exchange="BSE"), ["EMBASSY-RR", "NIFTYINAV", "GS12DEC2034", "64GJ30A"])
+    real = ["RELIANCE", "360ONE", "BODHTREE", "FRONTCAP", "GFSTEELS", "NOBPOL", "RAJINFRA", "RGIL", "SHENTRA", "3MINDIA", "TCS"]
+    @test !any(s -> excluded_symbol(s; exchange="BSE"), real)
+    @test !any(s -> excluded_symbol(s; exchange="NSE"), real)
+    @test !excluded_symbol("MFL26B"; exchange="NSE")
+end
