@@ -66,6 +66,12 @@ end
         c2 = load_minute_cache(path)
         @test c2.symbols == c.symbols && c2.dates == c.dates && c2.logret == c.logret && c2.traded == c.traded && c2.scale == c.scale
         @test_throws MinuteCacheError load_minute_cache(tempname())
+        @test size(c2.price) == (0, 0)                              # a cache without prices (the old format) still loads
+        pr = 100f0 .+ rand(MersenneTwister(1), Float32, size(c.logret))
+        c3 = MinuteCache(c.symbols, c.dates, c.logret, c.traded; price=pr)
+        save_minute_cache(c3, path)
+        @test load_minute_cache(path).price == pr
+        @test_throws DimensionMismatch MinuteCache(c.symbols, c.dates, c.logret, c.traded; price=pr[1:end-1, :])
     end
 
     @testset "build_minute_cache: alignment, forward fill, traded flag, day filter" begin
@@ -91,6 +97,10 @@ end
         @test c.logret[2, 1] ≈ 100 * log(101.0 / 101.0)                        # same close
         @test c.logret[_M + 1, 1] ≈ Float32(100 * log(102.0 / 101.0))          # next day's first bar vs previous close
         @test !c.traded[_M + 6, 2] && c.logret[_M + 6, 2] ≈ Float32(100 * log(105.0 / 102.0))   # zero-volume row moves the price but is not "traded"
+        @test size(c.price) == size(c.logret) && c.price[1, 1] == 101f0 && c.price[3, 1] == 101f0       # the close, forward-filled over a bar without a row
+        @test c.price[_M + 1, 1] == 102f0 && c.price[_M + 6, 2] == 105f0
+        pa = tempname() * ".bson"; save_minute_cache(c, pa)
+        @test isequal(load_minute_cache(pa).price, c.price)
         @test_throws MinuteCacheError build_minute_cache(dir, ["AAA", "NOPE"]; from=Date(2024, 3, 4), to=Date(2024, 3, 6), verbose=false)
     end
 
@@ -135,6 +145,117 @@ end
         @test forecast_loss(m, X, Y2, W, T; loss=:gaussian)[2] ≈ forecast_loss(m, X, Y, W, T; loss=:gaussian)[2]
         g = Flux.gradient(mm -> forecast_loss(mm, X, Y, W, T)[1], m)[1]
         @test all(isfinite, vcat((vec(x) for x in Flux.trainables(g))...))
+    end
+
+    @testset "accumulated_gradient: micro-batches give the gradient of the whole batch" begin
+        c = make_minute_cache(ndays=4, nsym=4, seed=3)
+        cfg = ForecasterConfig(window=8, d=16, heads=2, blocks=2, dropout=0f0)
+        m = Forecaster(cfg; seed=5)
+        starts = collect(window_starts(c, c.dates[2], c.dates[4], 8))[1:7:70]
+        whole = [make_batch(c, [1, 2, 3], starts, 8)]
+        gw = TradingGame.accumulated_gradient(m, whole, Flux.cpu, Float32)
+        flat(g) = vcat((vec(x) for x in Flux.trainables(g))...)
+        for k in (2, 3, 10)                                   # 10 windows: uneven pieces (4,4,2 for k = 3)
+            parts = [make_batch(c, [1, 2, 3], collect(p), 8) for p in Iterators.partition(starts, cld(length(starts), k))]
+            gp = TradingGame.accumulated_gradient(m, parts, Flux.cpu, Float32)
+            @test gp.loss ≈ gw.loss rtol=1e-4
+            @test gp.ret ≈ gw.ret rtol=1e-4
+            @test gp.time ≈ gw.time rtol=1e-4
+            @test isapprox(flat(gp.grads), flat(gw.grads); rtol=1e-3, atol=1e-5)
+        end
+        s = TradingGame.accumulated_gradient(m, whole, Flux.cpu, Float32; loss_scale=64)
+        @test isapprox(flat(s.grads), flat(gw.grads); rtol=1e-3, atol=1e-5)
+        Wz = [make_batch(c, [1, 2, 3], starts, 8)]; Wz[1].W .= 0
+        @test all(isfinite, flat(TradingGame.accumulated_gradient(m, Wz, Flux.cpu, Float32).grads))
+    end
+
+    @testset "train_forecaster!: micro_batches trains, and is validated" begin
+        c = make_minute_cache(ndays=6, nsym=4, seed=2)
+        cfg = ForecasterConfig(window=8, d=16, heads=2, blocks=1, dropout=0f0)
+        starts = window_starts(c, c.dates[2], c.dates[5], 8)
+        sets = [EvalSet("val", [1, 2], spread_starts(starts, 4, 8))]
+        m = Forecaster(cfg; seed=1)
+        log = train_forecaster!(m, c, [3, 4], starts, sets; epochs=1, steps_per_epoch=3, batch=6, micro_batches=3, rng=MersenneTwister(1))
+        @test log["epochs_run"] == 1 && isfinite(log["best_loss"])
+        @test_throws ArgumentError train_forecaster!(m, c, [3, 4], starts, sets; epochs=1, steps_per_epoch=1, batch=4, micro_batches=5)
+    end
+
+    @testset "_attend: same values and gradients as MultiHeadAttention (no attention dropout), with and without a causal bias" begin
+        mha = MultiHeadAttention(16; nheads=4, bias=true)
+        x = randn(MersenneTwister(2), Float32, 16, 7, 5, 3)
+        bias = Float32.(ifelse.(Flux.NNlib.make_causal_mask(zeros(Float32, 16, 7); dims=2), 0f0, TradingGame.CAUSAL_BIAS))
+        flat(g) = vcat((vec(a) for a in Flux.trainables(g))...)
+        ref(m, xx, b) = (x3 = reshape(xx, 16, 7, :); b === nothing ? m(x3, x3, x3)[1] : m(x3, x3, x3, b)[1])
+        for b in (nothing, bias)
+            @test TradingGame._attend(mha, x, b) ≈ reshape(ref(mha, x, b), size(x)) atol=1e-5
+            gr = Flux.gradient((m, xx) -> sum(abs2, ref(m, xx, b)), mha, x)
+            go = Flux.gradient((m, xx) -> sum(abs2, TradingGame._attend(m, xx, b)), mha, x)
+            @test isapprox(flat(go[1]), flat(gr[1]); rtol=1e-4, atol=1e-4)
+            @test isapprox(go[2], gr[2]; rtol=1e-4, atol=1e-4)
+        end
+        # with the causal bias, a later minute cannot change an earlier output
+        x2 = copy(x); x2[:, 6:7, :, :] .+= 1f0
+        @test TradingGame._attend(mha, x2, bias)[:, 1:5, :, :] ≈ TradingGame._attend(mha, x, bias)[:, 1:5, :, :] atol=1e-5
+        # in training mode only the residual dropout acts: two calls of the attention itself agree
+        Flux.trainmode!(mha)
+        @test TradingGame._attend(mha, x, bias) == TradingGame._attend(mha, x, bias)
+    end
+
+    @testset "memory profile: rows, summary, file round trip" begin
+        rows = [TradingGame.memory_row(e, 10, 2.5, (100 + e) * 2.0^20, (200 + e) * 2.0^20, 90 * 2.0^20, 80 * 2.0^20, 120 * 2.0^20, 150 * 2.0^20) for e in 1:12]
+        @test rows[1]["train_peak_mib"] == 101.0 && rows[1]["secs_per_step"] == 0.25
+        s = memory_summary(rows)
+        @test s["epochs"] == 12 && s["train_peak_mib"]["max"] == 112.0 && s["train_peak_mib"]["min"] == 101.0
+        @test s["train_peak_drift_mib"] ≈ sum(108:112) / 5 - sum(101:105) / 5
+        cpu_rows = [TradingGame.memory_row(1, 5, 1.0, nothing, nothing, nothing, nothing, nothing, nothing)]
+        @test cpu_rows[1]["train_peak_mib"] === nothing && memory_summary(cpu_rows)["train_peak_mib"] === nothing
+        path = joinpath(mktempdir(), "memory_profile.json")
+        write_memory_profile(path, rows; config=Dict{String, Any}("batch" => 32))
+        j = JSON3.read(read(path, String))
+        @test length(j.epochs) == 12 && j.config.batch == 32 && j.summary.train_peak_mib.max == 112.0
+        @test length(load_memory_rows(path, 5)) == 5 && isempty(load_memory_rows(joinpath(dirname(path), "none.json"), 5))
+    end
+
+    @testset "train_forecaster!: memory_profile=true returns one row per epoch (host figures on the CPU)" begin
+        c = make_minute_cache(ndays=6, nsym=4, seed=2)
+        cfg = ForecasterConfig(window=8, d=16, heads=2, blocks=1, dropout=0f0)
+        starts = window_starts(c, c.dates[2], c.dates[5], 8)
+        sets = [EvalSet("val", [1, 2], spread_starts(starts, 4, 8))]
+        log = train_forecaster!(Forecaster(cfg; seed=1), c, [3, 4], starts, sets; epochs=2, steps_per_epoch=2, batch=4, memory_profile=true, rng=MersenneTwister(1))
+        @test [r["epoch"] for r in log["memory"]] == [1, 2] && all(r -> r["host_rss_peak_mib"] > 0 && r["train_peak_mib"] === nothing, log["memory"])
+        @test isempty(train_forecaster!(Forecaster(cfg; seed=1), c, [3, 4], starts, sets; epochs=1, steps_per_epoch=1, batch=2, rng=MersenneTwister(1))["memory"])
+    end
+
+    @testset "train_forecaster!: memory_path is rewritten after every epoch, keeping earlier sessions' rows" begin
+        c = make_minute_cache(ndays=6, nsym=4, seed=2)
+        cfg = ForecasterConfig(window=8, d=16, heads=2, blocks=1, dropout=0f0)
+        starts = window_starts(c, c.dates[2], c.dates[5], 8)
+        sets = [EvalSet("val", [1, 2], spread_starts(starts, 4, 8))]
+        path = joinpath(mktempdir(), "memory_profile.json")
+        m = Forecaster(cfg; seed=1)
+        train_forecaster!(m, c, [3, 4], starts, sets; epochs=3, steps_per_epoch=1, batch=2, memory_profile=true, memory_path=path,
+                          memory_config=Dict{String, Any}("batch" => 2), rng=MersenneTwister(1))
+        j = JSON3.read(read(path, String))
+        @test [r.epoch for r in j.epochs] == [1, 2, 3] && j.config.batch == 2 && j.summary.epochs == 3
+        train_forecaster!(m, c, [3, 4], starts, sets; epochs=2, steps_per_epoch=1, batch=2, memory_profile=true, memory_path=path,
+                          epoch_offset=2, rng=MersenneTwister(2))           # resumed after epoch 2: epoch 3's row is replaced
+        @test [r.epoch for r in JSON3.read(read(path, String)).epochs] == [1, 2, 3, 4]
+        path2 = joinpath(mktempdir(), "off.json")
+        train_forecaster!(Forecaster(cfg; seed=1), c, [3, 4], starts, sets; epochs=1, steps_per_epoch=1, batch=2, memory_path=path2, rng=MersenneTwister(1))
+        @test !isfile(path2)                                  # nothing is written unless memory_profile is on
+    end
+
+    @testset "train_forecaster!: run_info is stored in every epoch row" begin
+        c = make_minute_cache(ndays=6, nsym=4, seed=2)
+        cfg = ForecasterConfig(window=8, d=16, heads=2, blocks=1, dropout=0f0)
+        starts = window_starts(c, c.dates[2], c.dates[5], 8)
+        sets = [EvalSet("val", [1, 2], spread_starts(starts, 4, 8))]
+        dir = mktempdir()
+        info = Dict{String, Any}("session_start_epoch" => 7, "scale" => 0.5, "dates" => Dict("train_start" => "2024-01-01"))
+        train_forecaster!(Forecaster(cfg; seed=1), c, [3, 4], starts, sets; epochs=2, steps_per_epoch=1, batch=2, out_dir=dir, epoch_offset=6, run_info=info, rng=MersenneTwister(1))
+        rows = [JSON3.read(l) for l in eachline(joinpath(dir, "epoch_log.jsonl"))]
+        @test [r.epoch for r in rows] == [7, 8] && all(r -> r.run.session_start_epoch == 7 && r.run.scale == 0.5 && r.run.dates.train_start == "2024-01-01", rows)
+        train_forecaster!(Forecaster(cfg; seed=1), c, [3, 4], starts, sets; epochs=1, steps_per_epoch=1, batch=2, out_dir=mktempdir(), rng=MersenneTwister(1))
     end
 
     @testset "checkpoint round trip" begin

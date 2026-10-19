@@ -148,6 +148,7 @@ end
 
 const CACHE_GRANULARITIES = ("1min", "5min", "15min", "hourly", "daily")
 const SERIES_DECIMALS = 4
+const PRICE_DECIMALS = 2
 
 """One forecaster cache read from disk: its file's modification time and the arrays the series endpoint serves."""
 struct LoadedCache
@@ -156,6 +157,7 @@ struct LoadedCache
     dates::Vector{Date}
     logret::Matrix{Float32}
     traded::Matrix{Bool}
+    price::Union{Nothing,Matrix{Float32}}
 end
 
 const CACHE_LOCK = ReentrantLock()
@@ -176,20 +178,23 @@ function loaded_cache(granularity::AbstractString)
             return held[2]
         end
         d = BSON.load(path)
-        c = LoadedCache(mtime(path), Vector{String}(d[:symbols]), Vector{Date}(d[:dates]), Matrix{Float32}(d[:logret]), Matrix{Bool}(d[:traded]))
+        c = LoadedCache(mtime(path), Vector{String}(d[:symbols]), Vector{Date}(d[:dates]), Matrix{Float32}(d[:logret]), Matrix{Bool}(d[:traded]),
+                        haskey(d, :price) && !isempty(d[:price]) ? Matrix{Float32}(d[:price]) : nothing)
         LOADED[] = (String(granularity), c)
         return c
     end
 end
 
-"""A symbol's `logret` (percent) and `traded` columns from the cache of `granularity`, with the dates and bars per day."""
+"""A symbol's `logret` (percent), `traded` and, when the cache holds them, `price` (close, as in the CSV; `null` before the first price) columns from the cache of `granularity`, with the dates and bars per day."""
 function series_payload(granularity::AbstractString, symbol::AbstractString)
     granularity in CACHE_GRANULARITIES || return nothing, "unknown granularity: $granularity"
     c = loaded_cache(granularity)
     k = findfirst(==(symbol), c.symbols)
     k === nothing && return nothing, "$symbol is not in the $granularity cache"
-    return Dict("granularity" => granularity, "symbol" => symbol, "bars_per_day" => size(c.logret, 1) ÷ length(c.dates),
-                "dates" => string.(c.dates), "logret" => round.(c.logret[:, k]; digits=SERIES_DECIMALS), "traded" => Int.(c.traded[:, k])), ""
+    payload = Dict{String,Any}("granularity" => granularity, "symbol" => symbol, "bars_per_day" => size(c.logret, 1) ÷ length(c.dates),
+                "dates" => string.(c.dates), "logret" => round.(c.logret[:, k]; digits=SERIES_DECIMALS), "traded" => Int.(c.traded[:, k]))
+    c.price === nothing || (payload["price"] = [isfinite(p) ? round(Float64(p); digits=PRICE_DECIMALS) : nothing for p in c.price[:, k]])
+    return payload, ""
 end
 
 function api(req::HTTP.Request, path::AbstractString, port::Int)

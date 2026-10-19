@@ -29,6 +29,11 @@ Options (each also a key of the TOML's [forecaster]; a flag overrides the file):
   --epochs N            Epochs (default 20)
   --steps-per-epoch N   Random batches per epoch (default 500)
   --batch B             Windows per batch (default 32)
+  --memory-profile      Record the GPU memory use of every epoch and write memory_profile.json after each epoch's evaluation;
+                        --no-memory-profile overrides a config's memory_profile = true. Also the [forecaster] key `memory_profile`. The Forecaster v4
+                        tab of website/tradinggamelive.html shows it. Needs --device gpu for the GPU figures (the host's peak is always recorded).
+  --micro-batches K     Split each batch into K pieces run one after the other with their gradients summed: the update is the whole
+                        batch's, but GPU memory follows batch/K (default 1). Memory is linear in the batch, so K=2 about halves it.
   --lr X                Peak learning rate; warm-up then cosine to a tenth (default 3e-4)
   --weight-decay X      AdamW decay (default 0.01)
   --warmup-steps N      Warm-up steps (default 200)
@@ -84,7 +89,7 @@ const UNIVERSE_FILE = joinpath(DATA_DIR, "trading_game", "universe_latest.json")
 const FLAGS = Dict(
     "--window" => ("window", Int), "--d" => ("d", Int), "--heads" => ("heads", Int), "--blocks" => ("blocks", Int),
     "--dropout" => ("dropout", Float64), "--epochs" => ("epochs", Int), "--steps-per-epoch" => ("steps_per_epoch", Int),
-    "--batch" => ("batch", Int), "--lr" => ("lr", Float64), "--weight-decay" => ("weight_decay", Float64),
+    "--batch" => ("batch", Int), "--micro-batches" => ("micro_batches", Int), "--lr" => ("lr", Float64), "--weight-decay" => ("weight_decay", Float64),
     "--warmup-steps" => ("warmup_steps", Int), "--val-windows" => ("val_windows", Int), "--device" => ("device", String), "--dtype" => ("dtype", String), "--loss" => ("loss", String),
     "--nu" => ("nu", Float64), "--nll-beta" => ("nll_beta", Float64),
     "--seed" => ("seed", Int), "--val-window" => ("val_window", String), "--val-days" => ("val_days", Int),
@@ -97,7 +102,7 @@ function parse_args()
     cfg = config_path === nothing ? nothing : RunConfigs.load_or_exit(config_path)
     opts = Dict{String, Any}(
         "window" => 96, "d" => 64, "heads" => 4, "blocks" => 4, "dropout" => 0.1,
-        "epochs" => 20, "steps_per_epoch" => 500, "batch" => 32, "lr" => 3e-4, "weight_decay" => 0.01,
+        "epochs" => 20, "steps_per_epoch" => 500, "batch" => 32, "micro_batches" => 1, "memory_profile" => false, "lr" => 3e-4, "weight_decay" => 0.01,
         "warmup_steps" => 200, "val_windows" => 256, "device" => "cpu", "dtype" => "float32", "loss" => "student_t", "nu" => 4.0, "nll_beta" => 0.5, "seed" => nothing,
         "val_window" => "trailing", "val_days" => 60,
         "train_start" => nothing, "train_end" => nothing, "val_start" => nothing, "val_end" => nothing,
@@ -113,6 +118,8 @@ function parse_args()
             println(match(r"\"\"\"\n(.*?)\"\"\""s, read(@__FILE__, String)).captures[1])
             exit(0)
         elseif a == "--resume"; opts["resume"] = true; i += 1
+        elseif a == "--memory-profile"; opts["memory_profile"] = true; i += 1
+        elseif a == "--no-memory-profile"; opts["memory_profile"] = false; i += 1
         elseif a == "--no-resume"; opts["resume"] = false; i += 1
         elseif a == "--init-from"
             i < length(ARGS) || error("--init-from needs a path")
@@ -132,6 +139,7 @@ function parse_args()
     opts["device"] in ("cpu", "gpu") || error("--device must be cpu or gpu")
     opts["resume"] && !isempty(opts["init_from"]) && error("resume and init_from are mutually exclusive: resume continues the run in --out-dir, init_from starts a fresh one")
     opts["eval_only"] && !isempty(opts["init_from"]) && error("--eval-only scores the checkpoint in --out-dir; it cannot be combined with init_from")
+    1 <= opts["micro_batches"] <= opts["batch"] || error("--micro-batches must be between 1 and --batch ($(opts["batch"]))")
     forecast_dtype(opts["dtype"])
     forecast_loss_kind(opts["loss"])
     (forecast_loss_kind(opts["loss"]) === :huber || opts["nu"] > 2) || error("--nu must exceed 2 for a finite variance")
@@ -253,7 +261,7 @@ function main()
         isfile(epoch_log) && (epoch_offset = maximum(Int(JSON3.read(l).epoch) for l in eachline(epoch_log) if !isempty(strip(l)); init=0))
         @info "Resumed — last completed epoch: $epoch_offset"
     else
-        for f in ("epoch_log.jsonl", "timing.json", "val_report.json", "live_status.json")
+        for f in ("epoch_log.jsonl", "timing.json", "val_report.json", "live_status.json", "memory_profile.json")
             isfile(joinpath(OUT_DIR, f)) && rm(joinpath(OUT_DIR, f))
         end
     end
@@ -262,7 +270,7 @@ function main()
         JSON3.pretty(io, Dict(
             "model" => Dict("window" => M, "d" => mcfg.d, "heads" => mcfg.heads, "blocks" => mcfg.blocks, "dropout" => mcfg.dropout, "bars_per_day" => mcfg.bars_per_day, "granularity" => cache.granularity,
                             "parameters" => n_parameters(model)),
-            "training" => Dict(k => opts[k] for k in ("epochs", "steps_per_epoch", "batch", "lr", "weight_decay", "warmup_steps", "val_windows", "seed")),
+            "training" => Dict(k => opts[k] for k in ("epochs", "steps_per_epoch", "batch", "micro_batches", "lr", "weight_decay", "warmup_steps", "val_windows", "seed")),
             "resolved_device" => string(device), "dtype" => opts["dtype"], "loss" => opts["loss"], "nu" => opts["nu"], "nll_beta" => opts["nll_beta"],
             "dates" => Dict("train_start" => string(train_start), "train_end" => string(train_end),
                             "val_start" => string(val_start), "val_end" => string(val_end)),
@@ -282,8 +290,19 @@ function main()
             @info("Resumed without a best loss to compare against (the checkpoint has none, or its validation set differs): the first epoch becomes the checkpoint") :
             @info(@sprintf("Resumed: the checkpoint stays unless an epoch beats val loss %.4f (epoch %d)", prior_best.loss, prior_best.epoch))
     end
+    run_info = Dict{String, Any}(
+    "session_start_epoch" => epoch_offset + 1, "scale" => Float64(cache.scale), "granularity" => cache.granularity,
+    "dates" => Dict("train_start" => string(train_start), "train_end" => string(train_end), "val_start" => string(val_start), "val_end" => string(val_end)),
+    "train_companies" => length(train_cols), "val_companies" => length(val_cols),
+    "train_set" => string(hash(sort(universe.train)), base=16), "val_set" => string(hash(sort(universe.val)), base=16))
+memory_config = Dict{String, Any}(
+        "batch" => opts["batch"], "micro_batches" => opts["micro_batches"], "window" => M, "d" => mcfg.d, "heads" => mcfg.heads,
+        "blocks" => mcfg.blocks, "dropout" => mcfg.dropout, "dtype" => opts["dtype"], "loss" => opts["loss"],
+        "granularity" => cache.granularity, "parameters" => n_parameters(model), "steps_per_epoch" => opts["steps_per_epoch"],
+        "train_stocks" => length(train_cols), "val_stocks" => length(val_cols), "device" => string(device))
     log = train_forecaster!(model, cache, train_cols, train_range, sets;
-                            epochs=opts["epochs"], steps_per_epoch=opts["steps_per_epoch"], batch=opts["batch"],
+                            epochs=opts["epochs"], steps_per_epoch=opts["steps_per_epoch"], batch=opts["batch"], micro_batches=opts["micro_batches"], memory_profile=opts["memory_profile"], run_info=run_info,
+                            memory_path=joinpath(OUT_DIR, "memory_profile.json"), memory_config=memory_config,
                             lr=opts["lr"], weight_decay=opts["weight_decay"], warmup_steps=opts["warmup_steps"],
                             device=device, dtype=forecast_dtype(opts["dtype"]), loss=forecast_loss_kind(opts["loss"]), nu=opts["nu"], beta=opts["nll_beta"],
                             rng=rng, out_dir=OUT_DIR, epoch_offset=epoch_offset, prior_best=prior_best, comparable=comparable,
@@ -291,6 +310,7 @@ function main()
     write_report(joinpath(OUT_DIR, "val_report.json"), model, cache, sets, mcfg, device, forecast_dtype(opts["dtype"]),
                  forecast_loss_kind(opts["loss"]), opts["nu"])
 
+    opts["memory_profile"] && println("Memory profile: ", joinpath(OUT_DIR, "memory_profile.json"))
     best = log["history"]
     @printf("\nDone. %d epochs run, best epoch %d (val loss %.4f)%s\n", log["epochs_run"], log["best_epoch"], log["best_loss"],
             isempty(log["stopped"]) ? "" : ", stopped by " * log["stopped"])

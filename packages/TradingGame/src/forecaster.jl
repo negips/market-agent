@@ -70,12 +70,54 @@ _like(y::AbstractArray, x::AbstractArray) = eltype(y) === eltype(x) ? y : conver
 _drop(d::Dropout, x::AbstractArray) = _like(d(x), x)
 _norm(l::LayerNorm, x::AbstractArray) = _like(l(x), x)
 
-"""Self-attention over dim 2 of `x = (d, L, rest…)`; `MultiHeadAttention` takes three dims, so the rest are folded into the batch."""
+const CRC = Flux.Zygote.ChainRulesCore
+
+"""
+    attention_probs(q, k, bias) -> α
+
+Softmax over the keys of the scores `kᵀq (+ bias)`: `q`, `k` are `(dh, L, heads·batch)` (`q` already divided by `√dh`), `bias` is `(L_k, L_q)` or
+`nothing`, `α` is `(L_k, L_q, heads·batch)`. It has its own reverse rule, which keeps only `α`, `q` and `k` for the backward pass; differentiating the
+steps one by one (scores, bias add, softmax, dropout) also keeps the intermediate score tensors, several times the size of `α`.
+"""
+function attention_probs(q::AbstractArray{<:Real, 3}, k::AbstractArray{<:Real, 3}, bias)
+    scores = Flux.NNlib.batched_mul(Flux.NNlib.batched_transpose(k), q)
+    bias === nothing || (scores .+= bias)
+    return Flux.NNlib.softmax(scores; dims=1)
+end
+
+function CRC.rrule(::typeof(attention_probs), q::AbstractArray{<:Real, 3}, k::AbstractArray{<:Real, 3}, bias)
+    α = attention_probs(q, k, bias)
+    function attention_probs_pullback(Δ)
+        Δs = Flux.NNlib.∇softmax_data(CRC.unthunk(Δ), α; dims=1)
+        dq = Flux.NNlib.batched_mul(k, Δs)
+        dk = Flux.NNlib.batched_mul(q, Flux.NNlib.batched_transpose(Δs))
+        return CRC.NoTangent(), dq, dk, CRC.NoTangent()
+    end
+    return α, attention_probs_pullback
+end
+
+"""
+    _attend(attn, x, bias=nothing)
+
+Self-attention over dim 2 of `x = (d, L, rest…)` (the rest are folded into the batch), with the weights of a `MultiHeadAttention` but not its code: the
+score tensor is `L × L` per head and per sequence, by far the largest thing in memory, so [`attention_probs`](@ref) keeps one copy of it for the
+backward pass instead of three or four, and there is no dropout on the attention probabilities (the residual dropout after the attention stays).
+`bias` is added to the scores (`(L_k, L_q)`, e.g. [`CAUSAL_BIAS`](@ref) above the diagonal).
+"""
 function _attend(attn::MultiHeadAttention, x::AbstractArray, bias=nothing)
     sz = size(x)
     x3 = reshape(x, sz[1], sz[2], :)
-    y, _ = bias === nothing ? attn(x3, x3, x3) : attn(x3, x3, x3, bias)
-    return reshape(y, sz)
+    d, L, B = size(x3)
+    H = attn.nheads
+    dh = d ÷ H
+    split(t) = reshape(permutedims(reshape(t, dh, H, L, B), (1, 3, 2, 4)), dh, L, H * B)
+    q = split(attn.q_proj(x3)) .* convert(eltype(x3), inv(sqrt(dh)))
+    k = split(attn.k_proj(x3))
+    v = split(attn.v_proj(x3))
+    α = attention_probs(q, k, bias)
+    o = Flux.NNlib.batched_mul(v, α)
+    o = reshape(permutedims(reshape(o, dh, L, H, B), (1, 3, 2, 4)), d, L, B)
+    return reshape(attn.out_proj(o), sz)
 end
 
 function (b::TimeBlock)(z, bias)

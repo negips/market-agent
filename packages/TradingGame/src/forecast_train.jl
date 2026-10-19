@@ -11,7 +11,7 @@ baselines on the same masked targets: predict zero, and repeat the previous retu
 `skill = 1 - MSE_model / MSE_zero` is positive only when the model beats predicting no move.
 """
 
-using Flux, Statistics, JSON3, Random, Printf
+using Flux, Statistics, JSON3, Random, Printf, CUDA, Dates
 
 """Width, in minutes, of the time-of-day buckets of the per-slot report at 1-minute bars (a cache has `bucket_bars` of its own, about 15 minutes)."""
 const SLOT_BUCKET_MINUTES = 15
@@ -200,6 +200,77 @@ function scheduled_lr(step::Int, total::Int, lr::Real, warmup::Int)::Float32
     return Float32(lr * (0.1 + 0.9 * 0.5 * (1 + cos(π * min(p, 1.0)))))
 end
 
+const _CORE = CUDA.CUDACore
+
+"""True when memory can be read off a GPU memory pool."""
+gpu_memory_available() = CUDA.functional()
+
+"""Reset the memory pool's high-water mark to what is in use now, so that [`gpu_pool_peak`](@ref) reports the highest use since this call."""
+function reset_gpu_peak!()
+    CUDA.synchronize()
+    _CORE.attribute!(_CORE.pool_create(CUDA.device()), _CORE.MEMPOOL_ATTR_USED_MEM_HIGH, UInt64(0))
+    return nothing
+end
+
+"""Highest number of bytes of the memory pool in use since [`reset_gpu_peak!`](@ref). Includes arrays that are garbage but not yet collected."""
+gpu_pool_peak() = (CUDA.synchronize(); Int(_CORE.attribute(UInt64, _CORE.pool_create(CUDA.device()), _CORE.MEMPOOL_ATTR_USED_MEM_HIGH)))
+
+"""Bytes of the memory pool in use now, and bytes the pool holds from the device (in use plus kept for reuse)."""
+gpu_pool_now() = (CUDA.synchronize(); (used=Int(CUDA.used_memory()), reserved=Int(CUDA.cached_memory())))
+
+const _MIB = 2.0^20
+
+"""One epoch's row of `memory_profile.json` (MiB; the GPU fields are `nothing` without a GPU). `train_peak` is the peak of one probe step run from a collected pool (what a step needs); `train_pool_peak` is the pool's highest use over the epoch's real steps, which includes garbage the collector has not freed yet."""
+function memory_row(epoch::Int, steps::Int, train_secs::Real, train_peak, train_pool_peak, train_end, eval_peak, reserved, device_used)
+    f(x) = x === nothing ? nothing : round(x / _MIB, digits=1)
+    return Dict{String, Any}("epoch" => epoch, "steps" => steps, "secs_per_step" => round(train_secs / max(steps, 1), digits=4),
+                             "train_peak_mib" => f(train_peak), "train_pool_peak_mib" => f(train_pool_peak), "train_end_mib" => f(train_end), "eval_peak_mib" => f(eval_peak),
+                             "reserved_mib" => f(reserved), "device_used_mib" => f(device_used),
+                             "host_rss_peak_mib" => round(Sys.maxrss() / _MIB, digits=1))
+end
+
+"""
+    memory_summary(rows) -> Dict
+
+Statistics over the epoch rows of a memory profile: min, median, mean and max of the training and evaluation peaks and of the step time, the
+highest host resident set, and the change in the training peak from the first to the last five epochs (a steady rise would mean memory is leaking).
+Fields the rows do not have (no GPU) are `nothing`.
+"""
+function memory_summary(rows::AbstractVector)
+    col(k) = Float64[r[k] for r in rows if get(r, k, nothing) !== nothing]
+    stats(v) = isempty(v) ? nothing : Dict("min" => minimum(v), "median" => median(v), "mean" => mean(v), "max" => maximum(v))
+    tp = col("train_peak_mib")
+    drift = length(tp) >= 10 ? mean(tp[end-4:end]) - mean(tp[1:5]) : nothing
+    return Dict{String, Any}("epochs" => length(rows), "train_peak_mib" => stats(tp), "eval_peak_mib" => stats(col("eval_peak_mib")),
+                             "train_pool_peak_mib" => stats(col("train_pool_peak_mib")), "train_end_mib" => stats(col("train_end_mib")), "reserved_mib" => stats(col("reserved_mib")),
+                             "device_used_mib" => stats(col("device_used_mib")), "secs_per_step" => stats(col("secs_per_step")),
+                             "host_rss_peak_mib" => isempty(col("host_rss_peak_mib")) ? nothing : maximum(col("host_rss_peak_mib")),
+                             "train_peak_drift_mib" => drift)
+end
+
+"""
+    write_memory_profile(path, rows; config) -> path
+
+Write `memory_profile.json`: the per-epoch rows, their [`memory_summary`](@ref), the GPU and the run's `config` (batch, micro-batches, window, …).
+The file is replaced atomically. Rows of earlier sessions of a resumed run are passed in by the caller (see [`load_memory_rows`](@ref)).
+"""
+function write_memory_profile(path::String, rows::AbstractVector; config::AbstractDict=Dict{String, Any}())
+    gpu = gpu_memory_available()
+    _write_json_atomic(path, _json_safe(Dict{String, Any}(
+        "written" => string(now()), "device" => gpu ? "gpu" : "cpu",
+        "gpu" => gpu ? CUDA.name(CUDA.device()) : nothing,
+        "gpu_total_mib" => gpu ? round(CUDA.total_memory() / _MIB, digits=1) : nothing,
+        "config" => config, "summary" => memory_summary(rows), "epochs" => rows)))
+    return path
+end
+
+"""The rows of an existing `memory_profile.json` for epochs up to `last_epoch` (the earlier sessions of a resumed run); empty if there is none."""
+function load_memory_rows(path::String, last_epoch::Int)
+    isfile(path) || return Dict{String, Any}[]
+    old = try JSON3.read(read(path, String)) catch; return Dict{String, Any}[] end
+    return [Dict{String, Any}(string(k) => v for (k, v) in pairs(r)) for r in get(old, :epochs, []) if r.epoch <= last_epoch]
+end
+
 """Largest relative change of `cache.scale` for which a Huber loss still counts as the same quantity (an NLL is converted exactly)."""
 const BEST_SCALE_TOLERANCE = 1e-3
 
@@ -236,6 +307,55 @@ function carried_best(meta::AbstractDict, comparable::AbstractDict, scale::Real,
 end
 
 """
+    accumulated_gradient(net, batches, dev, dtype; loss=:student_t, nu=4, beta=0.5, loss_scale=1) -> Union{Nothing, NamedTuple}
+
+The gradient of the training objective over `batches` (a vector of [`ForecastBatch`](@ref)s, e.g. the micro-batches one batch is split
+into), computed one micro-batch at a time so that only one micro-batch's activations are in memory, and summed.
+
+Each micro-batch's return loss is weighted by its share of the counted targets (`sum(W)`) and its timestamp loss by its share of the windows,
+so the result equals the gradient of [`forecast_loss`](@ref) on the whole batch at once (up to the random dropout masks and rounding).
+The gradient is returned in Float32 and already divided by `loss_scale` (the loss is multiplied by it before differentiating, for a Float16 run).
+
+# Arguments
+- `net`: the [`Forecaster`](@ref) on the device `dev` (`Flux.gpu` or `Flux.cpu`), in the number type `dtype`.
+- `batches`: the micro-batches, built by `make_batch`.
+
+# Returns
+`(grads, loss, ret, time)`: the whole batch's total, return and timestamp losses (`time` as in `forecast_loss`'s third value), or `nothing`
+when a micro-batch's loss is not finite.
+"""
+function accumulated_gradient(net, batches::AbstractVector, dev, dtype::Type; loss::Symbol=:student_t, nu::Real=STUDENT_T_NU,
+                              beta::Real=NLL_BETA, loss_scale::Real=1)
+    n_total = max(sum(sum(b.W) for b in batches), 1f0)
+    windows = sum(size(b.Y, 3) for b in batches)
+    scale = Float32(loss_scale)
+    acc = nothing; total = 0.0; ret_total = 0.0; time_total = 0.0
+    for b in batches
+        X, Y, W, T = dev(dtype.(b.X)), dev(b.Y), dev(b.W), dev(b.T)
+        wr = Float32(sum(b.W) / n_total); wt = Float32(size(b.Y, 3) / windows)
+        res, grads = Flux.withgradient(net) do m
+            out = forecast_loss(m, X, Y, W, T; loss=loss, nu=nu, beta=beta)
+            ret = wr * out[2]; tim = wt * out[3]
+            (scaled=(ret + TIME_LOSS_COEF * tim) * scale, loss=ret + TIME_LOSS_COEF * tim, ret=ret, time=tim)
+        end
+        isfinite(res.loss) || return nothing
+        g = Flux.fmap(x -> x isa AbstractArray ? Float32.(x) ./ scale : x, grads[1])
+        acc = acc === nothing ? g : Flux.fmap(_add_grads, acc, g)
+        total += res.loss; ret_total += res.ret; time_total += res.time
+        b === last(batches) || _free_gpu_garbage(X)
+    end
+    return (grads=acc, loss=total, ret=ret_total, time=time_total)
+end
+
+"""Let the garbage collector release the finished micro-batch's activations before the next one is computed. A CuArray's memory goes back to the pool only
+when its Julia object is collected, and Julia's collector is driven by host allocation, not by how full the GPU is, so without this the activations of every
+micro-batch would pile up and the saving would be lost. Does nothing on the CPU."""
+_free_gpu_garbage(::Array) = nothing
+_free_gpu_garbage(::AbstractArray) = (GC.gc(false); nothing)
+
+_add_grads(a, b) = a === nothing ? b : (b === nothing ? a : a .+ b)
+
+"""
     train_forecaster!(model, cache, train_cols, train_starts, eval_sets; kwargs...) -> Dict
 
 Train `model` (moved to `device` and back) on random windows of `cache`.
@@ -243,7 +363,7 @@ Train `model` (moved to `device` and back) on random windows of `cache`.
 # Arguments
 - `train_cols`: cache columns of the training companies; `train_starts`: the allowed start bars (see [`window_starts`](@ref)).
 - `eval_sets`: the [`EvalSet`](@ref)s scored after every epoch; the first decides the best checkpoint.
-- `epochs`, `steps_per_epoch`, `batch`: the schedule; `lr`, `weight_decay`, `warmup_steps`, `clip`: AdamW with gradient-norm clipping.
+- `epochs`, `steps_per_epoch`, `batch`: the schedule; `run_info`: stored under `run` in every row of `epoch_log.jsonl` (the script passes the session's first epoch, the cache scale, the date windows and the company sets, so a row says which experiment it belongs to); `memory_profile`: record, per epoch, the GPU memory pool's peak during training and during evaluation (and the step time, the pool and the host's peak), returned as `"memory"`; with a `memory_path` the rows (after those of earlier sessions of the file, up to `epoch_offset`) are also written there, with `memory_config`, after every epoch's evaluation (see [`write_memory_profile`](@ref)); `micro_batches`: split each batch into this many pieces, run one after the other with their gradients summed ([`accumulated_gradient`](@ref)), so peak GPU memory follows `batch ÷ micro_batches` while the update is that of the whole batch; `lr`, `weight_decay`, `warmup_steps`, `clip`: AdamW with gradient-norm clipping.
 - `loss`, `nu`, `beta`: the return objective (see [`forecast_loss`](@ref)): `:student_t` (default), `:gaussian` or `:huber`; `nu` the Student-t's degrees of freedom, `beta` the β-NLL exponent.
 - `dtype`: the number type of the forward/backward pass (`Float32`, `Float16`, `Float64`). A lower-precision run keeps Float32
   master weights (the optimiser updates those; the Float16 copy is rebuilt after every step) and scales the loss
@@ -260,7 +380,8 @@ A dict with `best_epoch`, `best_loss`, `epochs_run`, `stopped` and the per-epoch
 """
 function train_forecaster!(model::Forecaster, cache::MinuteCache, train_cols::Vector{Int}, train_starts::UnitRange{Int},
                            eval_sets::Vector{EvalSet};
-                           epochs::Int=20, steps_per_epoch::Int=500, batch::Int=32,
+                           epochs::Int=20, steps_per_epoch::Int=500, batch::Int=32, micro_batches::Int=1, memory_profile::Bool=false, run_info::AbstractDict=Dict{String, Any}(),
+                           memory_path::String="", memory_config::AbstractDict=Dict{String, Any}(),
                            lr::Real=3e-4, weight_decay::Real=0.01, warmup_steps::Int=200, clip::Real=1.0,
                            device::Symbol=:cpu, dtype::Type{<:AbstractFloat}=Float32,
                            loss::Symbol=:student_t, nu::Real=STUDENT_T_NU, beta::Real=NLL_BETA, rng::AbstractRNG=Random.default_rng(),
@@ -268,6 +389,7 @@ function train_forecaster!(model::Forecaster, cache::MinuteCache, train_cols::Ve
                            prior_best::Union{Nothing, NamedTuple{(:loss, :epoch)}}=nothing, comparable::Dict=Dict{String, Any}())
     isempty(train_starts) && throw(MinuteCacheError("no training windows: the training date range is shorter than the window"))
     isempty(eval_sets) && throw(ArgumentError("train_forecaster! needs at least one EvalSet"))
+    1 <= micro_batches <= batch || throw(ArgumentError("micro_batches must be between 1 and batch ($batch), got $micro_batches"))
     cfg = forecaster_config(model)
     dev = device === :gpu ? Flux.gpu : Flux.cpu
     master = dev(convert_forecaster(model, Float32))
@@ -290,6 +412,9 @@ function train_forecaster!(model::Forecaster, cache::MinuteCache, train_cols::Ve
     best_epoch = prior_best === nothing ? 0 : prior_best.epoch
     best_state = deepcopy(Flux.state(cpu(master)))
     history = Any[]; stopped = ""; step = 0; epochs_run = 0
+    track_gpu = memory_profile && device === :gpu && gpu_memory_available()
+    memory_rows = Dict{String, Any}[]
+    prior_memory = memory_profile && !isempty(memory_path) ? load_memory_rows(memory_path, epoch_offset) : Dict{String, Any}[]
     t_start = time(); started = string(now()); n_good = 0; loss_sum = 0.0
     function live!(state::String, e::Int, i::Int)
         isempty(live_path) && return nothing
@@ -310,6 +435,7 @@ function train_forecaster!(model::Forecaster, cache::MinuteCache, train_cols::Ve
         t_epoch = time()
         timer = PhaseTimer()
         Flux.trainmode!(net)
+        track_gpu && reset_gpu_peak!()
         loss_sum = 0.0; ret_sum = 0.0; time_sum = 0.0; n_good = 0
         for i in 1:steps_per_epoch
             if !isempty(stop_now_file) && isfile(stop_now_file)
@@ -318,22 +444,19 @@ function train_forecaster!(model::Forecaster, cache::MinuteCache, train_cols::Ve
             step += 1
             (i == 1 || i % LIVE_EVERY_STEPS == 0) && live!("training", e, i - 1)
             t0 = tic(timer)
-            b = make_batch(cache, train_cols, rand(rng, train_starts, batch), cfg.window)
-            X, Y, W, T = dev(dtype.(b.X)), dev(b.Y), dev(b.W), dev(b.T)
+            chunks = Iterators.partition(rand(rng, train_starts, batch), cld(batch, micro_batches))
+            bs = [make_batch(cache, train_cols, collect(c), cfg.window) for c in chunks]
             t0 = toc!(timer, "batch", t0)
-            res, grads = Flux.withgradient(net) do m
-                out = forecast_loss(m, X, Y, W, T; loss=loss, nu=nu, beta=beta)
-                (scaled=out[1] * loss_scale, loss=out[1], ret=out[2], time=out[3])
-            end
+            acc = accumulated_gradient(net, bs, dev, dtype; loss=loss, nu=nu, beta=beta, loss_scale=loss_scale)
             t0 = toc!(timer, "forward_backward", t0)
-            g32 = Flux.fmap(x -> x isa AbstractArray ? Float32.(x) ./ loss_scale : x, grads[1])
-            if !isfinite(res.loss) || !grads_finite(g32)
+            if acc === nothing || !grads_finite(acc.grads)
                 low && (loss_scale = max(loss_scale / 2, 1f0))
                 clean_steps = 0; skipped += 1
                 skipped == 1 && @warn "non-finite loss or gradient at step $step; skipping the update (further skips are only counted)"
                 toc!(timer, "optimizer", t0)
                 continue
             end
+            g32 = acc.grads
             Flux.Optimisers.adjust!(opt; eta=scheduled_lr(step, total, lr, warmup_steps))
             Flux.update!(opt, master, g32)
             if dtype !== Float32
@@ -344,14 +467,32 @@ function train_forecaster!(model::Forecaster, cache::MinuteCache, train_cols::Ve
                 loss_scale = min(loss_scale * 2, 32768f0)
             end
             toc!(timer, "optimizer", t0)
-            loss_sum += res.loss; ret_sum += res.ret; time_sum += res.time; n_good += 1
+            loss_sum += acc.loss; ret_sum += acc.ret; time_sum += acc.time; n_good += 1
         end
         stopped == "STOP_NOW" && break
         live!("evaluating", e, steps_per_epoch)
+        train_secs = time() - t_epoch
+        mem_train = track_gpu ? (pool_peak=gpu_pool_peak(), now=gpu_pool_now().used, peak=nothing) : (pool_peak=nothing, now=nothing, peak=nothing)
+        if track_gpu
+            GC.gc(true); reset_gpu_peak!()
+            probe = [make_batch(cache, train_cols, collect(c), cfg.window)
+                     for c in Iterators.partition(rand(MersenneTwister(epoch_offset + e), train_starts, batch), cld(batch, micro_batches))]
+            accumulated_gradient(net, probe, dev, dtype; loss=loss, nu=nu, beta=beta, loss_scale=loss_scale)
+            mem_train = merge(mem_train, (peak=gpu_pool_peak(),))
+            probe = nothing; GC.gc(true); reset_gpu_peak!()
+        end
         t0 = tic(timer)
         n_steps = steps_per_epoch
         results = Dict(es.name => evaluate_forecaster(cpu(master), cache, es, cfg.window; batch=batch, device=device, dtype=dtype, loss=loss, nu=nu) for es in eval_sets)
         toc!(timer, "eval", t0)
+        if memory_profile
+            pool = track_gpu ? gpu_pool_now() : (used=nothing, reserved=nothing)
+            free_total = track_gpu ? CUDA.memory_info() : nothing
+            push!(memory_rows, memory_row(epoch_offset + e, steps_per_epoch, train_secs, mem_train.peak, mem_train.pool_peak, mem_train.now,
+                                          track_gpu ? gpu_pool_peak() : nothing, pool.reserved,
+                                          free_total === nothing ? nothing : free_total[2] - free_total[1]))
+            isempty(memory_path) || write_memory_profile(memory_path, vcat(prior_memory, memory_rows); config=memory_config)
+        end
         primary = results[first(eval_sets).name]
         epochs_run = e
         epoch = epoch_offset + e
@@ -367,7 +508,7 @@ function train_forecaster!(model::Forecaster, cache::MinuteCache, train_cols::Ve
         end
         row = (epoch=epoch, step=step, lr=scheduled_lr(step, total, lr, warmup_steps), secs=round(time() - t_epoch, digits=2),
                train_loss=loss_sum / n_steps, train_return_loss=ret_sum / n_steps, train_time_loss=time_sum / n_steps,
-               best=improved, dtype=string(dtype), objective=string(loss), loss_scale=loss_scale, skipped_steps=skipped, eval=Dict(k => scalar_metrics(v) for (k, v) in results))
+               best=improved, run=run_info, dtype=string(dtype), objective=string(loss), loss_scale=loss_scale, skipped_steps=skipped, eval=Dict(k => scalar_metrics(v) for (k, v) in results))
         push!(history, row)
         if !isempty(log_path)
             open(log_path, "a") do io
@@ -387,5 +528,5 @@ function train_forecaster!(model::Forecaster, cache::MinuteCache, train_cols::Ve
     live!(isempty(stopped) ? "finished" : "stopped", max(epochs_run, 1), steps_per_epoch)
     Flux.loadmodel!(model, best_state)
     return Dict("best_epoch" => best_epoch, "best_loss" => best_loss, "epochs_run" => epochs_run,
-                "stopped" => stopped, "history" => history)
+                "stopped" => stopped, "history" => history, "memory" => memory_rows)
 end

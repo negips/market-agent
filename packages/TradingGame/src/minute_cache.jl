@@ -89,6 +89,7 @@ Aligned bar data for a set of symbols, at the bar size named by `granularity` (t
 - `granularity`, `bars_per_day`, `bar_minutes`, `ret_clip`: the bar size (see [`GRANULARITIES`](@ref)).
 - `context_bars`: bars before a window used for the per-stock context features (a session of bars, at least `MIN_CONTEXT_BARS`).
 - `bucket_bars`: bars per bucket of the per-slot evaluation reports (about `SLOT_BUCKET_MINUTES_TARGET` minutes, at least one bar).
+- `price`: `T × N` close of each bar as it is in the CSV (forward-filled over bars without a row; `NaN` before a symbol's first price), for the website's company chart only; the model never reads it. `0 × 0` for a cache built without prices (an older file, or `MinuteCache(symbols, dates, logret, traded)`).
 """
 struct MinuteCache
     symbols      :: Vector{String}
@@ -104,6 +105,7 @@ struct MinuteCache
     ret_clip     :: Float32
     context_bars :: Int
     bucket_bars  :: Int
+    price        :: Matrix{Float32}
 end
 
 """The `tau`/`tdesc` matrices of an axis of `dates` × `bars_per_day` bars."""
@@ -133,18 +135,20 @@ function minute_time_features(dates::Vector{Date}, bars_per_day::Int=MINUTES_PER
 end
 
 """
-    MinuteCache(symbols, dates, logret, traded; granularity="1min")
+    MinuteCache(symbols, dates, logret, traded; granularity="1min", price=nothing)
 
-Assemble a cache from its primary arrays; the scale, the time matrices and the bar-size fields are computed here.
+Assemble a cache from its primary arrays; the scale, the time matrices and the bar-size fields are computed here. `price` is the optional `T × N` close matrix.
 """
 function MinuteCache(symbols::Vector{String}, dates::Vector{Date}, logret::AbstractMatrix{<:Real}, traded::AbstractMatrix{Bool};
-                     granularity::AbstractString="1min")
+                     granularity::AbstractString="1min", price::Union{Nothing, AbstractMatrix{<:Real}}=nothing)
     haskey(GRANULARITIES, granularity) ||
         throw(MinuteCacheError("unknown granularity '$granularity'; expected one of: $(join(sort(collect(keys(GRANULARITIES))), ", "))"))
     spec = GRANULARITIES[granularity]
     bpd = cld(MINUTES_PER_DAY, spec.bar_minutes)
     size(logret) == size(traded) == (length(dates) * bpd, length(symbols)) ||
         throw(DimensionMismatch("logret/traded must be $(length(dates) * bpd) × $(length(symbols)), got $(size(logret)) and $(size(traded))"))
+    price === nothing || size(price) == size(logret) ||
+        throw(DimensionMismatch("price must be $(size(logret)), got $(size(price))"))
     sq, n = 0.0, 0
     @inbounds for i in axes(logret, 2), t in 2:size(logret, 1)
         if traded[t, i] && (bpd == 1 || (t - 1) % bpd != 0)
@@ -156,7 +160,8 @@ function MinuteCache(symbols::Vector{String}, dates::Vector{Date}, logret::Abstr
     tau, tdesc = minute_time_features(dates, bpd)
     bucket_bars = max(1, SLOT_BUCKET_MINUTES_TARGET ÷ spec.bar_minutes)
     return MinuteCache(symbols, dates, Matrix{Float32}(logret), Matrix{Bool}(traded), scale, tau, tdesc,
-                       String(granularity), bpd, spec.bar_minutes, spec.ret_clip, max(bpd, MIN_CONTEXT_BARS), bucket_bars)
+                       String(granularity), bpd, spec.bar_minutes, spec.ret_clip, max(bpd, MIN_CONTEXT_BARS), bucket_bars,
+                       price === nothing ? zeros(Float32, 0, 0) : Matrix{Float32}(price))
 end
 
 """Number of buckets of the per-slot evaluation reports (a session of bars cut into `bucket_bars`-bar pieces)."""
@@ -281,6 +286,7 @@ function build_forecaster_cache(ohlcv_dir::String, symbols::Vector{String}; gran
 
     logret = zeros(Float32, T, N)
     traded = zeros(Bool, T, N)
+    price = fill(NaN32, T, N)
     Threads.@threads for k in 1:N
         days, bars, closes, vols = rows[k]
         px = fill(NaN32, T)
@@ -299,13 +305,14 @@ function build_forecaster_cache(ohlcv_dir::String, symbols::Vector{String}; gran
                 last = px[t]
             end
         end
+        price[:, k] = px
         for t in 2:T
             (isnan(px[t]) || isnan(px[t - 1])) && continue
             logret[t, k] = clamp(Float32(100 * log(px[t] / px[t - 1])), -spec.ret_clip, spec.ret_clip)
         end
         rows[k] = nothing
     end
-    return MinuteCache(symbols, dates, logret, traded; granularity=granularity)
+    return MinuteCache(symbols, dates, logret, traded; granularity=granularity, price=price)
 end
 
 """
@@ -318,13 +325,14 @@ build_minute_cache(ohlcv_dir::String, symbols::Vector{String}; kw...) = build_fo
 """
     save_minute_cache(cache, path)
 
-Write the primary arrays to BSON (the derived time matrices are rebuilt on load).
+Write the primary arrays (and the prices, when there are any) to BSON (the derived time matrices are rebuilt on load).
 """
 function save_minute_cache(cache::MinuteCache, path::String)
     mkpath(dirname(path))
     symbols, dates, logret, traded = cache.symbols, cache.dates, cache.logret, cache.traded
     granularity = cache.granularity
-    BSON.@save path symbols dates logret traded granularity
+    price = cache.price
+    BSON.@save path symbols dates logret traded granularity price
     return path
 end
 
@@ -337,7 +345,8 @@ function load_minute_cache(path::String)
     isfile(path) || throw(MinuteCacheError("not found: $path — run scripts/forecaster/build_forecaster_cache.jl"))
     d = BSON.load(path)
     return MinuteCache(Vector{String}(d[:symbols]), Vector{Date}(d[:dates]), Matrix{Float32}(d[:logret]), Matrix{Bool}(d[:traded]);
-                       granularity=String(get(d, :granularity, "1min")))
+                       granularity=String(get(d, :granularity, "1min")),
+                       price=haskey(d, :price) && !isempty(d[:price]) ? Matrix{Float32}(d[:price]) : nothing)
 end
 
 # ── Windows ──────────────────────────────────────────────────────────────────
