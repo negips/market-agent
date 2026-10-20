@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Custom Plots — market-agent</title>
+<link rel="stylesheet" href="assets/style.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  .mode-tabs { display:flex; gap:6px; }
+  .mode-tab { background:var(--surface); border:1px solid var(--border); color:var(--text-dim); border-radius:8px; padding:7px 16px; font-size:13px; cursor:pointer; font-family:inherit }
+  .mode-tab:hover { color:var(--text) }
+  .mode-tab.active { color:var(--text); border-color:#4f8ef7; background:rgba(79,142,247,.12) }
+  .fcl-tiles { display:grid; grid-template-columns:repeat(auto-fill, minmax(170px, 1fr)); gap:10px; margin:12px 0 4px }
+  .fcl-tile { background:var(--bg, #0f1222); border:1px solid var(--border); border-radius:var(--radius); padding:10px 12px }
+  .fcl-tile.good { border-color:rgba(61,214,140,.55) } .fcl-tile.warn { border-color:rgba(245,200,66,.55) }
+  .fcl-tl { font-size:11px; color:var(--text-dim); margin-bottom:3px }
+  .fcl-tv { font-size:19px; font-weight:600; color:var(--text); font-family:var(--mono) }
+  .fcl-ts { font-size:11px; color:var(--text-dim); margin-top:2px }
+  .fcl-input { background:#12162a; color:#e6e9f5; border:1px solid #2a314f; border-radius:6px; padding:3px 6px; font-size:13px }
+  input[type=number].fcl-input { width:80px }
+  .chart-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 20px; margin-bottom: 18px; }
+  .chart-header { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 6px; }
+  .chart-title { font-size: 13px; font-weight: 600; color: var(--text); }
+  .chart-sub { font-size: 11.5px; color: var(--muted); }
+  .canvas-wrap { position: relative; height: 260px; margin-top: 14px; }
+  .cp-row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; font-size:13px; margin:8px 0 }
+  .cp-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:6px }
+  @media (max-width:1000px) { .cp-grid { grid-template-columns:1fr } }
+  .cp-grid .canvas-wrap { height:230px }
+  .cp-note { font-size:12px; color:var(--text-dim); line-height:1.5; margin-top:10px }
+  .cp-err { color:#f76f6f }
+</style>
+</head>
+<body>
+<script src="assets/nav.js"></script>
+
+<div class="main">
+  <div class="page-header">
+    <div class="page-title">Custom Plots</div>
+    <div class="page-subtitle">Company price series from the forecaster cache, and their projection on a low-dimensional Legendre basis</div>
+  </div>
+
+  <div class="page-content">
+    <div class="chart-card" id="cp-series">
+      <div class="chart-header"><div class="chart-title">Company series</div>
+        <div class="chart-sub">one company of the forecaster cache (the log-returns the model sees, and the close) through the ops server · line colour = period (train / val) when a run of this bar size is on disk</div></div>
+      <div class="cp-row">
+        <span class="mode-tabs" id="cp-gran" style="margin:0"></span>
+        <select id="cp-s-sym" class="fcl-input" style="min-width:190px"></select>
+        <select id="cp-s-kind" class="fcl-input">
+          <option value="price">Close price, ₹</option><option value="cum">Cumulative return, 100·Σ ln(c/c₋₁) %</option><option value="ret">Return per bar, 100·ln(c/c₋₁) %</option><option value="traded">Traded share of bars</option>
+        </select>
+        <label>from <input type="date" id="cp-s-from" class="fcl-input"></label>
+        <label>to <input type="date" id="cp-s-to" class="fcl-input"></label>
+        <span class="mode-tabs" style="margin:0">
+          <button class="mode-tab" data-span="2y">2 years</button>
+          <button class="mode-tab" data-span="1y">1 year</button>
+          <button class="mode-tab" data-span="train" id="cp-span-train">Train period</button>
+          <button class="mode-tab" data-span="val" id="cp-span-val">Val period</button>
+          <button class="mode-tab" data-span="all">All</button>
+        </span>
+        <span id="cp-s-note" style="font-size:12px;color:var(--text-dim)"></span>
+      </div>
+      <div class="canvas-wrap" style="height:300px"><canvas id="cp-c-series"></canvas></div>
+    </div>
+
+    <div class="chart-card" id="cp-leg">
+      <div class="chart-header"><div class="chart-title">Legendre projection of the price</div>
+        <div class="chart-sub">the company and date range chosen above, fitted by least squares on P₀ … P<sub>N−1</sub> (bar position mapped onto [−1, 1]); computed by <code>scripts/tools/legendre_projection.jl</code></div></div>
+      <div class="cp-row">
+        <label>N <input type="number" id="cp-n" class="fcl-input" min="1" max="500" step="1" value="20"></label>
+        <span class="mode-tabs" id="cp-n-presets" style="margin:0"></span>
+        <label>fit <select id="cp-leg-kind" class="fcl-input">
+          <option value="price">the price, ₹</option><option value="logprice">ln(price), shown back in ₹</option></select></label>
+        <span id="cp-leg-note" style="font-size:12px;color:var(--text-dim)"></span>
+      </div>
+      <div class="fcl-tiles" id="cp-tiles"></div>
+      <div class="canvas-wrap" style="height:300px"><canvas id="cp-c-fit"></canvas></div>
+      <div class="cp-grid">
+        <div><div class="chart-title">Residual: price − fit, ₹</div><div class="canvas-wrap"><canvas id="cp-c-res"></canvas></div></div>
+        <div><div class="chart-title">RMS error against the number of terms, % of the mean price</div><div class="canvas-wrap"><canvas id="cp-c-curve"></canvas></div></div>
+      </div>
+      <div style="margin-top:12px"><div class="chart-title">Coefficients: RMS contribution of each polynomial, |c<sub>k</sub>| / √(2k+1), ₹ (log scale)</div><div class="canvas-wrap" style="height:200px"><canvas id="cp-c-coef"></canvas></div></div>
+      <div class="cp-note" id="cp-leg-help">
+        <b>R²</b> is the share of the series' variance the fit keeps (about 0.2/N of it is lost for a random walk, so it is high for small N).
+        <b>Return variance kept</b> is the harder test: the variance of the fit's bar-to-bar log-returns over the variance of the actual ones. A smooth
+        fit keeps roughly N/(number of bars) of it, which is why a low-dimensional basis follows the trend and discards the moves a forecaster has to predict.
+        <b>Step correlation</b> is the correlation between the two return series.
+      </div>
+    </div>
+  </div>
+</div>
+<script src="assets/customplots.js"></script>
+</body>
+</html>

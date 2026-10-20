@@ -103,6 +103,14 @@
                 <polyline points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
               </svg>`,
     },
+    {
+      href:  'customplots.html',
+      label: 'Custom Plots',
+      icon:  `<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24">
+                <path d="M3 3v18h18"/>
+                <path d="M7 15c2-6 4-6 6-2s4 2 6-6"/>
+              </svg>`,
+    },
   ];
 
   function injectSidebar() {

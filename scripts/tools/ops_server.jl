@@ -24,11 +24,16 @@ API (all JSON):
   POST /api/run/NAME         start the job / perform the action NAME
   GET  /api/job/NAME         state of NAME plus the last lines of its log (jobs only)
   GET  /api/series?granularity=G&symbol=S   one company's return series from website/data/forecaster_cache_G.bson (read-only)
+  GET  /api/symbols?granularity=G           the cache's companies, date range and bars per day (read-only)
+  GET  /api/legendre?granularity=G&symbol=S&n=N[&kind=price|logprice][&from=D&to=D]
+                                            the symbol's price projected on N Legendre polynomials (legendre_projection.jl; read-only)
 
 Job logs go to website/data/ops_logs/NAME.log.
 """
 
 using HTTP, JSON3, Dates, BSON, Sockets
+
+include(joinpath(@__DIR__, "legendre_projection.jl"))
 
 const REPO_ROOT = abspath(joinpath(@__DIR__, "..", ".."))
 const WEB_ROOT = joinpath(REPO_ROOT, "website")
@@ -197,12 +202,70 @@ function series_payload(granularity::AbstractString, symbol::AbstractString)
     return payload, ""
 end
 
+const BAR_MINUTES = Dict(375 => 1, 75 => 5, 25 => 15, 7 => 60, 1 => 375)
+const SESSION_START_MINUTE = 9 * 60 + 15
+
+"""The companies, first and last date and bars per day of the cache of `granularity`."""
+function symbols_payload(granularity::AbstractString)
+    granularity in CACHE_GRANULARITIES || return nothing, "unknown granularity: $granularity"
+    c = loaded_cache(granularity)
+    return Dict{String,Any}("granularity" => granularity, "symbols" => c.symbols, "first_date" => string(first(c.dates)), "last_date" => string(last(c.dates)),
+                            "bars_per_day" => size(c.logret, 1) ÷ length(c.dates), "has_price" => c.price !== nothing), ""
+end
+
+"""Label of bar `i` (0-based) of the cache axis: the date, plus the HH:MM start of the bar unless there is one bar a day."""
+function bar_label(dates::Vector{Date}, bars_per_day::Int, i::Int)
+    day = string(dates[i ÷ bars_per_day + 1])
+    bars_per_day == 1 && return day
+    m = SESSION_START_MINUTE + (i % bars_per_day) * get(BAR_MINUTES, bars_per_day, 1)
+    return string(day, " ", lpad(m ÷ 60, 2, '0'), ":", lpad(m % 60, 2, '0'))
+end
+
+"""
+`symbol`'s price in `from…to` (ISO dates, either may be empty) projected on `n` Legendre polynomials ([`legendre_report`](@ref)),
+with a label for every returned point.
+"""
+function legendre_payload(granularity::AbstractString, symbol::AbstractString, n_text::AbstractString, kind::AbstractString, from::AbstractString, to::AbstractString)
+    granularity in CACHE_GRANULARITIES || return nothing, "unknown granularity: $granularity"
+    n = tryparse(Int, n_text)
+    n === nothing && return nothing, "n must be an integer"
+    c = loaded_cache(granularity)
+    k = findfirst(==(symbol), c.symbols)
+    k === nothing && return nothing, "$symbol is not in the $granularity cache"
+    c.price === nothing && return nothing, "the $granularity cache holds no prices: rebuild it (build_forecaster_cache.jl --granularity $granularity)"
+    bpd = size(c.logret, 1) ÷ length(c.dates)
+    d_from = isempty(from) ? first(c.dates) : tryparse(Date, from)
+    d_to = isempty(to) ? last(c.dates) : tryparse(Date, to)
+    (d_from === nothing || d_to === nothing) && return nothing, "from and to must be ISO dates"
+    days = findall(d -> d_from <= d <= d_to, c.dates)
+    isempty(days) && return nothing, "no bars in this range"
+    lo, hi = (first(days) - 1) * bpd + 1, last(days) * bpd
+    rep = try
+        legendre_report(Float64.(c.price[lo:hi, k]), n; kind=kind)
+    catch e
+        e isa LegendreError || rethrow()
+        return nothing, e.msg
+    end
+    rep["t"] = [bar_label(c.dates, bpd, lo - 1 + i) for i in rep["index"]]
+    rep["granularity"] = granularity; rep["symbol"] = symbol
+    rep["actual"] = round.(rep["actual"]; digits=PRICE_DECIMALS); rep["fit"] = round.(rep["fit"]; digits=PRICE_DECIMALS)
+    return rep, ""
+end
+
 function api(req::HTTP.Request, path::AbstractString, port::Int)
     if req.method == "GET" && path == "/api/actions"
         return json_response(200, [action_state(a) for a in ACTIONS])
     elseif req.method == "GET" && path == "/api/series"
         q = HTTP.queryparams(HTTP.URI(req.target))
         payload, why = series_payload(get(q, "granularity", ""), get(q, "symbol", ""))
+        return payload === nothing ? json_response(404, Dict("error" => why)) : json_response(200, payload)
+    elseif req.method == "GET" && path == "/api/symbols"
+        q = HTTP.queryparams(HTTP.URI(req.target))
+        payload, why = symbols_payload(get(q, "granularity", ""))
+        return payload === nothing ? json_response(404, Dict("error" => why)) : json_response(200, payload)
+    elseif req.method == "GET" && path == "/api/legendre"
+        q = HTTP.queryparams(HTTP.URI(req.target))
+        payload, why = legendre_payload(get(q, "granularity", ""), get(q, "symbol", ""), get(q, "n", ""), get(q, "kind", "price"), get(q, "from", ""), get(q, "to", ""))
         return payload === nothing ? json_response(404, Dict("error" => why)) : json_response(200, payload)
     elseif req.method == "GET" && startswith(path, "/api/job/")
         name = path[length("/api/job/") + 1:end]

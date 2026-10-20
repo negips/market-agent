@@ -11,19 +11,39 @@
 #   ./serve.sh website/companies.html 9000  # custom port
 #   ./serve.sh --local                      # this machine only (127.0.0.1)
 #   ./serve.sh --allow-actions              # other machines may also use Stop / Rescan
+#   ./serve.sh --restart                    # stop the server already running on the port first, then start a new one
 #   (options can go anywhere among the arguments)
 
 SERVER_ARGS=()
 POSITIONAL=()
+RESTART=0
 for a in "$@"; do
     case "$a" in
         --local) SERVER_ARGS+=(--local) ;;
         --allow-actions) SERVER_ARGS+=(--allow-remote-actions) ;;
+        --restart) RESTART=1 ;;
         *) POSITIONAL+=("$a") ;;
     esac
 done
 
 FILE=${POSITIONAL[0]:-website/index.html}
 PORT=${POSITIONAL[1]:-8080}
+
+STOP_WAIT_SECONDS=10
+if [ "$RESTART" = 1 ]; then
+    PATTERN="ops_server\.jl --port $PORT( |\$)"
+    PIDS=$(pgrep -f "$PATTERN")
+    if [ -n "$PIDS" ]; then
+        echo "stopping the server on port $PORT (pid $(echo $PIDS))"
+        kill $PIDS
+        for _ in $(seq 1 $((STOP_WAIT_SECONDS * 10))); do
+            pgrep -f "$PATTERN" > /dev/null || break
+            sleep 0.1
+        done
+        pgrep -f "$PATTERN" > /dev/null && { echo "still running after ${STOP_WAIT_SECONDS}s, killing it"; pkill -9 -f "$PATTERN"; sleep 0.5; }
+    else
+        echo "no server on port $PORT; starting one"
+    fi
+fi
 
 exec julia --project=packages/StockSwingPredictor scripts/tools/ops_server.jl --port "$PORT" --open "$FILE" "${SERVER_ARGS[@]}"
