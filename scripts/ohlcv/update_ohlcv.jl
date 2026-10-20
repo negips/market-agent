@@ -196,10 +196,11 @@ function update_daily!(symbols, token_map, session, yest::Date, slog::ScriptLog;
                        dry_run::Bool, exchange::String, out_dir::String=nse_gran_dir("daily"))
     current = updated = no_new = failed = 0
     total   = length(symbols)
+    t_start = time()
 
     for (i, sym) in enumerate(symbols)
         if !dry_run && i % HEARTBEAT_INTERVAL == 0
-            logboth(slog, "[$exchange $i/$total] daily progress: $updated updated, $current current, $no_new no new data, $failed failed so far")
+            logboth(slog, "[$exchange $i/$total] daily progress: $updated updated, $current current, $no_new no new data, $failed failed so far — $(progress_timing(t_start, i, total))")
         end
 
         last = _last_daily_date(sym, out_dir)
@@ -247,7 +248,7 @@ function update_daily!(symbols, token_map, session, yest::Date, slog::ScriptLog;
 
     summary = dry_run ?
         "$exchange Daily: $updated would be updated, $current already current" :
-        "$exchange Daily: $updated updated, $current already current, $no_new no new data, $failed failed"
+        "$exchange Daily: $updated updated, $current already current, $no_new no new data, $failed failed in $(format_duration(time() - t_start))"
     dry_run ? (@info summary) : logboth(slog, summary)
 end
 
@@ -255,10 +256,11 @@ function update_hourly!(symbols, token_map, session, yest::Date, slog::ScriptLog
                         dry_run::Bool, exchange::String, out_dir::String=nse_gran_dir("hourly"))
     current = updated = no_new = failed = 0
     total   = length(symbols)
+    t_start = time()
 
     for (i, sym) in enumerate(symbols)
         if !dry_run && i % HEARTBEAT_INTERVAL == 0
-            logboth(slog, "[$exchange $i/$total] hourly progress: $updated updated, $current current, $no_new no new data, $failed failed so far")
+            logboth(slog, "[$exchange $i/$total] hourly progress: $updated updated, $current current, $no_new no new data, $failed failed so far — $(progress_timing(t_start, i, total))")
         end
 
         last_dt = _last_hourly_datetime(sym, out_dir)
@@ -317,7 +319,7 @@ function update_hourly!(symbols, token_map, session, yest::Date, slog::ScriptLog
 
     summary = dry_run ?
         "$exchange Hourly: $updated would be updated, $current already current" :
-        "$exchange Hourly: $updated updated, $current already current, $no_new no new data, $failed failed"
+        "$exchange Hourly: $updated updated, $current already current, $no_new no new data, $failed failed in $(format_duration(time() - t_start))"
     dry_run ? (@info summary) : logboth(slog, summary)
 end
 
@@ -325,10 +327,11 @@ function update_5min!(symbols, token_map, session, yest::Date, slog::ScriptLog;
                       dry_run::Bool, exchange::String, out_dir::String=nse_gran_dir("5min"))
     current = updated = no_new = failed = 0
     total   = length(symbols)
+    t_start = time()
 
     for (i, sym) in enumerate(symbols)
         if !dry_run && i % HEARTBEAT_INTERVAL == 0
-            logboth(slog, "[$exchange $i/$total] 5min progress: $updated updated, $current current, $no_new no new data, $failed failed so far")
+            logboth(slog, "[$exchange $i/$total] 5min progress: $updated updated, $current current, $no_new no new data, $failed failed so far — $(progress_timing(t_start, i, total))")
         end
 
         last_dt = _last_5min_datetime(sym, out_dir)
@@ -375,7 +378,7 @@ function update_5min!(symbols, token_map, session, yest::Date, slog::ScriptLog;
 
     summary = dry_run ?
         "$exchange 5min: $updated would be updated, $current already current" :
-        "$exchange 5min: $updated updated, $current already current, $no_new no new data, $failed failed"
+        "$exchange 5min: $updated updated, $current already current, $no_new no new data, $failed failed in $(format_duration(time() - t_start))"
     dry_run ? (@info summary) : logboth(slog, summary)
 end
 
@@ -387,6 +390,7 @@ function update_macro_5min!(session, yest::Date; dry_run::Bool)
                           build_macro_kite_tokens(session)
 
     current = updated = no_new = failed = 0
+    t_start = time()
 
     for inst in KITE_MACRO_INSTRUMENTS
         last_dt = _last_macro_5min_datetime(inst.name)
@@ -435,7 +439,7 @@ function update_macro_5min!(session, yest::Date; dry_run::Bool)
     if dry_run
         @info "Macro 5min: $updated would be updated, $current already current"
     else
-        @info "Macro 5min: $updated updated, $current already current, $no_new no new data, $failed failed"
+        @info "Macro 5min: $updated updated, $current already current, $no_new no new data, $failed failed in $(format_duration(time() - t_start))"
     end
 end
 
@@ -443,10 +447,11 @@ function update_15min!(symbols, token_map, session, yest::Date, slog::ScriptLog;
                        dry_run::Bool, exchange::String, out_dir::String=nse_gran_dir("15min"))
     current = updated = no_new = failed = 0
     total   = length(symbols)
+    t_start = time()
 
     for (i, sym) in enumerate(symbols)
         if !dry_run && i % HEARTBEAT_INTERVAL == 0
-            logboth(slog, "[$exchange $i/$total] 15min progress: $updated updated, $current current, $no_new no new data, $failed failed so far")
+            logboth(slog, "[$exchange $i/$total] 15min progress: $updated updated, $current current, $no_new no new data, $failed failed so far — $(progress_timing(t_start, i, total))")
         end
 
         last_dt = _last_15min_datetime(sym, out_dir)
@@ -493,7 +498,7 @@ function update_15min!(symbols, token_map, session, yest::Date, slog::ScriptLog;
 
     summary = dry_run ?
         "$exchange 15min: $updated would be updated, $current already current" :
-        "$exchange 15min: $updated updated, $current already current, $no_new no new data, $failed failed"
+        "$exchange 15min: $updated updated, $current already current, $no_new no new data, $failed failed in $(format_duration(time() - t_start))"
     dry_run ? (@info summary) : logboth(slog, summary)
 end
 
@@ -501,10 +506,11 @@ function update_1min!(symbols, token_map, session, yest::Date, slog::ScriptLog;
                       dry_run::Bool, exchange::String, out_dir::String=nse_gran_dir("1min"))
     current = updated = no_new = failed = 0
     total   = length(symbols)
+    t_start = time()
 
     for (i, sym) in enumerate(symbols)
         if !dry_run && i % HEARTBEAT_INTERVAL == 0
-            logboth(slog, "[$exchange $i/$total] 1min progress: $updated updated, $current current, $no_new no new data, $failed failed so far")
+            logboth(slog, "[$exchange $i/$total] 1min progress: $updated updated, $current current, $no_new no new data, $failed failed so far — $(progress_timing(t_start, i, total))")
         end
 
         last_dt = _last_1min_datetime(sym, out_dir)
@@ -555,7 +561,7 @@ function update_1min!(symbols, token_map, session, yest::Date, slog::ScriptLog;
 
     summary = dry_run ?
         "$exchange 1min: $updated would be updated, $current already current" :
-        "$exchange 1min: $updated updated, $current already current, $no_new no new data, $failed failed"
+        "$exchange 1min: $updated updated, $current already current, $no_new no new data, $failed failed in $(format_duration(time() - t_start))"
     dry_run ? (@info summary) : logboth(slog, summary)
 end
 
@@ -567,6 +573,7 @@ function update_macro_15min!(session, yest::Date; dry_run::Bool)
                           build_macro_kite_tokens(session)
 
     current = updated = no_new = failed = 0
+    t_start = time()
 
     for inst in KITE_MACRO_INSTRUMENTS
         last_dt = _last_macro_15min_datetime(inst.name)
@@ -614,7 +621,7 @@ function update_macro_15min!(session, yest::Date; dry_run::Bool)
     if dry_run
         @info "Macro 15min: $updated would be updated, $current already current"
     else
-        @info "Macro 15min: $updated updated, $current already current, $no_new no new data, $failed failed"
+        @info "Macro 15min: $updated updated, $current already current, $no_new no new data, $failed failed in $(format_duration(time() - t_start))"
     end
 end
 
@@ -695,7 +702,7 @@ a big gap in one go, not a race against data disappearing.
     log_idx  = findfirst(==("--log-file"), ARGS)
     log_path = (!isnothing(log_idx) && log_idx < length(ARGS)) ? ARGS[log_idx + 1] :
                account_log_path(DEFAULT_LOG_FILE, kite_account_from_args())
-    slog     = open_script_log(log_path)
+    slog     = open_script_log(log_path; truncate=true)
     @info "Logging full per-symbol detail to: $log_path"
 
     yest = today() - Day(1)

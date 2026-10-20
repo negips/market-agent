@@ -640,12 +640,11 @@ function collect_ohlcv(symbols::Vector{String}, token_map::Dict{String,Int},
         end
 
         if i % 100 == 0 || i == total
-            elapsed = round(Int, time() - t_start)
-            _log_summary(slog, "  ── [$i/$total] $ok fetched, $skipped skipped, $failed failed — $(elapsed)s elapsed")
+            _log_summary(slog, "  ── [$i/$total] $ok fetched, $skipped skipped, $failed failed — $(progress_timing(t_start, i, total))")
         end
     end
 
-    _log_summary(slog, "Daily OHLCV done: $ok fetched, $skipped skipped, $failed failed")
+    _log_summary(slog, "Daily OHLCV done: $ok fetched, $skipped skipped, $failed failed in $(format_duration(time() - t_start))")
 end
 
 """
@@ -768,12 +767,11 @@ function collect_ohlcv_hourly(symbols::Vector{String}, token_map::Dict{String,In
         end
 
         if i % 100 == 0 || i == total
-            elapsed = round(Int, time() - t_start)
-            _log_summary(slog, "  ── [$i/$total] $ok fetched, $skipped skipped, $failed failed — $(elapsed)s elapsed")
+            _log_summary(slog, "  ── [$i/$total] $ok fetched, $skipped skipped, $failed failed — $(progress_timing(t_start, i, total))")
         end
     end
 
-    _log_summary(slog, "Hourly OHLCV done: $ok fetched, $skipped skipped, $failed failed")
+    _log_summary(slog, "Hourly OHLCV done: $ok fetched, $skipped skipped, $failed failed in $(format_duration(time() - t_start))")
 end
 
 """
@@ -889,12 +887,11 @@ function collect_ohlcv_5min(symbols::Vector{String}, token_map::Dict{String,Int}
         end
 
         if i % 100 == 0 || i == total
-            elapsed = round(Int, time() - t_start)
-            _log_summary(slog, "  ── [$i/$total] $ok fetched, $skipped skipped, $failed failed — $(elapsed)s elapsed")
+            _log_summary(slog, "  ── [$i/$total] $ok fetched, $skipped skipped, $failed failed — $(progress_timing(t_start, i, total))")
         end
     end
 
-    _log_summary(slog, "5min OHLCV done: $ok fetched, $skipped skipped, $failed failed")
+    _log_summary(slog, "5min OHLCV done: $ok fetched, $skipped skipped, $failed failed in $(format_duration(time() - t_start))")
 end
 
 """
@@ -1014,12 +1011,11 @@ function collect_ohlcv_15min(symbols::Vector{String}, token_map::Dict{String,Int
         end
 
         if i % 100 == 0 || i == total
-            elapsed = round(Int, time() - t_start)
-            _log_summary(slog, "  ── [$i/$total] $ok fetched, $skipped skipped, $failed failed — $(elapsed)s elapsed")
+            _log_summary(slog, "  ── [$i/$total] $ok fetched, $skipped skipped, $failed failed — $(progress_timing(t_start, i, total))")
         end
     end
 
-    _log_summary(slog, "15min OHLCV done: $ok fetched, $skipped skipped, $failed failed")
+    _log_summary(slog, "15min OHLCV done: $ok fetched, $skipped skipped, $failed failed in $(format_duration(time() - t_start))")
 end
 
 """
@@ -1187,12 +1183,11 @@ function collect_ohlcv_1min(symbols::Vector{String}, token_map::Dict{String,Int}
         end
 
         if i % 100 == 0 || i == total
-            elapsed = round(Int, time() - t_start)
-            _log_summary(slog, "  ── [$i/$total] $ok fetched, $skipped skipped, $failed failed — $(elapsed)s elapsed")
+            _log_summary(slog, "  ── [$i/$total] $ok fetched, $skipped skipped, $failed failed — $(progress_timing(t_start, i, total))")
         end
     end
 
-    _log_summary(slog, "1min OHLCV done: $ok fetched, $skipped skipped, $failed failed")
+    _log_summary(slog, "1min OHLCV done: $ok fetched, $skipped skipped, $failed failed in $(format_duration(time() - t_start))")
 end
 
 """

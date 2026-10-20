@@ -1,0 +1,12 @@
+[Unit]
+Description=market-agent: append the missing OHLCV bars (scripts/ohlcv/update_ohlcv.jl)
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/prabal/workstation/git/Agents
+# the visible browser of the Kite relogin (sidecar/kite_login.js) needs the desktop session
+Environment=DISPLAY=:0 WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/%U
+# skip this run (not a failure) when another OHLCV job is running: they would share one log file
+ExecCondition=/usr/bin/bash -c '! pgrep -f "scripts/ohlcv/[ucb][a-z]*_ohlcv.jl"'
+ExecStart=/usr/bin/julia --project=packages/StockSwingPredictor scripts/ohlcv/update_ohlcv.jl
+TimeoutStartSec=12h

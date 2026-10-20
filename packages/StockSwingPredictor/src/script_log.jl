@@ -16,6 +16,37 @@ work. A `ScriptLog` file is never subject to that: `tail -f` or a fresh
 """
 struct ScriptLog
     io::IO
+    started::Float64
+end
+ScriptLog(io::IO) = ScriptLog(io, time())
+
+"""
+    format_duration(seconds) -> String
+
+A duration for log lines: `12s`, `4m 05s` or `1h 02m 03s`.
+
+# Example
+```julia
+format_duration(3723)   # "1h 02m 03s"
+```
+"""
+function format_duration(seconds::Real)::String
+    s = round(Int, max(seconds, 0))
+    h, m, r = s ÷ 3600, s % 3600 ÷ 60, s % 60
+    return h > 0 ? "$(h)h $(lpad(m, 2, '0'))m $(lpad(r, 2, '0'))s" : m > 0 ? "$(m)m $(lpad(r, 2, '0'))s" : "$(r)s"
+end
+
+"""
+    progress_timing(t_start, done, total) -> String
+
+`"4m 05s elapsed, ~12m 10s left"` for a loop that has finished `done` of `total` items since `t_start` (a `time()` value).
+The estimate is the average time per finished item times the items left, so it is rough when items differ a lot in cost
+(skipped files are far cheaper than fetched ones).
+"""
+function progress_timing(t_start::Real, done::Integer, total::Integer)::String
+    elapsed = time() - t_start
+    done < 1 || done >= total && return "$(format_duration(elapsed)) elapsed"
+    return "$(format_duration(elapsed)) elapsed, ~$(format_duration(elapsed * (total - done) / done)) left"
 end
 
 """
@@ -58,18 +89,22 @@ function account_log_path(path::String, account::Int)::String
 end
 
 """
-Open (append) a script's persistent log file and write a run-start banner
-recording the timestamp and `ARGS`. Append, not overwrite — a script's log
-accumulates across runs so past runs stay inspectable; the banner is what
-makes one run's slice of the file easy to find (e.g. `grep -A 1000000
-"RUN STARTED" file.log | tail`, or just read from the end). Also registers
-this log as the active one for `_kite_get`'s relogin logging — see
-`_ACTIVE_SCRIPT_LOG`.
+Open a script's persistent log file and write a run-start banner recording the
+timestamp and `ARGS`. By default the file is appended to, so past runs stay
+inspectable and the banner marks where one run's slice starts (e.g. `grep -A
+1000000 "RUN STARTED" file.log | tail`, or just read from the end). With
+`truncate=true` the file's old contents are discarded and the log holds this run
+only (`update_ohlcv.jl` and `collect_ohlcv.jl`). Also registers this log as the
+active one for `_kite_get`'s relogin logging — see `_ACTIVE_SCRIPT_LOG`.
+
+# Arguments
+- `path`: the log file
+- `truncate`: start the file empty instead of appending (default `false`)
 """
-function open_script_log(path::String)::ScriptLog
+function open_script_log(path::String; truncate::Bool=false)::ScriptLog
     mkpath(dirname(path))
-    io = open(path, "a")
-    println(io, "")
+    io = open(path, truncate ? "w" : "a")
+    truncate || println(io, "")
     println(io, "=== RUN STARTED $(now()) — args: $(join(ARGS, " ")) ===")
     flush(io)
     slog = ScriptLog(io)
@@ -81,8 +116,10 @@ end
 log (see `_ACTIVE_SCRIPT_LOG`)."""
 function close_script_log(slog::ScriptLog, summary::String="")
     suffix = isempty(summary) ? "" : " — $summary"
-    println(slog.io, "=== RUN FINISHED $(now())$suffix ===")
+    took = format_duration(time() - slog.started)
+    println(slog.io, "=== RUN FINISHED $(now())$suffix — took $took ===")
     flush(slog.io)
+    @info "Run finished in $took"
     close(slog.io)
     _ACTIVE_SCRIPT_LOG[] === slog && (_ACTIVE_SCRIPT_LOG[] = nothing)
 end

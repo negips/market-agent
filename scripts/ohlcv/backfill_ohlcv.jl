@@ -737,7 +737,7 @@ estimate before committing to a full run.
     log_idx  = findfirst(==("--log-file"), ARGS)
     log_path = (!isnothing(log_idx) && log_idx < length(ARGS)) ? ARGS[log_idx + 1] :
                account_log_path(DEFAULT_LOG_FILE, kite_account_from_args())
-    slog     = open_script_log(log_path)
+    slog     = open_script_log(log_path; truncate=true)
     @info "Logging full per-symbol detail to: $log_path"
 
     dry_run && @info "[DRY RUN] No API calls will be made."

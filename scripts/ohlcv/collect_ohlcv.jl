@@ -223,7 +223,7 @@ function main()
     args      = parse_args()
     exchanges = args["nse_only"] ? [NSE] : args["bse_only"] ? [BSE] : [NSE, BSE]
     log_file  = something(args["log_file"], account_log_path(DEFAULT_LOG_FILE, args["account"]))
-    slog      = open_script_log(log_file)
+    slog      = open_script_log(log_file; truncate=true)
     @info "Logging full per-symbol detail to: $log_file"
     session   = load_kite_session(REPO_ROOT; account=args["account"])
     to_date   = today() - Day(1)

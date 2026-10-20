@@ -81,7 +81,7 @@ export
     N_HOURLY_BARS, N_HOURS_PER_DAY, N_PRED_DAYS, N_PRED_HOURS,
 
     # script_log
-    ScriptLog, open_script_log, close_script_log, logf, logboth, active_script_log, account_log_path,
+    ScriptLog, open_script_log, close_script_log, logf, logboth, active_script_log, account_log_path, format_duration, progress_timing,
 
     # kite_data
     load_kite_session, load_instruments, build_token_map, excluded_symbol, KiteSession, relogin_kite!,
